@@ -20,16 +20,16 @@ pub use resolve::resolve_workspace_root;
 
 use std::path::Path;
 
-use std::collections::BTreeMap;
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
-use keke_config_types::ProviderDeclaration;
 use keke_config_types::HomeLayout;
 use keke_config_types::ModelSelection;
+use keke_config_types::ProviderDeclaration;
 use keke_config_types::SandboxMode;
 use keke_paths::AbsPath;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// Why configuration could not be loaded.
 #[derive(Debug, thiserror::Error)]
@@ -138,9 +138,7 @@ impl Config {
             // Declarations accumulate; a later layer redeclaring a route
             // replaces that one entry rather than the whole set.
             for (route, declaration) in &layer.file.providers {
-                merged
-                    .providers
-                    .insert(route.clone(), declaration.clone());
+                merged.providers.insert(route.clone(), declaration.clone());
             }
             sources.push(layer.source.clone());
         }

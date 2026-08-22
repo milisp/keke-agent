@@ -188,7 +188,10 @@ impl Reply {
     }
 
     #[must_use]
-    pub fn with_thinking_deltas<S: Into<String>>(self, deltas: impl IntoIterator<Item = S>) -> Self {
+    pub fn with_thinking_deltas<S: Into<String>>(
+        self,
+        deltas: impl IntoIterator<Item = S>,
+    ) -> Self {
         self.push(Part::Thinking(deltas.into_iter().map(Into::into).collect()))
     }
 

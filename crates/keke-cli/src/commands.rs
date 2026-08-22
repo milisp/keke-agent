@@ -229,17 +229,36 @@ fn doctor(config: Config, composed: Composed) -> Result<()> {
     }
 
     println!("\nproviders:");
-    for route in composed.providers.routes() {
-        let signed_in = composed
-            .auth_for(route)
-            .map(|auth| auth.has_usable_credential());
-        let status = match signed_in {
-            Some(true) => "credentials present",
-            Some(false) => "not signed in — run `keke login`",
-            None => "no auth required",
-        };
-        println!("  {route}: {status}");
+    let routes: Vec<String> = composed.providers.routes().map(str::to_string).collect();
+    for route in routes {
+        println!("  {route}: {}", credential_status(&composed, &route));
     }
 
     Ok(())
+}
+
+/// Describe a provider's credentials in terms of what to do about them.
+///
+/// "Not configured" is only useful when it says what would configure it, so a
+/// route with a login flow points at `keke login` and a key-only endpoint names
+/// the variable to export.
+fn credential_status(composed: &Composed, route: &str) -> String {
+    if let Some(auth) = composed.auth_for(route) {
+        return if auth.has_usable_credential() {
+            format!("signed in ({})", auth.snapshot().source)
+        } else {
+            format!("not signed in — run `keke login {route}`")
+        };
+    }
+
+    // No registered login flow: the endpoint takes an API key, and
+    // `ProviderInfo::env_key` names it.
+    let Ok(provider) = composed.providers.get(route) else {
+        return "unknown".to_string();
+    };
+    match provider.info().env_key.as_deref() {
+        Some(key) if std::env::var_os(key).is_some() => format!("{key} is set"),
+        Some(key) => format!("not configured — export {key}"),
+        None => "no credentials required".to_string(),
+    }
 }

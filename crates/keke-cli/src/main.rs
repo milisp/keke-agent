@@ -5,6 +5,7 @@
 //! reference implementations both grew three-thousand-line entry points, and
 //! that is the shape being avoided.
 
+mod api_key;
 mod cli;
 mod commands;
 mod compose;
