@@ -307,7 +307,7 @@ impl WireDecoder for Decoder {
     }
 
     fn on_end(&mut self, out: &mut Sink) {
-        out.fail("the messages stream ended without message_stop");
+        out.truncated("the messages stream ended without message_stop");
     }
 }
 

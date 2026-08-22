@@ -279,7 +279,7 @@ impl WireDecoder for Decoder {
     }
 
     fn on_end(&mut self, out: &mut Sink) {
-        out.fail("the responses stream ended without response.completed");
+        out.truncated("the responses stream ended without response.completed");
     }
 }
 

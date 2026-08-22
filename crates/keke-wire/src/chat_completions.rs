@@ -332,7 +332,7 @@ impl WireDecoder for Decoder {
     fn on_end(&mut self, out: &mut Sink) {
         match self.stop.take() {
             Some(stop) => out.finish(stop),
-            None => out.fail("the chat-completions stream ended without a finish_reason"),
+            None => out.truncated("the chat-completions stream ended without a finish_reason"),
         }
     }
 }

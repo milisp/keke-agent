@@ -58,8 +58,24 @@ impl Sink {
     }
 
     /// End the stream because the provider's own output did not make sense.
+    ///
+    /// For a frame keke could not read. A reply that simply *stopped* is
+    /// [`Sink::truncated`] instead — the two look alike and call for opposite
+    /// responses.
     pub(crate) fn fail(&mut self, message: impl Into<String>) {
         self.abort(ProviderError::Protocol(message.into()));
+    }
+
+    /// End the stream because it stopped before saying it was finished.
+    ///
+    /// Reported as transient, which is the more useful reading of an ambiguous
+    /// signal: a reply that stops early is far more often a dropped connection
+    /// or a proxy cutting a long response than a provider that never sends a
+    /// terminal event at all. Calling it a protocol error would tell the engine
+    /// not to retry something a retry usually fixes — a real truncated NVIDIA
+    /// response is what surfaced this.
+    pub(crate) fn truncated(&mut self, message: impl Into<String>) {
+        self.abort(ProviderError::Transient(message.into()));
     }
 
     pub(crate) fn is_complete(&self) -> bool {
@@ -120,7 +136,7 @@ pub(crate) fn run<D: WireDecoder>(
                     driver.decoder.on_end(&mut driver.sink);
                     driver
                         .sink
-                        .fail("the provider's stream ended without a terminal event");
+                        .truncated("the provider's stream ended without a terminal event");
                 }
             }
             // Frames past the terminal chunk are noise; stop reading them.

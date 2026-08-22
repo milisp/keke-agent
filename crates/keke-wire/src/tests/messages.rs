@@ -117,7 +117,7 @@ async fn a_tool_call_split_across_frames_reassembles() {
 }
 
 #[tokio::test]
-async fn a_stream_without_its_terminal_event_is_a_protocol_error() {
+async fn a_stream_that_stops_early_is_retryable_rather_than_malformed() {
     let server = serve(sse(&[
         json!({"type":"message_start","message":{"usage":{"input_tokens":7}}}).to_string(),
         json!({"type":"content_block_delta","index":0,"delta":{
@@ -139,7 +139,7 @@ async fn a_stream_without_its_terminal_event_is_a_protocol_error() {
             .any(|chunk| matches!(chunk, Ok(StreamChunk::Done(_))))
     );
     assert!(
-        matches!(chunks.last(), Some(Err(ProviderError::Protocol(_)))),
+        matches!(chunks.last(), Some(Err(ProviderError::Transient(_)))),
         "got {chunks:?}"
     );
 }

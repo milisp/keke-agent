@@ -201,7 +201,7 @@ async fn a_tool_call_split_across_frames_reassembles() {
 }
 
 #[tokio::test]
-async fn a_stream_without_a_finish_reason_is_a_protocol_error() {
+async fn a_stream_without_a_finish_reason_is_retryable() {
     let server = MockServer::start().await;
     let body = sse(&[
         &json!({"choices":[{"delta":{"content":"half an answ"}}]}).to_string(),
@@ -218,8 +218,8 @@ async fn a_stream_without_a_finish_reason_is_a_protocol_error() {
     assert_eq!(chunks.len(), 2);
     assert!(matches!(chunks[0], Ok(StreamChunk::TextDelta(_))));
     assert!(
-        matches!(chunks[1], Err(ProviderError::Protocol(_))),
-        "expected Protocol, got {:?}",
+        matches!(chunks[1], Err(ProviderError::Transient(_))),
+        "expected Transient, got {:?}",
         chunks[1]
     );
 }
@@ -243,7 +243,7 @@ async fn a_truncated_stream_never_reports_done() {
     );
     assert!(matches!(
         chunks.last(),
-        Some(Err(ProviderError::Protocol(_)))
+        Some(Err(ProviderError::Transient(_)))
     ));
 }
 
