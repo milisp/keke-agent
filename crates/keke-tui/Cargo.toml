@@ -12,9 +12,10 @@ keke-acp = { workspace = true }
 keke-auth-api = { workspace = true }
 keke-protocol = { workspace = true }
 anyhow = { workspace = true }
-crossterm = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream"] }
 futures = { workspace = true }
 ratatui = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
