@@ -47,6 +47,28 @@ pub(crate) struct ExecArgs {
     /// Print the rollout log path on completion.
     #[arg(long)]
     pub print_log_path: bool,
+
+    /// Override the approval policy for this run: `on-request`, `on-failure`,
+    /// or `never`.
+    ///
+    /// `exec` has nobody to ask, so a call needing approval is refused. Pass
+    /// `never` for CI, where the confinement is the sandbox rather than a
+    /// person.
+    #[arg(long, value_parser = parse_approval)]
+    pub approval: Option<keke_config_types::ApprovalPolicy>,
+}
+
+/// Parse an approval policy without making the contract crate depend on clap.
+fn parse_approval(raw: &str) -> Result<keke_config_types::ApprovalPolicy, String> {
+    use keke_config_types::ApprovalPolicy;
+    match raw {
+        "on-request" => Ok(ApprovalPolicy::OnRequest),
+        "on-failure" => Ok(ApprovalPolicy::OnFailure),
+        "never" => Ok(ApprovalPolicy::Never),
+        other => Err(format!(
+            "unknown approval policy `{other}`; expected on-request, on-failure, or never"
+        )),
+    }
 }
 
 #[derive(Debug, clap::Args)]

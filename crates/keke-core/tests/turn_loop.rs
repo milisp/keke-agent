@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use futures::StreamExt;
+use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
@@ -20,6 +21,9 @@ use keke_core::SessionBuilder;
 use keke_core::TurnUpdate;
 use keke_core::read_log;
 use keke_paths::AbsPath;
+use keke_plugin_api::ApprovalDecision;
+use keke_plugin_api::ApprovalRequest;
+use keke_plugin_api::ApprovalReviewContributor;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_plugin_api::ToolContributor;
@@ -179,11 +183,74 @@ impl Tool for Overrunning {
     }
 }
 
+/// Claims to run commands, so the policy has something to object to.
+struct Dangerous;
+
+impl Tool for Dangerous {
+    type Args = EchoArgs;
+    type Output = EchoOut;
+
+    fn id(&self) -> ToolId {
+        ToolId::new("dangerous")
+    }
+
+    fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
+        ToolDescription::new("Runs a command.")
+    }
+
+    fn capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::of_kind(ToolKind::Execute)
+    }
+
+    async fn run(
+        &self,
+        _ctx: ToolCallContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, ToolError> {
+        Ok(EchoOut { echoed: args.text })
+    }
+}
+
 struct EchoPack;
 
 impl ToolContributor for EchoPack {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        vec![Arc::new(Echo), Arc::new(Overrunning)]
+        vec![Arc::new(Echo), Arc::new(Overrunning), Arc::new(Dangerous)]
+    }
+}
+
+/// A reviewer that answers every request the same way, and counts the asking.
+struct Reviewer {
+    decision: ApprovalDecision,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl Reviewer {
+    fn new(decision: ApprovalDecision) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        (
+            Arc::new(Self {
+                decision,
+                asked: Arc::clone(&asked),
+            }),
+            asked,
+        )
+    }
+}
+
+impl ApprovalReviewContributor for Reviewer {
+    fn review<'a>(
+        &'a self,
+        _ctx: &'a ExtensionContext,
+        request: &'a ApprovalRequest,
+    ) -> keke_plugin_api::ExtFuture<'a, Option<ApprovalDecision>> {
+        Box::pin(async move {
+            self.asked
+                .lock()
+                .expect("lock")
+                .push(request.call.name.clone());
+            Some(self.decision.clone())
+        })
     }
 }
 
@@ -208,6 +275,12 @@ fn harness() -> Harness {
 }
 
 fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
+    // These tests are about the loop, not about policy; the approval tests below
+    // opt in explicitly so nothing else has to think about it.
+    session_config_with(home, ApprovalPolicy::Never)
+}
+
+fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core::SessionConfig {
     keke_core::SessionConfig {
         model: ModelSelection {
             provider: "scripted".to_string(),
@@ -216,6 +289,7 @@ fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
         home: home.clone(),
         max_output_tokens: MaxOutputTokens::default(),
         compaction: CompactionConfig::default(),
+        approval,
     }
 }
 
@@ -762,4 +836,195 @@ async fn a_history_past_its_budget_is_summarized_before_the_next_turn() {
         })
         .expect("a compaction event");
     assert!(compacted > 0);
+}
+
+// ------------------------------------------------------------------- approval
+
+/// Two calls to the same tool, so a standing permission has something to cover.
+fn dangerous_calls() -> Vec<Vec<StreamChunk>> {
+    let mut turns = Vec::new();
+    for index in 0..2 {
+        let id = ToolCallId::new(format!("call-{index}"));
+        turns.push(vec![
+            StreamChunk::ToolCallStart {
+                id: id.clone(),
+                name: "dangerous".to_string(),
+            },
+            StreamChunk::ToolCallArgsDelta {
+                id: id.clone(),
+                delta: "{\"text\":\"rm -rf /\"}".to_string(),
+            },
+            StreamChunk::ToolCallEnd { id },
+            StreamChunk::Done(StopReason::ToolUse),
+        ]);
+    }
+    turns.push(text_reply("done"));
+    turns
+}
+
+async fn run_with_reviewer(
+    decision: Option<ApprovalDecision>,
+    policy: ApprovalPolicy,
+) -> (Vec<SessionEvent>, Vec<String>) {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(dangerous_calls());
+
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+    let asked = match decision {
+        Some(decision) => {
+            let (reviewer, asked) = Reviewer::new(decision);
+            extensions.approval_review_contributor(reviewer);
+            asked
+        }
+        None => Arc::new(Mutex::new(Vec::new())),
+    };
+
+    let mut session = SessionBuilder::new()
+        .config(session_config_with(&harness.home, policy))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+
+    let log = session.log_path().to_path_buf();
+    session.run_turn(Message::user("go")).await.expect("turn");
+    drop(session);
+
+    let events = read_log(&log).expect("log");
+    let events = events.into_iter().map(|entry| entry.event).collect();
+    let asked = asked.lock().expect("lock").clone();
+    (events, asked)
+}
+
+fn statuses(events: &[SessionEvent]) -> Vec<ToolStatus> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::ToolCallEnd { result, .. } => Some(result.status),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The reviewers were registered long before anything consulted them. This is
+/// the test that says something does.
+#[tokio::test]
+async fn a_call_needing_approval_is_put_to_the_reviewer() {
+    let (events, asked) =
+        run_with_reviewer(Some(ApprovalDecision::Allow), ApprovalPolicy::OnRequest).await;
+    assert_eq!(
+        asked,
+        vec!["dangerous".to_string(), "dangerous".to_string()]
+    );
+    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+}
+
+/// A prompt nobody is listening to is a denial, not a permission. A harness
+/// that ran unreviewed commands because its surface was non-interactive would
+/// be worse than one that refused.
+#[tokio::test]
+async fn a_call_needing_approval_with_nobody_to_ask_is_refused() {
+    let (events, _asked) = run_with_reviewer(None, ApprovalPolicy::OnRequest).await;
+    assert_eq!(
+        statuses(&events),
+        vec![ToolStatus::Denied, ToolStatus::Denied]
+    );
+}
+
+#[tokio::test]
+async fn a_policy_of_never_does_not_ask() {
+    let (events, asked) =
+        run_with_reviewer(Some(ApprovalDecision::Allow), ApprovalPolicy::Never).await;
+    assert!(
+        asked.is_empty(),
+        "nothing should have been asked: {asked:?}"
+    );
+    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+}
+
+/// "Always" that asks again on the next call is not a standing permission, it
+/// is a slower prompt.
+#[tokio::test]
+async fn always_allowing_is_not_asked_a_second_time() {
+    let (events, asked) = run_with_reviewer(
+        Some(ApprovalDecision::AllowAlways),
+        ApprovalPolicy::OnRequest,
+    )
+    .await;
+    assert_eq!(asked, vec!["dangerous".to_string()], "asked twice");
+    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+}
+
+/// A denial goes back to the model, which may work around it. An abort must
+/// not: it ends the turn, with the refusal recorded so a resumed session does
+/// not see a tool call that was never answered.
+#[tokio::test]
+async fn an_abort_ends_the_turn_with_the_refusal_recorded() {
+    let (events, asked) = run_with_reviewer(
+        Some(ApprovalDecision::Abort {
+            reason: "not on this machine".to_string(),
+        }),
+        ApprovalPolicy::OnRequest,
+    )
+    .await;
+    assert_eq!(asked, vec!["dangerous".to_string()]);
+    assert_eq!(statuses(&events), vec![ToolStatus::Denied]);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::TurnEnd {
+                stop_reason: StopReason::Cancelled,
+                ..
+            }
+        )),
+        "the turn must have ended: {events:?}"
+    );
+}
+
+/// Denial is monotonic: a reviewer says allow, a guard says no, and no is the
+/// answer. Approval runs after the guards precisely so this cannot go the other
+/// way round.
+#[tokio::test]
+async fn a_reviewer_cannot_undo_a_guard() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(dangerous_calls());
+
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+    let (reviewer, asked) = Reviewer::new(ApprovalDecision::Allow);
+    extensions.approval_review_contributor(reviewer);
+    extensions.tool_guard(Box::new(|call| {
+        (call.name == "dangerous").then(|| "the guard says no".to_string())
+    }));
+
+    let mut session = SessionBuilder::new()
+        .config(session_config_with(
+            &harness.home,
+            ApprovalPolicy::OnRequest,
+        ))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+
+    let log = session.log_path().to_path_buf();
+    session.run_turn(Message::user("go")).await.expect("turn");
+    drop(session);
+
+    let events: Vec<SessionEvent> = read_log(&log)
+        .expect("log")
+        .into_iter()
+        .map(|entry| entry.event)
+        .collect();
+    assert_eq!(
+        statuses(&events),
+        vec![ToolStatus::Denied, ToolStatus::Denied]
+    );
+    assert!(
+        asked.lock().expect("lock").is_empty(),
+        "a guarded call must not even reach the person"
+    );
 }

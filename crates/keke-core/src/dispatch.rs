@@ -15,7 +15,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use keke_config_types::ApprovalPolicy;
 use keke_paths::AbsPath;
+use keke_plugin_api::ApprovalDecision;
+use keke_plugin_api::ApprovalRequest;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistry;
 use keke_protocol::ContentBlock;
@@ -25,6 +28,9 @@ use keke_protocol::ToolStatus;
 use keke_tool::ArcTool;
 use keke_tool::ToolCallContext;
 use keke_tool::ToolError;
+
+use crate::approval::ApprovalMemory;
+use crate::approval::approval_reason;
 
 /// The tools available for a session, keyed by the name the model sees.
 #[derive(Clone, Default)]
@@ -62,30 +68,61 @@ impl ToolSet {
     }
 }
 
+/// Everything one dispatch needs that is not the call itself.
+///
+/// A struct rather than eight positional arguments: the two `&`-borrows that
+/// matter for correctness — the registry and the approval memory — are named at
+/// the call site instead of hiding in the middle of a parameter list.
+pub struct Dispatch<'a> {
+    pub tools: &'a ToolSet,
+    pub registry: &'a ExtensionRegistry,
+    pub ext_ctx: &'a ExtensionContext,
+    pub workspace_root: &'a AbsPath,
+    pub cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub policy: ApprovalPolicy,
+    /// Standing permissions this session has already been given.
+    pub memory: &'a ApprovalMemory,
+}
+
+/// What a dispatch produced.
+pub struct Dispatched {
+    pub result: ToolResult,
+    /// The reviewer asked for the turn to stop, not just for this call to be
+    /// refused. Distinct from a plain denial because a denial goes back to the
+    /// model to work around, and an abort must not.
+    pub abort: bool,
+}
+
 /// Run one tool call through the full policy pipeline.
-pub async fn dispatch(
-    call: &ToolCall,
-    tools: &ToolSet,
-    registry: &ExtensionRegistry,
-    ext_ctx: &ExtensionContext,
-    workspace_root: &AbsPath,
-    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-) -> ToolResult {
+pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
+    let Dispatch {
+        tools,
+        registry,
+        ext_ctx,
+        workspace_root,
+        cancelled,
+        policy,
+        memory,
+    } = ctx;
+
     let Some(tool) = tools.get(&call.name) else {
         // An unknown tool is the model's mistake and the model can correct it,
         // so this is an error result rather than an aborted turn.
-        return ToolResult::error(
-            call.id.clone(),
-            format!(
-                "unknown tool `{}`; available tools: {}",
-                call.name,
-                tools
-                    .iter()
-                    .map(|tool| tool.id().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+        return Dispatched {
+            result: ToolResult::error(
+                call.id.clone(),
+                format!(
+                    "unknown tool `{}`; available tools: {}",
+                    call.name,
+                    tools
+                        .iter()
+                        .map(|tool| tool.id().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             ),
-        );
+            abort: false,
+        };
     };
 
     for contributor in registry.tool_lifecycle_contributors() {
@@ -93,17 +130,28 @@ pub async fn dispatch(
     }
 
     if let Some(reason) = registry.first_denial(call) {
-        let result = ToolResult {
-            id: call.id.clone(),
-            status: ToolStatus::Denied,
-            content: vec![ContentBlock::text(format!("Denied: {reason}"))],
-            value: None,
+        return refuse(call, registry, ext_ctx, reason, false).await;
+    }
+
+    // After the guards, so a guard's denial is already final and no answer here
+    // can undo it, and before the body, so nothing runs unapproved.
+    if let Some(reason) = approval_reason(policy, &tool.capabilities())
+        && !memory.is_always_allowed(&call.name)
+    {
+        let request = ApprovalRequest {
+            call: call.clone(),
+            reason,
         };
-        let error = ToolError::denied(reason);
-        for contributor in registry.tool_lifecycle_contributors() {
-            contributor.on_tool_finish(ext_ctx, call, Err(&error)).await;
+        match review(registry, ext_ctx, &request).await {
+            ApprovalDecision::Allow => {}
+            ApprovalDecision::AllowAlways => memory.allow_always(&call.name),
+            ApprovalDecision::Deny { reason } => {
+                return refuse(call, registry, ext_ctx, reason, false).await;
+            }
+            ApprovalDecision::Abort { reason } => {
+                return refuse(call, registry, ext_ctx, reason, true).await;
+            }
         }
-        return result;
     }
 
     // The advertised budget is enforced here rather than trusted to the tool.
@@ -149,5 +197,53 @@ pub async fn dispatch(
         contributor.on_tool_finish(ext_ctx, call, observed).await;
     }
 
-    result
+    Dispatched {
+        result,
+        abort: false,
+    }
+}
+
+/// Ask the reviewers, in registration order; the first answer wins.
+///
+/// Nobody answering means nobody is there to ask — a non-interactive surface,
+/// or a session with no approval extension installed. That is a denial, not a
+/// silent allow: a harness that runs unreviewed commands because its prompt had
+/// no listener is exactly the failure this pipeline exists to prevent.
+async fn review(
+    registry: &ExtensionRegistry,
+    ext_ctx: &ExtensionContext,
+    request: &ApprovalRequest,
+) -> ApprovalDecision {
+    for contributor in registry.approval_contributors() {
+        if let Some(decision) = contributor.review(ext_ctx, request).await {
+            return decision;
+        }
+    }
+    ApprovalDecision::Deny {
+        reason: format!(
+            "{} needs approval and there is nobody to ask",
+            request.call.name
+        ),
+    }
+}
+
+/// Refuse a call, telling the lifecycle observers the same story the model gets.
+async fn refuse(
+    call: &ToolCall,
+    registry: &ExtensionRegistry,
+    ext_ctx: &ExtensionContext,
+    reason: String,
+    abort: bool,
+) -> Dispatched {
+    let result = ToolResult {
+        id: call.id.clone(),
+        status: ToolStatus::Denied,
+        content: vec![ContentBlock::text(format!("Denied: {reason}"))],
+        value: None,
+    };
+    let error = ToolError::denied(reason);
+    for contributor in registry.tool_lifecycle_contributors() {
+        contributor.on_tool_finish(ext_ctx, call, Err(&error)).await;
+    }
+    Dispatched { result, abort }
 }

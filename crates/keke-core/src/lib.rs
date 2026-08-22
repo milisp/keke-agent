@@ -11,6 +11,7 @@
 //! behind their contract traits. Swapping a vendor means constructing the
 //! session with a different `Arc<dyn ModelProvider>`.
 
+mod approval;
 mod compact;
 mod dispatch;
 mod prompt;
@@ -18,9 +19,13 @@ mod rollout;
 mod session;
 mod turn;
 
+pub use approval::ApprovalMemory;
+pub use approval::approval_reason;
 pub use compact::estimate_history;
 pub use compact::estimate_tokens;
 pub use compact::should_compact;
+pub use dispatch::Dispatch;
+pub use dispatch::Dispatched;
 pub use dispatch::ToolSet;
 pub use dispatch::dispatch;
 pub use prompt::ORDER_ENVIRONMENT;

@@ -30,6 +30,7 @@ use keke_tool::ListToolsContext;
 use crate::CoreError;
 use crate::Session;
 use crate::TurnUpdate;
+use crate::dispatch::Dispatch;
 use crate::dispatch::ToolSet;
 use crate::dispatch::dispatch;
 
@@ -177,6 +178,7 @@ impl Session {
             }
 
             let mut results = Vec::with_capacity(calls.len());
+            let mut aborted = false;
             for call in &calls {
                 self.log(SessionEvent::ToolCallStart {
                     turn,
@@ -185,15 +187,21 @@ impl Session {
                 .await?;
                 self.emit(TurnUpdate::ToolCallStarted { call: call.clone() });
 
-                let result = dispatch(
+                let dispatched = dispatch(
                     call,
-                    &tools,
-                    &self.registry,
-                    ext_ctx,
-                    self.workspace.root(),
-                    Arc::clone(&self.cancelled),
+                    Dispatch {
+                        tools: &tools,
+                        registry: &self.registry,
+                        ext_ctx,
+                        workspace_root: self.workspace.root(),
+                        cancelled: Arc::clone(&self.cancelled),
+                        policy: self.config.approval,
+                        memory: &self.approvals,
+                    },
                 )
                 .await;
+                let result = dispatched.result;
+                aborted |= dispatched.abort;
 
                 self.log(SessionEvent::ToolCallEnd {
                     turn,
@@ -211,7 +219,10 @@ impl Session {
                 content: results,
             });
 
-            if self.is_cancelled() {
+            // An abort still records its results first: the model's request and
+            // the refusal it earned both belong in the history, or a resumed
+            // session sees a tool call that was never answered.
+            if aborted || self.is_cancelled() {
                 return Ok(TurnOutcome {
                     turn,
                     stop_reason: StopReason::Cancelled,

@@ -109,6 +109,7 @@ async fn exec(
             },
             max_output_tokens: config.max_output_tokens,
             compaction: config.compaction,
+            approval: args.approval.unwrap_or(config.approval_policy),
         })
         .provider(provider)
         .extensions(composed.extensions.clone())

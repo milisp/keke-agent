@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use keke_auth_api::AuthProvider;
+use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
@@ -67,6 +68,8 @@ pub struct SessionConfig {
     /// When and how far to summarize the history. A session that never compacts
     /// works until the provider rejects the request mid-conversation.
     pub compaction: CompactionConfig,
+    /// When a tool call must be approved before it runs.
+    pub approval: ApprovalPolicy,
 }
 
 /// A live conversation.
@@ -83,6 +86,7 @@ pub struct Session {
     pub(crate) recorder: RolloutRecorder,
     pub(crate) updates: Option<tokio::sync::mpsc::UnboundedSender<TurnUpdate>>,
     pub(crate) cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub(crate) approvals: Arc<crate::ApprovalMemory>,
     flag: Arc<AtomicBool>,
 }
 
@@ -130,6 +134,15 @@ impl Session {
     pub fn canceller(&self) -> impl Fn() + Send + Sync + 'static + use<> {
         let flag = Arc::clone(&self.flag);
         move || flag.store(true, Ordering::SeqCst)
+    }
+
+    /// The standing permissions this session has been given.
+    ///
+    /// Exposed so a surface can show them, and so a test can assert that
+    /// "always allow" was actually remembered rather than merely answered.
+    #[must_use]
+    pub fn approvals(&self) -> &Arc<crate::ApprovalMemory> {
+        &self.approvals
     }
 
     /// Clear the abort flag so the session can take another turn.
@@ -251,6 +264,7 @@ impl SessionBuilder {
             recorder,
             updates: self.updates,
             cancelled,
+            approvals: Arc::new(crate::ApprovalMemory::default()),
             flag,
         })
     }
