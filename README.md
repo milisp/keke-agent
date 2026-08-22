@@ -3,8 +3,9 @@
 A multi-vendor terminal coding agent, built so that vendor-specific behavior
 lives in replaceable plugins rather than in a monolith.
 
-> Status: early. Tier 0 — the contract crates every other layer is written
-> against — is in place. The engine, providers, and surfaces are next.
+> Status: `keke exec` works end to end — a turn runs, tools execute, and the
+> session is recorded in a replayable log. The xAI provider and its OAuth flow
+> are in; ChatGPT, the ACP server, and the TUI are next.
 
 ## Design in one paragraph
 
@@ -18,6 +19,14 @@ particular vendor exists.
 See [`docs/architecture.md`](docs/architecture.md) for the reasoning, and
 [`AGENTS.md`](AGENTS.md) for the invariants contributors must hold.
 
+## Try it
+
+```sh
+export XAI_API_KEY=...        # or: cargo run -p keke-cli -- login
+cargo run -p keke-cli -- exec "what does this project do?"
+cargo run -p keke-cli -- doctor
+```
+
 ## Layout
 
 ```
@@ -26,8 +35,8 @@ crates/
   keke-config-types  keke-provider-api  keke-auth-api
   keke-plugin-api
   keke-core  keke-config  keke-credentials  keke-workspace   # tier 1: engine
-  keke-provider-*  keke-auth-*  keke-tools  keke-mcp  ...    # tier 2: plugins
-  keke-acp  keke-tui  keke-cli                               # tier 3: surfaces
+  keke-provider-xai  keke-auth-xai  keke-tools               # tier 2: plugins
+  keke-cli                                                   # tier 3: surfaces
 ```
 
 ## Development
