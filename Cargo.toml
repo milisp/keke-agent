@@ -1,0 +1,45 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Apache-2.0"
+repository = "https://github.com/milisp/keke"
+
+[workspace.dependencies]
+# --- tier 0: contract crates (keep these dependency-light) ---
+keke-auth-api = { path = "crates/keke-auth-api", version = "0.1.0" }
+keke-config-types = { path = "crates/keke-config-types", version = "0.1.0" }
+keke-paths = { path = "crates/keke-paths", version = "0.1.0" }
+keke-plugin-api = { path = "crates/keke-plugin-api", version = "0.1.0" }
+keke-protocol = { path = "crates/keke-protocol", version = "0.1.0" }
+keke-provider-api = { path = "crates/keke-provider-api", version = "0.1.0" }
+keke-tool = { path = "crates/keke-tool", version = "0.1.0" }
+
+# --- third-party ---
+futures = "0.3"
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = "1"
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unreachable_pub = "warn"
+# `Tool::execute` returns `impl Future`; the RPITIT-over-async_trait rule in
+# AGENTS.md depends on this staying allowed.
+async_fn_in_trait = "allow"
+
+[workspace.lints.clippy]
+expect_used = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

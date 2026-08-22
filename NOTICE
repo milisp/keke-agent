@@ -1,0 +1,12 @@
+keke
+Copyright 2026 the keke authors
+
+This product includes software developed at OpenAI (https://github.com/openai/codex)
+and at xAI (https://github.com/xai-org/grok-build), both licensed under the
+Apache License, Version 2.0.
+
+Source files ported from those projects are collected under `src/ported/`
+directories and are individually attributed in the `THIRD_PARTY_NOTICES.md` of
+the crate containing them. Ported files have been modified from their originals
+(adapted to this workspace's `Tool` trait, protocol types, and runtime); those
+notices constitute the statement of changes required by Apache License 2.0 §4(b).

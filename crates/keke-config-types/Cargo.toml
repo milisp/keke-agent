@@ -1,0 +1,15 @@
+[package]
+name = "keke-config-types"
+description = "Leaf configuration value types, extracted so nothing depends on the config loader merely to name a setting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-paths = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

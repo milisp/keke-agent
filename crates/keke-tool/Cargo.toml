@@ -1,0 +1,23 @@
+[package]
+name = "keke-tool"
+description = "The keke tool ABI: the Tool trait, its dyn-compatible erasure, and the tool error taxonomy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures = { workspace = true }
+keke-paths = { workspace = true }
+keke-protocol = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

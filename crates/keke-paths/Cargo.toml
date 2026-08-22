@@ -1,0 +1,15 @@
+[package]
+name = "keke-paths"
+description = "Typed absolute/relative UTF-8 path wrappers shared across the keke workspace."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "keke-auth-api"
+description = "The authentication seam: trait-only, so no crate depends on the engine in order to authenticate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

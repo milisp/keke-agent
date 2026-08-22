@@ -1,0 +1,18 @@
+[package]
+name = "keke-provider-api"
+description = "The model provider seam: what a vendor backend must implement to serve a keke turn."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures = { workspace = true }
+keke-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

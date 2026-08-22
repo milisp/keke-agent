@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Guards the rule that prose alone has never held: the engine must not
+      # learn that any particular vendor exists.
+      - name: Layering
+        run: python3 scripts/check-layering.py
+
+      # Every crate with ported code must attribute it.
+      - name: Attribution
+        run: |
+          missing=0
+          for dir in crates/*/src/ported; do
+            [ -d "$dir" ] || continue
+            crate="${dir%/src/ported}"
+            if [ ! -f "$crate/THIRD_PARTY_NOTICES.md" ]; then
+              echo "::error::$crate has src/ported/ but no THIRD_PARTY_NOTICES.md"
+              missing=1
+            fi
+          done
+          exit $missing

@@ -1,0 +1,9 @@
+# Keep the contract tier honest: a trait object in a public signature is fine,
+# but silently expensive clones and unwraps in library code are not.
+too-many-arguments-threshold = 8
+type-complexity-threshold = 500
+
+# `expect`/`unwrap` are warned against in library code but are the right thing
+# in tests, where a panic is the assertion.
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
