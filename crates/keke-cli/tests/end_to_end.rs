@@ -12,32 +12,20 @@
 
 use std::process::Command;
 
-use wiremock::Mock;
-use wiremock::MockServer;
-use wiremock::ResponseTemplate;
-use wiremock::matchers::method;
-use wiremock::matchers::path;
-
-/// Frame chunks as server-sent events the way a chat-completions stream does.
-fn sse(chunks: &[serde_json::Value]) -> String {
-    let mut body = String::new();
-    for chunk in chunks {
-        body.push_str(&format!("data: {chunk}\n\n"));
-    }
-    body.push_str("data: [DONE]\n\n");
-    body
-}
+use keke_test_support::Endpoint;
+use keke_test_support::MockInferenceServer;
+use keke_test_support::Reply;
 
 struct Fixture {
     home: tempfile::TempDir,
-    server: MockServer,
+    server: MockInferenceServer,
 }
 
 impl Fixture {
     async fn new() -> Self {
         Self {
             home: tempfile::tempdir().expect("tempdir"),
-            server: MockServer::start().await,
+            server: MockInferenceServer::start().await,
         }
     }
 
@@ -48,7 +36,7 @@ impl Fixture {
             // The OS keyring is shared machine state; a test that read it would
             // pass or fail depending on who is logged in on this machine.
             .env("KEKE_CREDENTIAL_STORE", "file")
-            .env("XAI_BASE_URL", format!("{}/v1", self.server.uri()))
+            .env("XAI_BASE_URL", self.server.base_url())
             .env("XAI_API_KEY", "test-key")
             // A stray real credential in the developer's environment must not
             // reach the stub server, and a real one must not be consulted here.
@@ -73,35 +61,14 @@ async fn exec_runs_a_tool_and_records_a_replayable_session() {
     let fixture = Fixture::new().await;
 
     // First call: ask for a tool. Second: answer using its result.
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            sse(&[
-                serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
-                    {"index":0,"id":"call-1","type":"function",
-                     "function":{"name":"list_dir","arguments":""}}]}}]}),
-                serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
-                    {"index":0,"function":{"arguments":"{\"path\":\".\"}"}}]}}]}),
-                serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
-            ]),
-            "text/event-stream",
-        ))
-        .up_to_n_times(1)
-        .mount(&fixture.server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            sse(&[
-                serde_json::json!({"choices":[{"index":0,"delta":{"content":"listed it"}}]}),
-                serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
-                                   "usage":{"prompt_tokens":100,"completion_tokens":20}}),
-            ]),
-            "text/event-stream",
-        ))
-        .mount(&fixture.server)
-        .await;
+    fixture.server.script(
+        Endpoint::ChatCompletions,
+        Reply::tool_call("list_dir", serde_json::json!({ "path": "." })),
+    );
+    fixture.server.script(
+        Endpoint::ChatCompletions,
+        Reply::text("listed it").with_usage(100, 20),
+    );
 
     let workspace = tempfile::tempdir().expect("tempdir");
     std::fs::write(workspace.path().join("marker.txt"), "hi").expect("write");
@@ -179,11 +146,9 @@ async fn exec_runs_a_tool_and_records_a_replayable_session() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_failure_is_reported_and_still_logged() {
     let fixture = Fixture::new().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(400).set_body_string("{\"error\":\"bad model\"}"))
-        .mount(&fixture.server)
-        .await;
+    fixture
+        .server
+        .script(Endpoint::ChatCompletions, Reply::status(400));
 
     let workspace = tempfile::tempdir().expect("tempdir");
     let output = fixture

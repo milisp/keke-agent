@@ -1042,6 +1042,7 @@ dependencies = [
  "keke-protocol",
  "keke-provider-api",
  "keke-provider-grok",
+ "keke-test-support",
  "keke-tools",
  "keke-workspace",
  "serde_json",
@@ -1049,7 +1050,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "wiremock",
 ]
 
 [[package]]
@@ -1099,6 +1099,7 @@ dependencies = [
 name = "keke-credentials"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs",
  "keke-auth-api",
  "keke-paths",
@@ -1153,17 +1154,13 @@ dependencies = [
 name = "keke-provider-grok"
 version = "0.1.0"
 dependencies = [
- "eventsource-stream",
  "futures",
  "keke-auth-api",
  "keke-protocol",
  "keke-provider-api",
- "reqwest",
- "serde",
+ "keke-wire",
  "serde_json",
- "thiserror",
  "tokio",
- "tracing",
  "wiremock",
 ]
 
@@ -1171,12 +1168,15 @@ dependencies = [
 name = "keke-provider-nvidia"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "keke-auth-api",
+ "keke-protocol",
  "keke-provider-api",
- "keke-test-support",
  "keke-wire",
- "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]
@@ -1186,7 +1186,6 @@ dependencies = [
  "axum",
  "futures",
  "reqwest",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
