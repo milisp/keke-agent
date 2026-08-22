@@ -61,6 +61,16 @@ pub(crate) enum PluginAction {
         /// The plugin's name, as `list` prints it.
         name: String,
     },
+    /// Allow a plugin from the workspace to run the programs it ships.
+    Trust {
+        /// The plugin's name, as `list` prints it.
+        name: String,
+    },
+    /// Withdraw that permission.
+    Untrust {
+        /// The plugin's name, as `list` prints it.
+        name: String,
+    },
 }
 
 #[derive(Debug, clap::Args)]

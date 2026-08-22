@@ -420,6 +420,7 @@ fn credential_status(composed: &Composed, route: &str) -> String {
 /// they do not yet trust.
 fn plugin(action: PluginAction, config: Config) -> Result<()> {
     let plugins = crate::plugins::discover(&config.home)?;
+    let mut store = crate::plugins::trust_store(&config.home)?;
 
     match action {
         PluginAction::List => {
@@ -435,7 +436,8 @@ fn plugin(action: PluginAction, config: Config) -> Result<()> {
 
             for plugin in plugins.plugins() {
                 let version = plugin.version.as_deref().unwrap_or("no version");
-                println!("{} ({version}) [{}]", plugin.name, plugin.scope);
+                let trust = store.evaluate(plugin);
+                println!("{} ({version}) [{}, {trust}]", plugin.name, plugin.scope);
                 if let Some(description) = &plugin.description {
                     println!("  {description}");
                 }
@@ -456,6 +458,12 @@ fn plugin(action: PluginAction, config: Config) -> Result<()> {
                 if inert > 0 {
                     println!("  ! {inert} hook(s) bound to events keke does not run");
                 }
+                if !trust.permits_running() {
+                    println!(
+                        "  ! its programs will not run — `keke plugin trust {}` to allow them",
+                        plugin.name
+                    );
+                }
             }
         }
         PluginAction::Show { name } => {
@@ -465,6 +473,7 @@ fn plugin(action: PluginAction, config: Config) -> Result<()> {
 
             println!("{} [{}]", plugin.name, plugin.scope);
             println!("root: {}", plugin.root);
+            println!("trust: {}", store.evaluate(plugin));
             if let Some(version) = &plugin.version {
                 println!("version: {version}");
             }
@@ -521,6 +530,41 @@ fn plugin(action: PluginAction, config: Config) -> Result<()> {
             }
             for kind in &plugin.unsupported {
                 println!("\n! `{kind}` is not implemented by keke and does nothing");
+            }
+        }
+        PluginAction::Trust { name } => {
+            let plugin = plugins
+                .get(&name)
+                .with_context(|| format!("no plugin named `{name}` is installed"))?;
+            let executables = plugin.executables();
+
+            if executables.is_empty() {
+                println!("`{name}` runs no programs; there is nothing to trust");
+                return Ok(());
+            }
+
+            // Printed before it takes effect, not after. What is being approved
+            // is these lines, and a person cannot approve what they were not
+            // shown.
+            println!("trusting `{name}` allows it to run:");
+            for line in &executables {
+                println!("  {line}");
+            }
+
+            store.approve(plugin);
+            crate::plugins::save_trust_store(&config.home, &store)?;
+            println!("\n`{name}` is trusted. Adding to what it runs revokes this.");
+        }
+        PluginAction::Untrust { name } => {
+            let plugin = plugins
+                .get(&name)
+                .with_context(|| format!("no plugin named `{name}` is installed"))?;
+
+            if store.revoke(plugin) {
+                crate::plugins::save_trust_store(&config.home, &store)?;
+                println!("`{name}` is no longer trusted; its programs will not run");
+            } else {
+                println!("`{name}` was not trusted; nothing changed");
             }
         }
     }

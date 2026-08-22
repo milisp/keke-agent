@@ -107,7 +107,7 @@ impl ResolvedPlugin {
 /// Every installed plugin, composed with precedence applied.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PluginSet {
-    plugins: Vec<ResolvedPlugin>,
+    pub(crate) plugins: Vec<ResolvedPlugin>,
 }
 
 impl PluginSet {

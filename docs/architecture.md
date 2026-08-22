@@ -278,6 +278,34 @@ and `.keke/plugins/` and `.claude/plugins/` at project scope. The scope survives
 resolution because a plugin the repository controls is not equivalent to one the
 person installed, and a trust decision needs that distinction.
 
+### Cloning a repository is not consent
+
+A plugin under the workspace is content the repository controls. Without a gate,
+a `.claude/plugins/*/hooks/hooks.json` in someone else's project runs on the
+first turn with everything the agent process has — arbitrary execution from
+`git clone`. So a project-scope plugin contributes nothing executable until a
+person says otherwise, and `keke plugin trust <name>` is how they say it.
+
+Three properties make that gate worth having:
+
+- **Only execution is gated.** Withholding removes hooks and MCP servers and
+  leaves skills and commands. Those are text, and the harness already reads the
+  repository's own `AGENTS.md` into the prompt without asking; gating repository
+  text *here* would be a policy the rest of keke does not have, applied at the
+  one place nobody would look for it.
+- **Approval is of contents, not of a path.** The store records the command
+  lines themselves, and a plugin that gains a hook after being trusted is
+  untrusted again. Otherwise saying yes once is a blank cheque on every future
+  commit to that repository — exactly what an attacker would need.
+- **There is no flag that turns it off.** A global bypass is what a person
+  reaches for once and then leaves on. A deployment that means to run a
+  project's plugins says so per plugin, and CI runs `keke plugin trust` as a
+  step like any other.
+
+A plugin the person installed into their own directory is not interrogated:
+asking about something they placed there themselves would train the answer to
+the question that matters into a reflex.
+
 `keke-plugin` sits below the extension crates that consume it: it depends on
 `keke-paths` and nothing else, so a manifest can be parsed and listed without
 linking the engine. `keke-skills`, `keke-hooks`, and `keke-mcp` each read a

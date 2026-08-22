@@ -68,7 +68,12 @@ impl Composed {
         timeouts: keke_config_types::PluginTimeouts,
         approvals: Option<Arc<keke_acp::Approvals>>,
     ) -> Result<Self> {
-        let plugins = crate::plugins::discover(home)?;
+        // Resolution finds every plugin; this holds back the programs of the
+        // ones nobody vouched for. A plugin under the workspace is content the
+        // repository controls, and cloning a repository is not consent to run
+        // what it ships.
+        let (plugins, withheld) = crate::plugins::discover_trusted(home)?;
+        crate::plugins::report_withheld(&withheld);
         let home = &home.home;
         let credentials: Arc<dyn CredentialStore> = Arc::new(keke_credentials::standard_store(
             CREDENTIAL_SERVICE,

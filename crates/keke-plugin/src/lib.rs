@@ -29,9 +29,12 @@
 //! ordinary contributor traits, so `keke-core` never learns runtime plugins
 //! exist.
 
+pub(crate) use keke_paths::AbsPath;
+
 mod contributions;
 mod manifest;
 mod resolve;
+mod trust;
 
 pub use contributions::HookEvent;
 pub use contributions::ResolvedCommand;
@@ -56,3 +59,7 @@ pub use resolve::PluginSet;
 pub use resolve::ResolvedPlugin;
 pub use resolve::discover;
 pub use resolve::load;
+pub use trust::Approval;
+pub use trust::Trust;
+pub use trust::TrustStore;
+pub use trust::Withheld;
