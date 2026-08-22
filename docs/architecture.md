@@ -93,6 +93,31 @@ owns no conversation state, makes no policy decisions, and never runs a tool.
 registered and none is configured — a silent pick would turn a misconfiguration
 into a mysterious behavior change.
 
+**One client, three formats.** Nearly every vendor speaks one of three wire
+formats — OpenAI chat completions, OpenAI Responses, or Anthropic Messages — so
+`keke-wire` implements all three once and providers configure it. grok-build
+reached the same conclusion; its sampler client speaks all three from one place
+rather than one client per vendor.
+
+That makes most vendors *declarative*. A route with a base URL, a credential
+name, and a format needs no crate:
+
+```toml
+[providers.ollama]
+base-url = "http://localhost:11434/v1"
+default-model = "gpt-oss:20b-cloud"
+
+[providers.nvidia]
+base-url = "https://integrate.api.nvidia.com/v1"
+env-key = "NVIDIA_API_KEY"
+wire = "responses"
+```
+
+A compiled-in provider crate is for a vendor with real behavior of its own — an
+OAuth flow, a non-standard error shape, an endpoint outside the three formats.
+Declarations accumulate across config layers and are keyed by route, so
+redeclaring one replaces that entry rather than the whole set.
+
 ### Authentication
 
 `keke-auth-api` is trait-only so vendor auth plugins, the credential store, and
@@ -113,6 +138,23 @@ without ever seeing it.
 Login interaction goes through `LoginUi`, supplied by the host. A provider never
 touches the terminal, which is what lets the identical flow work in the TUI,
 headless, and from an editor over ACP.
+
+**One auth file per vendor**, `$KEKE_HOME/auth.<vendor>.json`, following the
+shape codex and grok already use — a `schema_version`, an `auth_mode`
+discriminator (`"chatgpt"`, `"oidc"`, `"apikey"`), and the token set. Per-vendor
+rather than combined so two vendors refreshing concurrently cannot interleave
+writes, and so revoking one does not rewrite the others. fx does the same, and
+adds a rule worth having: a file whose permissions are wider than `0600` is
+refused rather than read.
+
+If someone has already logged in with the codex or grok CLI, keke reads that
+rather than making them log in again. Importing is read-only — keke never writes
+to another tool's file — and an explicit `keke login` always wins over an import.
+
+The OS keyring is *shared machine state*, which makes it a hazard for tests: a
+suite that reads it passes or fails depending on who is logged in on the machine.
+`KEKE_CREDENTIAL_STORE=file` excludes that layer, which is also what a CI runner
+or a container with no keyring daemon needs.
 
 ### Tools
 

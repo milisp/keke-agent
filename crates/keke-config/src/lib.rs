@@ -20,8 +20,10 @@ pub use resolve::resolve_workspace_root;
 
 use std::path::Path;
 
+use std::collections::BTreeMap;
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
+use keke_config_types::ProviderDeclaration;
 use keke_config_types::HomeLayout;
 use keke_config_types::ModelSelection;
 use keke_config_types::SandboxMode;
@@ -56,6 +58,9 @@ pub struct Config {
     pub approval_policy: ApprovalPolicy,
     pub sandbox_mode: SandboxMode,
     pub compaction: CompactionConfig,
+    /// Endpoints declared from configuration, in addition to the compiled-in
+    /// vendors.
+    pub providers: Vec<ProviderDeclaration>,
     /// Which layers contributed, in application order. Kept so `keke doctor`
     /// can answer "where did this value come from" without re-reading disk.
     pub sources: Vec<LayerSource>,
@@ -72,6 +77,11 @@ pub struct ConfigFile {
     pub approval_policy: Option<ApprovalPolicy>,
     pub sandbox_mode: Option<SandboxMode>,
     pub compaction: Option<CompactionFile>,
+    /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
+    /// across layers rather than replaced, so a project can add one without
+    /// restating the user's.
+    #[serde(default)]
+    pub providers: BTreeMap<String, ProviderDeclaration>,
 }
 
 /// The compaction section, separated so a layer can override one field of it.
@@ -125,6 +135,13 @@ impl Config {
                     .keep_recent_messages
                     .or(base.keep_recent_messages);
             }
+            // Declarations accumulate; a later layer redeclaring a route
+            // replaces that one entry rather than the whole set.
+            for (route, declaration) in &layer.file.providers {
+                merged
+                    .providers
+                    .insert(route.clone(), declaration.clone());
+            }
             sources.push(layer.source.clone());
         }
 
@@ -162,6 +179,14 @@ impl Config {
             approval_policy: merged.approval_policy.unwrap_or_default(),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
             compaction,
+            providers: merged
+                .providers
+                .into_iter()
+                .map(|(route, declaration)| ProviderDeclaration {
+                    route,
+                    ..declaration
+                })
+                .collect(),
             sources,
         })
     }
@@ -169,6 +194,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use keke_config_types::DeclaredWireApi;
+
     use super::*;
 
     #[cfg(unix)]
@@ -222,6 +249,55 @@ mod tests {
         assert_eq!(config.model.provider, DEFAULT_PROVIDER);
         assert_eq!(config.approval_policy, ApprovalPolicy::OnRequest);
         assert_eq!(config.sandbox_mode, SandboxMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn declared_providers_accumulate_across_layers() {
+        let layers = vec![
+            layer(
+                "user",
+                "[providers.nvidia]\nbase-url = \"https://integrate.api.nvidia.com/v1\"\nenv-key = \"NVIDIA_API_KEY\"\n",
+            ),
+            layer(
+                "project",
+                "[providers.ollama]\nbase-url = \"http://localhost:11434/v1\"\n",
+            ),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+
+        let routes: Vec<&str> = config
+            .providers
+            .iter()
+            .map(|provider| provider.route.as_str())
+            .collect();
+        assert_eq!(routes, vec!["nvidia", "ollama"]);
+        assert_eq!(config.providers[1].wire, DeclaredWireApi::ChatCompletions);
+    }
+
+    /// Redeclaring a route overrides that one entry, not the whole list — the
+    /// same field-wise rule the scalar settings follow.
+    #[test]
+    fn redeclaring_a_route_replaces_only_that_entry() {
+        let layers = vec![
+            layer(
+                "user",
+                "[providers.nvidia]\nbase-url = \"https://integrate.api.nvidia.com/v1\"\n\n[providers.ollama]\nbase-url = \"http://localhost:11434/v1\"\n",
+            ),
+            layer(
+                "project",
+                "[providers.ollama]\nbase-url = \"http://gpu-box:11434/v1\"\nwire = \"responses\"\n",
+            ),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+
+        assert_eq!(config.providers.len(), 2);
+        let ollama = config
+            .providers
+            .iter()
+            .find(|provider| provider.route == "ollama")
+            .expect("ollama survives");
+        assert_eq!(ollama.base_url, "http://gpu-box:11434/v1");
+        assert_eq!(ollama.wire, DeclaredWireApi::Responses);
     }
 
     #[test]

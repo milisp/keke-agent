@@ -47,6 +47,49 @@ pub struct ModelSelection {
     pub model: String,
 }
 
+/// A provider route declared from configuration rather than compiled in.
+///
+/// The three wire formats are implemented once, so most vendors are a base URL,
+/// a credential name, and a choice of format — not a crate. Compiled-in
+/// providers exist for vendors that need real behavior of their own (an OAuth
+/// flow, a non-standard error shape); everything else can be declared here, and
+/// a person can add an endpoint keke has never heard of without rebuilding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ProviderDeclaration {
+    /// The route key, which is what `--provider` and `keke login` name. Comes
+    /// from the table key in configuration, not from a field.
+    #[serde(skip)]
+    pub route: String,
+    /// Shown in surfaces; defaults to the route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub base_url: String,
+    /// Which inference format the endpoint speaks.
+    #[serde(default)]
+    pub wire: DeclaredWireApi,
+    /// Environment variable holding the API key, e.g. `NVIDIA_API_KEY`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_key: Option<String>,
+    /// The model used when none is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+}
+
+/// The wire format a declared provider speaks.
+///
+/// Mirrors `keke_provider_api::WireApi`, restated here so `keke-config-types`
+/// need not depend on the provider contract — a config value type must not drag
+/// in the runtime that consumes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeclaredWireApi {
+    #[default]
+    ChatCompletions,
+    Responses,
+    Messages,
+}
+
 /// Where the harness keeps its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomeLayout {
