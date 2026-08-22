@@ -253,7 +253,9 @@ impl WireDecoder for Decoder {
             }
         };
         match event.kind.as_str() {
-            "response.output_text.delta" => self.push_text(event.delta, out, StreamChunk::TextDelta),
+            "response.output_text.delta" => {
+                self.push_text(event.delta, out, StreamChunk::TextDelta)
+            }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 self.push_text(event.delta, out, StreamChunk::ThinkingDelta);
             }

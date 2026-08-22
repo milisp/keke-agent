@@ -103,12 +103,13 @@ impl WireClient {
         api: WireApi,
         request: ModelRequest,
     ) -> Result<StreamEvent, ProviderError> {
-        let path = endpoint(api)?;
-        let body = match api {
-            WireApi::ChatCompletions => chat_completions_body(&request, true),
-            WireApi::Responses => responses_body(&request, true),
-            WireApi::Messages => messages_body(&request, true),
-            WireApi::Custom => unreachable!("`endpoint` rejects Custom"),
+        let (path, body) = match api {
+            WireApi::ChatCompletions => {
+                ("/chat/completions", chat_completions_body(&request, true))
+            }
+            WireApi::Responses => ("/responses", responses_body(&request, true)),
+            WireApi::Messages => ("/messages", messages_body(&request, true)),
+            WireApi::Custom => return Err(custom_unsupported()),
         };
 
         let mut builder = self
@@ -141,7 +142,7 @@ impl WireClient {
             WireApi::ChatCompletions => decode::run(frames, chat_completions::Decoder::default()),
             WireApi::Responses => decode::run(frames, responses::Decoder::default()),
             WireApi::Messages => decode::run(frames, messages::Decoder::default()),
-            WireApi::Custom => unreachable!("`endpoint` rejects Custom"),
+            WireApi::Custom => return Err(custom_unsupported()),
         })
     }
 
@@ -164,9 +165,8 @@ impl WireClient {
             .text()
             .await
             .map_err(|error| ProviderError::Protocol(error.to_string()))?;
-        let listing: ModelListing = serde_json::from_str(&body).map_err(|error| {
-            ProviderError::Protocol(format!("undecodable model list: {error}"))
-        })?;
+        let listing: ModelListing = serde_json::from_str(&body)
+            .map_err(|error| ProviderError::Protocol(format!("undecodable model list: {error}")))?;
         Ok(listing.data.into_iter().map(ModelInfo::from).collect())
     }
 
@@ -193,19 +193,12 @@ impl WireClient {
     }
 }
 
-/// The path each format is served at, relative to the API root.
-fn endpoint(api: WireApi) -> Result<&'static str, ProviderError> {
-    match api {
-        WireApi::ChatCompletions => Ok("/chat/completions"),
-        WireApi::Responses => Ok("/responses"),
-        WireApi::Messages => Ok("/messages"),
-        // `Custom` is the marker for a provider that does its own HTTP; routing
-        // it here would mean guessing a schema.
-        WireApi::Custom => Err(ProviderError::InvalidRequest(
-            "this provider declares a custom wire format and cannot use the shared client"
-                .to_string(),
-        )),
-    }
+/// `WireApi::Custom` marks a provider that does its own HTTP; routing it here
+/// would mean guessing a schema, so it is refused rather than approximated.
+fn custom_unsupported() -> ProviderError {
+    ProviderError::InvalidRequest(
+        "this provider declares a custom wire format and cannot use the shared client".to_string(),
+    )
 }
 
 /// The `/models` listing, which all three vendors serve in the OpenAI shape.

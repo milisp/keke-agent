@@ -457,7 +457,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
         temperature: Some(0.5),
     };
 
-    let body = super::request::chat_completions_body(&request, true);
+    let body = keke_wire::chat_completions_body(&request, true);
 
     assert_eq!(body["stream"], json!(true));
     assert_eq!(body["stream_options"]["include_usage"], json!(true));
@@ -495,7 +495,7 @@ fn an_image_travels_as_a_data_uri() {
         ..ModelRequest::default()
     };
 
-    let body = super::request::chat_completions_body(&request, false);
+    let body = keke_wire::chat_completions_body(&request, false);
 
     assert_eq!(
         body["messages"][0]["content"][0]["image_url"]["url"],

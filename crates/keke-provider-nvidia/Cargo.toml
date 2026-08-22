@@ -11,10 +11,14 @@ repository.workspace = true
 keke-auth-api = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-wire = { workspace = true }
-serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-keke-test-support = { workspace = true }
+futures = { workspace = true }
+keke-protocol = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
+
 [lints]
 workspace = true
