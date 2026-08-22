@@ -215,6 +215,40 @@ resource must be contained under its package root.
 This is codex's split, and it is what lets keke have runtime plugins at all
 without a stable dynamic-library ABI.
 
+## Testing
+
+Three layers, each catching what the others cannot.
+
+**Unit tests** live beside the code and pin behavior described in prose, not
+implementation details. `a_permissive_guard_cannot_undo_a_restrictive_one` is
+the model: the name states the rule, and the test would fail if the rule broke
+however the code was rearranged.
+
+**`keke-test-support`** is a mock inference backend. One scripted `Reply` renders
+into all three wire formats, so a provider test asserts the same intent against
+whichever format its vendor speaks rather than against a hand-written SSE
+fixture. It scripts the cases providers get wrong on their own: tool arguments
+split across frames, a 429 carrying `retry-after`, and a stream that never sends
+its terminal frame.
+
+**End-to-end tests** launch the real binary. `crates/keke-cli/tests/end_to_end.rs`
+runs `keke exec` against the mock and asserts that the model was offered the
+tools that exist, that the tool ran against the real workspace, and that the
+session log replays the exchange. Every other test exercises one crate; this one
+exercises the wiring, which is the part that can be connected to nothing and
+still compile.
+
+Two rules the suite must keep:
+
+- **No test may read shared machine state.** The OS keyring is the trap: a suite
+  that reads it passes or fails depending on who is logged in on the machine.
+  `KEKE_CREDENTIAL_STORE=file` excludes that layer, and the end-to-end fixture
+  sets it. The same applies to another tool's `~/.codex` — imports are read in
+  tests only from a fixture directory.
+- **A layering violation is a test.** `scripts/check-layering.py` runs in CI and
+  fails on a dependency pointing upward or sideways, including within the
+  contract tier. The rule that lives only in prose is the rule that gets lost.
+
 ## Sourcing code from the references
 
 codex-rs and grok-build are both Apache-2.0. grok-build's method — source porting
