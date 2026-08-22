@@ -961,9 +961,12 @@ dependencies = [
  "keke-provider-xai",
  "keke-tools",
  "keke-workspace",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]

@@ -114,6 +114,15 @@ impl Session {
         (self.cancelled)()
     }
 
+    /// A handle that cancels this session, detached from its lifetime.
+    ///
+    /// A signal handler outlives the borrow a `&self` method would need, so it
+    /// takes this instead of a reference to the session.
+    pub fn canceller(&self) -> impl Fn() + Send + Sync + 'static + use<> {
+        let flag = Arc::clone(&self.flag);
+        move || flag.store(true, Ordering::SeqCst)
+    }
+
     /// Clear the abort flag so the session can take another turn.
     pub fn reset_cancellation(&self) {
         self.flag.store(false, Ordering::SeqCst);
