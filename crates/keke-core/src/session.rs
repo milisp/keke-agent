@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use keke_auth_api::AuthProvider;
+use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
@@ -63,6 +64,9 @@ pub struct SessionConfig {
     /// wire format rejects a request that omits it, and letting each vendor
     /// choose would give the same conversation a different budget per vendor.
     pub max_output_tokens: MaxOutputTokens,
+    /// When and how far to summarize the history. A session that never compacts
+    /// works until the provider rejects the request mid-conversation.
+    pub compaction: CompactionConfig,
 }
 
 /// A live conversation.

@@ -108,6 +108,7 @@ async fn exec(
                 workspace_root: config.home.workspace_root.clone(),
             },
             max_output_tokens: config.max_output_tokens,
+            compaction: config.compaction,
         })
         .provider(provider)
         .extensions(composed.extensions.clone())

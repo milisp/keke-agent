@@ -147,6 +147,12 @@ pub struct CompactionConfig {
     pub trigger_percent: u8,
     /// Messages at the tail always kept verbatim.
     pub keep_recent_messages: usize,
+    /// The window compaction measures against.
+    ///
+    /// Configured rather than read from the provider: a model list is a network
+    /// call, and a session that could not reach it would silently never compact
+    /// — the failure mode compaction exists to prevent.
+    pub context_window: u32,
 }
 
 impl Default for CompactionConfig {
@@ -154,6 +160,7 @@ impl Default for CompactionConfig {
         Self {
             trigger_percent: 80,
             keep_recent_messages: 4,
+            context_window: 128_000,
         }
     }
 }

@@ -93,6 +93,7 @@ pub struct ConfigFile {
 pub struct CompactionFile {
     pub trigger_percent: Option<u8>,
     pub keep_recent_messages: Option<usize>,
+    pub context_window: Option<u32>,
 }
 
 /// Values applied when no layer states them.
@@ -138,6 +139,7 @@ impl Config {
                 base.keep_recent_messages = compaction
                     .keep_recent_messages
                     .or(base.keep_recent_messages);
+                base.context_window = compaction.context_window.or(base.context_window);
             }
             // Declarations accumulate; a later layer redeclaring a route
             // replaces that one entry rather than the whole set.
@@ -155,6 +157,9 @@ impl Config {
             keep_recent_messages: compaction_file
                 .keep_recent_messages
                 .unwrap_or(CompactionConfig::default().keep_recent_messages),
+            context_window: compaction_file
+                .context_window
+                .unwrap_or(CompactionConfig::default().context_window),
         };
 
         if !(1..=99).contains(&compaction.trigger_percent) {

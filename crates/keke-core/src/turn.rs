@@ -119,6 +119,10 @@ impl Session {
     ) -> Result<TurnOutcome, CoreError> {
         self.history.push(input);
 
+        // Before the turn, not during it: compacting mid-turn would drop the
+        // tool results the model is in the middle of reasoning about.
+        self.compact_if_needed(turn).await?;
+
         let tools = ToolSet::from_registry(&self.registry, ext_ctx);
         let system = crate::prompt::assemble_system_prompt(
             &self.workspace,
@@ -220,6 +224,66 @@ impl Session {
         Err(CoreError::StepLimit {
             steps: MAX_STEPS_PER_TURN,
         })
+    }
+
+    /// Summarize the older history when it has outgrown its budget.
+    ///
+    /// A failed summarization is not fatal: the turn proceeds uncompacted and
+    /// will probably be rejected by the provider, which is a clearer failure
+    /// than refusing to answer at all. The attempt is logged either way.
+    async fn compact_if_needed(&mut self, turn: TurnId) -> Result<(), CoreError> {
+        if !crate::compact::should_compact(&self.history, &self.config.compaction) {
+            return Ok(());
+        }
+        let Some((older, recent)) =
+            crate::compact::split_for_compaction(&self.history, &self.config.compaction)
+        else {
+            return Ok(());
+        };
+
+        let removed = older.len();
+        let mut messages = older.to_vec();
+        messages.push(Message::user(crate::compact::SUMMARY_INSTRUCTION));
+        let recent = recent.to_vec();
+
+        let request = ModelRequest {
+            model: self.config.model.model.clone(),
+            system: None,
+            messages,
+            tools: Vec::new(),
+            max_output_tokens: Some(self.config.max_output_tokens.get()),
+            temperature: None,
+        };
+
+        let summary = match self.collect_text(request).await {
+            Ok(text) if !text.trim().is_empty() => text,
+            Ok(_) | Err(_) => {
+                tracing::warn!("compaction produced no summary; continuing uncompacted");
+                return Ok(());
+            }
+        };
+
+        let summary = crate::compact::summary_message(&summary);
+        self.history = std::iter::once(summary.clone()).chain(recent).collect();
+
+        self.log(SessionEvent::Compacted {
+            turn,
+            summary,
+            removed_messages: removed,
+        })
+        .await
+    }
+
+    /// Run one model call for keke's own purposes and return just its text.
+    async fn collect_text(&self, request: ModelRequest) -> Result<String, CoreError> {
+        let mut stream = self.stream_with_reauth(request).await?;
+        let mut text = String::new();
+        while let Some(chunk) = stream.next().await {
+            if let StreamChunk::TextDelta(delta) = chunk? {
+                text.push_str(&delta);
+            }
+        }
+        Ok(text)
     }
 
     /// Drive the provider stream for one step, assembling a message from chunks.

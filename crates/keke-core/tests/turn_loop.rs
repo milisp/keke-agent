@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use futures::StreamExt;
+use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
@@ -214,6 +215,7 @@ fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
         },
         home: home.clone(),
         max_output_tokens: MaxOutputTokens::default(),
+        compaction: CompactionConfig::default(),
     }
 }
 
@@ -677,4 +679,87 @@ async fn a_second_turn_sees_the_first_and_starts_uncancelled() {
         transcript.contains(&"one".to_string()) && transcript.contains(&"first".to_string()),
         "the first turn must still be in view: {transcript:?}"
     );
+}
+
+/// A session that never compacts works until the provider rejects the request
+/// mid-conversation, with no way forward but starting over.
+#[tokio::test]
+async fn a_history_past_its_budget_is_summarized_before_the_next_turn() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        text_reply("first"),
+        // The summarization call, then the turn it made room for.
+        text_reply("NOTES: user asked about parsing; parser.rs was fixed."),
+        text_reply("second"),
+    ]);
+
+    let mut config = session_config(&harness.home);
+    config.compaction = CompactionConfig {
+        trigger_percent: 50,
+        keep_recent_messages: 1,
+        context_window: 100,
+    };
+
+    let mut session = SessionBuilder::new()
+        .config(config)
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+
+    // Long enough to blow a 100-token window at 50%.
+    session
+        .run_turn(Message::user("q".repeat(1200)))
+        .await
+        .expect("turn one");
+    session
+        .run_turn(Message::user("and now?"))
+        .await
+        .expect("turn two");
+
+    let requests = seen.lock().expect("lock");
+    assert_eq!(requests.len(), 3, "one summarization plus two turns");
+
+    // The summarization call carries the instruction and offers no tools: it is
+    // keke asking the model for notes, not a turn.
+    let summarizing = &requests[1];
+    assert!(summarizing.tools.is_empty());
+    assert!(
+        summarizing
+            .messages
+            .last()
+            .expect("an instruction")
+            .text()
+            .contains("Summarize the conversation"),
+        "{:?}",
+        summarizing.messages.last()
+    );
+
+    // The turn that follows sees the summary, not the original bulk.
+    let transcript: Vec<String> = requests[2].messages.iter().map(Message::text).collect();
+    assert!(
+        transcript
+            .iter()
+            .any(|text| text.contains("parser.rs was fixed")),
+        "the summary must be in view: {transcript:?}"
+    );
+    assert!(
+        !transcript.iter().any(|text| text.len() > 1000),
+        "the bulk it replaced must not be: {:?}",
+        transcript.iter().map(String::len).collect::<Vec<_>>()
+    );
+
+    // What the model saw is reconstructable from the log, including what
+    // stopped being visible.
+    let log = read_log(session.log_path()).expect("reads");
+    let compacted = log
+        .iter()
+        .find_map(|entry| match &entry.event {
+            SessionEvent::Compacted {
+                removed_messages, ..
+            } => Some(*removed_messages),
+            _ => None,
+        })
+        .expect("a compaction event");
+    assert!(compacted > 0);
 }
