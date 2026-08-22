@@ -1,0 +1,27 @@
+[package]
+name = "keke-acp"
+description = "The Agent Client Protocol surface: keke as an ACP agent, and the seam its clients speak."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-core = { workspace = true }
+keke-paths = { workspace = true }
+keke-protocol = { workspace = true }
+agent-client-protocol = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

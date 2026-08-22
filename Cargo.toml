@@ -21,6 +21,7 @@ keke-tool = { path = "crates/keke-tool", version = "0.1.0" }
 keke-wire = { path = "crates/keke-wire", version = "0.1.0" }
 
 # --- tier 1: engine ---
+keke-acp = { path = "crates/keke-acp", version = "0.1.0" }
 keke-config = { path = "crates/keke-config", version = "0.1.0" }
 keke-core = { path = "crates/keke-core", version = "0.1.0" }
 keke-credentials = { path = "crates/keke-credentials", version = "0.1.0" }
@@ -33,12 +34,15 @@ keke-provider-grok = { path = "crates/keke-provider-grok", version = "0.1.0" }
 keke-provider-nvidia = { path = "crates/keke-provider-nvidia", version = "0.1.0" }
 keke-test-support = { path = "crates/keke-test-support", version = "0.1.0" }
 keke-tools = { path = "crates/keke-tools", version = "0.1.0" }
+keke-tui = { path = "crates/keke-tui", version = "0.1.0" }
 
 # --- third-party ---
+agent-client-protocol = "2"
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
 async-trait = "0.1"
 base64 = "0.22"
+crossterm = "0.29"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "6"
@@ -47,6 +51,7 @@ futures = "0.3"
 ignore = "0.4"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 rand = "0.9"
+ratatui = "0.29"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 schemars = "0.8"
