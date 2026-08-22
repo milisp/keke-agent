@@ -19,6 +19,11 @@ pub enum StreamChunk {
     TextDelta(String),
     /// A fragment of exposed reasoning.
     ThinkingDelta(String),
+    /// The opaque signature closing a reasoning block.
+    ///
+    /// Separate from the deltas because it arrives once, when the block ends,
+    /// and because only the wires that mint one emit it at all.
+    ThinkingSignature(String),
     /// A tool call has begun. Arguments arrive as subsequent deltas.
     ToolCallStart { id: ToolCallId, name: String },
     /// A fragment of the in-flight tool call's JSON arguments.

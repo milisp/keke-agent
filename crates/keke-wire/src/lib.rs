@@ -269,7 +269,7 @@ fn result_text(result: &ToolResult) -> String {
     let mut text = String::new();
     for block in &result.content {
         match block {
-            ContentBlock::Text { text: part } | ContentBlock::Thinking { text: part } => {
+            ContentBlock::Text { text: part } | ContentBlock::Thinking { text: part, .. } => {
                 text.push_str(part);
             }
             _ => {}

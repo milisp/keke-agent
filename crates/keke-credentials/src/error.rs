@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use keke_auth_api::AuthError;
 use keke_auth_api::StoreError;
 
 /// Why reading or writing an `auth.<vendor>.json` failed.
@@ -78,6 +79,14 @@ impl AuthFileError {
 impl From<AuthFileError> for StoreError {
     fn from(err: AuthFileError) -> Self {
         StoreError::Backend(err.to_string())
+    }
+}
+
+/// Auth plugins raise [`AuthError`], so the hop through `StoreError` is made
+/// here rather than in each of them.
+impl From<AuthFileError> for AuthError {
+    fn from(err: AuthFileError) -> Self {
+        AuthError::Store(err.into())
     }
 }
 

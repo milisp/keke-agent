@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use keke_credentials::AuthTokens;
 
-use crate::GrokAuthConfig;
+use crate::CodexAuthConfig;
 use crate::endpoint::TokenOutcome;
 use crate::endpoint::post_token;
 
@@ -54,7 +54,7 @@ struct DeviceAuthorization {
 
 pub(crate) async fn run(
     http: &Client,
-    config: &GrokAuthConfig,
+    config: &CodexAuthConfig,
     ui: &dyn LoginUi,
     delay: &dyn Delay,
 ) -> Result<AuthTokens, AuthError> {
@@ -73,7 +73,7 @@ pub(crate) async fn run(
 
 async fn authorize(
     http: &Client,
-    config: &GrokAuthConfig,
+    config: &CodexAuthConfig,
 ) -> Result<DeviceAuthorization, AuthError> {
     let response = http
         .post(&config.device_authorization_endpoint)
@@ -115,7 +115,7 @@ async fn authorize(
 
 async fn poll(
     http: &Client,
-    config: &GrokAuthConfig,
+    config: &CodexAuthConfig,
     ui: &dyn LoginUi,
     delay: &dyn Delay,
     grant: DeviceAuthorization,
@@ -188,7 +188,7 @@ mod tests {
     use wiremock::matchers::path;
 
     use super::*;
-    use crate::GrokAuth;
+    use crate::CodexAuth;
     use crate::test_support::Home;
     use crate::test_support::RecordingDelay;
     use crate::test_support::RecordingUi;
@@ -216,19 +216,19 @@ mod tests {
     async fn a_device_code_login_shows_the_code_polls_and_stores_the_token() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/device/code"))
+            .and(path("/oauth/device/code"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "device_code": "dev-code-1",
                 "user_code": "ABCD-1234",
-                "verification_uri": "https://x.ai/device",
-                "verification_uri_complete": "https://x.ai/device?user_code=ABCD-1234",
+                "verification_uri": "https://chatgpt.com/device",
+                "verification_uri_complete": "https://chatgpt.com/device?user_code=ABCD-1234",
                 "expires_in": 600,
                 "interval": 2,
             })))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/token"))
+            .and(path("/oauth/token"))
             .respond_with(Script {
                 responses: vec![
                     refusal("authorization_pending"),
@@ -247,10 +247,10 @@ mod tests {
         let home = Home::new();
         let ui = RecordingUi::new();
         let delay = RecordingDelay::new();
-        let auth = GrokAuth::new(
+        let auth = CodexAuth::new(
             Arc::new(MemoryStore::new()),
             home.auth_files(),
-            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            CodexAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_importer(home.importer())
         .with_delay(delay.clone());
@@ -259,11 +259,14 @@ mod tests {
 
         assert_eq!(
             ui.device_codes(),
-            vec![("ABCD-1234".to_string(), "https://x.ai/device".to_string())]
+            vec![(
+                "ABCD-1234".to_string(),
+                "https://chatgpt.com/device".to_string()
+            )]
         );
         assert_eq!(
             ui.browser_urls(),
-            vec!["https://x.ai/device?user_code=ABCD-1234".to_string()]
+            vec!["https://chatgpt.com/device?user_code=ABCD-1234".to_string()]
         );
 
         let stored = stored_tokens(&auth).expect("tokens");
@@ -276,7 +279,7 @@ mod tests {
                 .expect("present")
                 .auth_mode
                 .as_str(),
-            "device-code"
+            "chatgpt"
         );
     }
 
@@ -284,18 +287,18 @@ mod tests {
     async fn authorization_pending_is_retried_and_slow_down_widens_the_interval() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/device/code"))
+            .and(path("/oauth/device/code"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "device_code": "dev-code-1",
                 "user_code": "ABCD-1234",
-                "verification_uri": "https://x.ai/device",
+                "verification_uri": "https://chatgpt.com/device",
                 "expires_in": 600,
                 "interval": 2,
             })))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/token"))
+            .and(path("/oauth/token"))
             .respond_with(Script {
                 responses: vec![
                     refusal("authorization_pending"),
@@ -312,10 +315,10 @@ mod tests {
         let home = Home::new();
         let ui = RecordingUi::new();
         let delay = RecordingDelay::new();
-        let auth = GrokAuth::new(
+        let auth = CodexAuth::new(
             Arc::new(MemoryStore::new()),
             home.auth_files(),
-            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            CodexAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_importer(home.importer())
         .with_delay(delay.clone());
@@ -343,26 +346,26 @@ mod tests {
     async fn a_denied_device_authorization_reads_as_cancellation() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/device/code"))
+            .and(path("/oauth/device/code"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "device_code": "dev-code-1",
                 "user_code": "ABCD-1234",
-                "verification_uri": "https://x.ai/device",
+                "verification_uri": "https://chatgpt.com/device",
                 "interval": 1,
             })))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/token"))
+            .and(path("/oauth/token"))
             .respond_with(refusal("access_denied"))
             .mount(&server)
             .await;
 
         let home = Home::new();
-        let auth = GrokAuth::new(
+        let auth = CodexAuth::new(
             Arc::new(MemoryStore::new()),
             home.auth_files(),
-            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            CodexAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_importer(home.importer())
         .with_delay(RecordingDelay::new());
@@ -376,20 +379,20 @@ mod tests {
     async fn a_user_code_with_control_characters_is_refused() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/device/code"))
+            .and(path("/oauth/device/code"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "device_code": "dev-code-1",
                 "user_code": "AB\u{1b}[2JCD",
-                "verification_uri": "https://x.ai/device",
+                "verification_uri": "https://chatgpt.com/device",
             })))
             .mount(&server)
             .await;
 
         let home = Home::new();
-        let auth = GrokAuth::new(
+        let auth = CodexAuth::new(
             Arc::new(MemoryStore::new()),
             home.auth_files(),
-            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            CodexAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_importer(home.importer())
         .with_delay(RecordingDelay::new());

@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn a_credential_without_an_expiry_is_never_stale() {
-        let tokens = AuthTokens::bearer("xai-key");
+        let tokens = AuthTokens::bearer("openai-key");
         assert!(!is_stale(&tokens, Duration::from_secs(60)));
     }
 

@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 keke-auth-api = { workspace = true }
 keke-credentials = { workspace = true }
+keke-paths = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
@@ -22,6 +23,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 wiremock = { workspace = true }
 [lints]

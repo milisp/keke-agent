@@ -113,9 +113,7 @@ mod tests {
         let message = Message {
             role: Role::Assistant,
             content: vec![
-                ContentBlock::Thinking {
-                    text: "hidden".to_string(),
-                },
+                ContentBlock::thinking("hidden"),
                 ContentBlock::text("shown"),
             ],
         };

@@ -36,6 +36,10 @@ impl Fixture {
             // The OS keyring is shared machine state; a test that read it would
             // pass or fail depending on who is logged in on this machine.
             .env("KEKE_CREDENTIAL_STORE", "file")
+            // Another tool's login is shared machine state too: without this the
+            // suite adopts whatever the developer signed into with the codex or
+            // grok CLI.
+            .env("KEKE_IMPORT", "off")
             .env("XAI_BASE_URL", self.server.base_url())
             .env("XAI_API_KEY", "test-key")
             // A stray real credential in the developer's environment must not
@@ -174,6 +178,7 @@ fn an_unknown_provider_names_the_ones_that_exist() {
     let output = Command::new(env!("CARGO_BIN_EXE_keke"))
         .env("KEKE_HOME", home.path())
         .env("KEKE_CREDENTIAL_STORE", "file")
+        .env("KEKE_IMPORT", "off")
         .args(["--provider", "nope", "exec", "hi"])
         .output()
         .expect("runs");
@@ -193,7 +198,10 @@ fn doctor_reports_what_was_resolved() {
     let output = Command::new(env!("CARGO_BIN_EXE_keke"))
         .env("KEKE_HOME", home.path())
         .env("KEKE_CREDENTIAL_STORE", "file")
+        .env("KEKE_IMPORT", "off")
         .env_remove("XAI_API_KEY")
+        .env_remove("NVIDIA_API_KEY")
+        .env_remove("OPENAI_API_KEY")
         .arg("doctor")
         .output()
         .expect("runs");

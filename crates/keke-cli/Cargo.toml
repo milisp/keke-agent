@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 keke-auth-api = { workspace = true }
+keke-auth-codex = { workspace = true }
 keke-auth-grok = { workspace = true }
 keke-config = { workspace = true }
 keke-config-types = { workspace = true }
@@ -24,11 +25,13 @@ keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-provider-grok = { workspace = true }
 keke-tools = { workspace = true }
+keke-wire = { workspace = true }
 keke-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 [dev-dependencies]

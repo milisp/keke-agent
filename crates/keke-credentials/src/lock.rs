@@ -40,10 +40,7 @@ impl MutationLock {
         Self::acquire_within(path, ACQUIRE_DEADLINE)
     }
 
-    pub(crate) fn acquire_within(
-        path: PathBuf,
-        deadline: Duration,
-    ) -> Result<Self, AuthFileError> {
+    pub(crate) fn acquire_within(path: PathBuf, deadline: Duration) -> Result<Self, AuthFileError> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|err| AuthFileError::io(dir, &err))?;
         }

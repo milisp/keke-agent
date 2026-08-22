@@ -35,10 +35,13 @@ use crate::decode::WireDecoder;
 /// is what keeps a server-side revision from silently changing our parsing.
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// `max_tokens` is mandatory on this wire, and a request that omits it is
-/// rejected outright. Falling back keeps a caller that did not care about the
-/// budget from failing; see the crate docs for why this is not a knob.
-const FALLBACK_MAX_OUTPUT_TOKENS: u32 = 4096;
+/// Last resort when a caller builds a `ModelRequest` by hand without a budget.
+///
+/// The engine always fills `max_output_tokens` from configuration, so this is
+/// unreachable in a real turn — it exists because `max_tokens` is mandatory on
+/// this wire and a request that omits it is rejected outright. It is not a knob:
+/// the knob is `max-output-tokens` in `keke-config-types`.
+const UNSET_MAX_OUTPUT_TOKENS: u32 = 4096;
 
 /// Build a `/messages` body.
 #[must_use]
@@ -48,11 +51,7 @@ pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
     body.insert("stream".to_string(), json!(stream));
     body.insert(
         "max_tokens".to_string(),
-        json!(
-            request
-                .max_output_tokens
-                .unwrap_or(FALLBACK_MAX_OUTPUT_TOKENS)
-        ),
+        json!(request.max_output_tokens.unwrap_or(UNSET_MAX_OUTPUT_TOKENS)),
     );
 
     let (system, messages) = split_system(request);
@@ -133,9 +132,17 @@ fn wire_message(message: &Message) -> (&'static str, Vec<Value>) {
                 blocks.push(json!({ "type": "text", "text": text }));
             }
             ContentBlock::Text { .. } => {}
-            // Exposed reasoning cannot be replayed: this wire requires the
-            // provider's `signature` alongside a `thinking` block and rejects
-            // one without it, so the block is dropped rather than forged.
+            // Replayed only with the signature this wire minted; it rejects a
+            // `thinking` block without one. Reasoning that arrived from another
+            // vendor carries no signature and is dropped rather than forged.
+            ContentBlock::Thinking {
+                text,
+                signature: Some(signature),
+            } if !text.is_empty() => blocks.push(json!({
+                "type": "thinking",
+                "thinking": text,
+                "signature": signature,
+            })),
             ContentBlock::Thinking { .. } => {}
             ContentBlock::Image(image) => blocks.push(json!({
                 "type": "image",
@@ -213,6 +220,10 @@ struct Delta {
     thinking: Option<String>,
     #[serde(default)]
     partial_json: Option<String>,
+    /// Closes a `thinking` block. Opaque, and replayed unchanged on the next
+    /// turn — this wire rejects a thinking block that comes back without it.
+    #[serde(default)]
+    signature: Option<String>,
     #[serde(default)]
     stop_reason: Option<String>,
 }
@@ -344,6 +355,9 @@ impl Decoder {
         let Some(delta) = &event.delta else { return };
         if let Some(text) = delta.thinking.as_ref().filter(|text| !text.is_empty()) {
             out.push(StreamChunk::ThinkingDelta(text.clone()));
+        }
+        if let Some(signature) = delta.signature.as_ref().filter(|value| !value.is_empty()) {
+            out.push(StreamChunk::ThinkingSignature(signature.clone()));
         }
         if let Some(text) = delta.text.as_ref().filter(|text| !text.is_empty()) {
             out.push(StreamChunk::TextDelta(text.clone()));

@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use futures::StreamExt;
 use keke_config_types::HomeLayout;
+use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
 use keke_core::SessionBuilder;
 use keke_core::TurnUpdate;
@@ -212,6 +213,7 @@ fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
             model: "test-model".to_string(),
         },
         home: home.clone(),
+        max_output_tokens: MaxOutputTokens::default(),
     }
 }
 

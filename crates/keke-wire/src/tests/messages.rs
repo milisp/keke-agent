@@ -351,3 +351,69 @@ async fn a_request_without_a_token_budget_still_names_one() {
     // `max_tokens` is mandatory on this wire; omitting it is a 400.
     assert!(body["max_tokens"].as_u64().is_some_and(|max| max > 0));
 }
+
+/// This wire mints a signature for each reasoning block and rejects a replayed
+/// block that arrives without it. Dropping it would silently lose the model's
+/// reasoning context on the next turn — invisible until answers degrade.
+#[tokio::test]
+async fn a_thinking_signature_survives_the_round_trip() {
+    let mut frames = vec![
+        json!({"type":"message_start","message":{"usage":{"input_tokens":3}}}).to_string(),
+        json!({"type":"content_block_start","index":0,
+               "content_block":{"type":"thinking","thinking":""}})
+        .to_string(),
+        json!({"type":"content_block_delta","index":0,
+               "delta":{"type":"thinking_delta","thinking":"weighing it"}})
+        .to_string(),
+        json!({"type":"content_block_delta","index":0,
+               "delta":{"type":"signature_delta","signature":"sig-abc"}})
+        .to_string(),
+        json!({"type":"content_block_stop","index":0}).to_string(),
+    ];
+    frames.extend(stop("end_turn"));
+    let server = serve(sse(&frames)).await;
+    let (client, _auth) = client_over(&server);
+
+    let chunks = collect_ok(&client, API).await;
+    assert!(
+        chunks.contains(&StreamChunk::ThinkingSignature("sig-abc".to_string())),
+        "the signature must reach the engine: {chunks:?}"
+    );
+}
+
+/// Reasoning replays only with the signature this wire minted. Reasoning that
+/// came from another vendor has none, and is dropped rather than forged — a
+/// fabricated signature is rejected outright.
+#[test]
+fn reasoning_replays_only_when_it_carries_its_signature() {
+    let signed = ModelRequest {
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Thinking {
+                text: "weighing it".to_string(),
+                signature: Some("sig-abc".to_string()),
+            }],
+        }],
+        ..request()
+    };
+    let body = crate::messages_body(&signed, true);
+    let block = &body["messages"][0]["content"][0];
+    assert_eq!(block["type"], "thinking");
+    assert_eq!(block["thinking"], "weighing it");
+    assert_eq!(block["signature"], "sig-abc");
+
+    let unsigned = ModelRequest {
+        messages: vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::thinking("from elsewhere")],
+        }],
+        ..request()
+    };
+    let body = crate::messages_body(&unsigned, true);
+    assert!(
+        body["messages"][0]["content"]
+            .as_array()
+            .is_none_or(|blocks| blocks.is_empty()),
+        "unsigned reasoning must not be replayed: {body}"
+    );
+}

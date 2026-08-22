@@ -99,6 +99,46 @@ pub struct HomeLayout {
     pub workspace_root: AbsPath,
 }
 
+/// How many tokens a single model reply may produce.
+///
+/// Every request carries one. Anthropic's wire rejects a request that omits it,
+/// and leaving the choice to each provider would mean the same conversation got
+/// a different budget depending on which vendor served it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MaxOutputTokens(u32);
+
+/// Refuses to name a budget so small no reply fits, or so large no provider
+/// accepts it. Both fail at the vendor, far from the setting that caused it.
+impl MaxOutputTokens {
+    pub const MIN: u32 = 256;
+    pub const MAX: u32 = 200_000;
+
+    /// Validate a configured budget.
+    pub fn new(value: u32) -> Result<Self, String> {
+        if (Self::MIN..=Self::MAX).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(format!(
+                "max-output-tokens must be between {} and {}, got {value}",
+                Self::MIN,
+                Self::MAX
+            ))
+        }
+    }
+
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for MaxOutputTokens {
+    fn default() -> Self {
+        Self(8192)
+    }
+}
+
 /// Context window management.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionConfig {

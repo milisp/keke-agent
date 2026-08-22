@@ -9,6 +9,7 @@ mod api_key;
 mod cli;
 mod commands;
 mod compose;
+mod declared;
 mod ui;
 
 use anyhow::Result;

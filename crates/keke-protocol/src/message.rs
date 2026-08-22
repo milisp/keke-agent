@@ -42,6 +42,15 @@ pub enum ContentBlock {
     /// surfaces can render or hide it without heuristics.
     Thinking {
         text: String,
+        /// An opaque token the provider issued alongside the reasoning.
+        ///
+        /// Anthropic's wire rejects a replayed thinking block that arrives
+        /// without the signature it minted, so a conversation that dropped this
+        /// would silently lose its reasoning context on the next turn. Nothing
+        /// but the originating provider may interpret it — treat it as bytes to
+        /// hand back unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     ToolCall(ToolCall),
     ToolResult(ToolResult),
@@ -51,6 +60,15 @@ impl ContentBlock {
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text { text: text.into() }
+    }
+
+    /// Reasoning with no provider signature, which is every wire but Anthropic's.
+    #[must_use]
+    pub fn thinking(text: impl Into<String>) -> Self {
+        Self::Thinking {
+            text: text.into(),
+            signature: None,
+        }
     }
 }
 

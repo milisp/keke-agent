@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write as _;
-use std::path::Path;
 
 use keke_auth_api::CredentialOrigin;
 use keke_auth_api::CredentialRef;
@@ -93,29 +91,11 @@ impl FileStore {
             .ok_or_else(|| StoreError::Backend(format!("{} has no parent directory", self.path)))?;
         fs::create_dir_all(dir).map_err(|err| StoreError::Backend(format!("{dir:?}: {err}")))?;
 
-        let temp = dir.join(format!(".{FILE_NAME}.tmp"));
         let body = serde_json::to_vec_pretty(values)
             .map_err(|err| StoreError::Backend(err.to_string()))?;
-        write_private(&temp, &body)
-            .map_err(|err| StoreError::Backend(format!("{temp:?}: {err}")))?;
-        fs::rename(&temp, path).map_err(|err| {
-            let _ = fs::remove_file(&temp);
-            StoreError::Backend(format!("{}: {err}", self.path))
-        })
+        crate::atomic::write_private_atomic(path, &body)
+            .map_err(|err| StoreError::Backend(format!("{}: {err}", self.path)))
     }
-}
-
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(body)?;
-    file.sync_all()
 }
 
 /// `serde_json` errors quote the offending input, so only the shape of the

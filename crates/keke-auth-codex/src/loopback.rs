@@ -16,7 +16,7 @@ use url::Url;
 
 use keke_credentials::AuthTokens;
 
-use crate::GrokAuthConfig;
+use crate::CodexAuthConfig;
 use crate::endpoint::exchange;
 use crate::pkce::Pkce;
 use crate::pkce::random_token;
@@ -35,7 +35,7 @@ pub(crate) async fn bind() -> std::io::Result<TcpListener> {
 
 pub(crate) async fn run(
     http: &Client,
-    config: &GrokAuthConfig,
+    config: &CodexAuthConfig,
     ui: &dyn LoginUi,
     listener: TcpListener,
 ) -> Result<AuthTokens, AuthError> {
@@ -73,7 +73,7 @@ pub(crate) async fn run(
 }
 
 fn authorize_url(
-    config: &GrokAuthConfig,
+    config: &CodexAuthConfig,
     redirect_uri: &str,
     pkce: &Pkce,
     state: &str,
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn the_authorize_url_carries_the_s256_challenge() {
-        let config = GrokAuthConfig::new("https://issuer.test", "client-1");
+        let config = CodexAuthConfig::new("https://issuer.test", "client-1");
         let pkce = Pkce::generate();
         let url = authorize_url(&config, "http://127.0.0.1:1234/callback", &pkce, "st").unwrap();
         let params: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
@@ -245,14 +245,14 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::matchers::path;
 
-        use crate::GrokAuth;
+        use crate::CodexAuth;
         use crate::test_support::Home;
         use crate::test_support::RecordingUi;
         use crate::test_support::stored_tokens;
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/oauth2/token"))
+            .and(path("/oauth/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": "access-1",
                 "refresh_token": "refresh-1",
@@ -263,10 +263,10 @@ mod tests {
 
         let home = Home::new();
         let auth = Arc::new(
-            GrokAuth::new(
+            CodexAuth::new(
                 Arc::new(MemoryStore::new()),
                 home.auth_files(),
-                GrokAuthConfig::new(server.uri(), "client-1"),
+                CodexAuthConfig::new(server.uri(), "client-1"),
             )
             .with_importer(home.importer()),
         );
@@ -306,7 +306,7 @@ mod tests {
                 .expect("present")
                 .auth_mode
                 .as_str(),
-            "oidc"
+            "chatgpt"
         );
     }
 }

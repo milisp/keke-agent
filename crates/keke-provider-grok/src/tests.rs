@@ -429,9 +429,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
             Message {
                 role: Role::Assistant,
                 content: vec![
-                    ContentBlock::Thinking {
-                        text: "need the file".to_string(),
-                    },
+                    ContentBlock::thinking("need the file"),
                     ContentBlock::text("Looking."),
                     ContentBlock::ToolCall(ToolCall {
                         id: call_id.clone(),

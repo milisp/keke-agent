@@ -1,30 +1,52 @@
-//! Layered credential storage: OS keyring over file over environment.
+//! Credential storage.
 //!
-//! The layering exists so a credential can be supplied the way a deployment
-//! already supplies secrets — a keychain on a laptop, a file in `$KEKE_HOME` on
-//! a build box, an environment variable in CI — without any of them being
-//! special-cased by the code that reads it.
+//! Two surfaces, because two things are being stored:
 //!
-//! Two rules from `keke_auth_api::store` are enforced here rather than left to
-//! each layer: an empty value is absent everywhere (see [`present`]), and a
-//! write into a layer that a read-only layer already shadows is rejected rather
-//! than silently lost (see [`LayeredStore::save`]).
+//! * [`CredentialStore`](keke_auth_api::CredentialStore) — a name to a string,
+//!   layered keyring over file over environment. This is how a deployment's
+//!   long-lived API keys resolve (`XAI_API_KEY`, `NVIDIA_API_KEY`), and the
+//!   environment layer is why a `CredentialRef` is shaped like a shell
+//!   identifier.
+//! * [`VendorAuthStore`] — one `auth.<vendor>.json` per vendor, holding an
+//!   OAuth token set with its mode, its expiry, and its own mutation lock. A
+//!   token set does not fit the first surface without becoming an opaque blob
+//!   under a single key, and every vendor's refresh would then contend for one
+//!   file.
+//!
+//! An `keke-auth-*` plugin uses both: the vendor store for anything a login
+//! minted, the `CredentialStore` for an api key the deployment supplied.
 
+mod atomic;
 mod env;
+mod error;
 mod file;
+mod import;
 mod keyring_store;
 mod layered;
+mod lock;
 mod memory;
+mod vendor;
 
 pub use env::EnvStore;
+pub use error::AuthFileError;
 pub use file::FileStore;
 pub use file::keke_home;
+pub use import::ImportedCredential;
+pub use import::Importer;
+pub use import::Provenance;
+pub use import::import;
 pub use keyring_store::KeyringStore;
 pub use layered::LayeredStore;
 pub use layered::StoreMode;
 pub use layered::standard_store;
 pub use layered::standard_store_with_mode;
 pub use memory::MemoryStore;
+pub use vendor::AuthFile;
+pub use vendor::AuthMode;
+pub use vendor::AuthTokens;
+pub use vendor::SCHEMA_VERSION;
+pub use vendor::Vendor;
+pub use vendor::VendorAuthStore;
 
 /// Apply the "an empty stored value is absent" rule.
 ///

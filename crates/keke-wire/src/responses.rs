@@ -89,7 +89,7 @@ fn push_message(out: &mut Vec<Value>, message: &Message) {
     let mut content = Vec::new();
     for block in &message.content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text } => {
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
                 content.push(json!({
                     "type": if assistant { "output_text" } else { "input_text" },
                     "text": text,

@@ -23,6 +23,7 @@ use std::path::Path;
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
+use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
 use keke_config_types::ProviderDeclaration;
 use keke_config_types::SandboxMode;
@@ -57,6 +58,7 @@ pub struct Config {
     pub model: ModelSelection,
     pub approval_policy: ApprovalPolicy,
     pub sandbox_mode: SandboxMode,
+    pub max_output_tokens: MaxOutputTokens,
     pub compaction: CompactionConfig,
     /// Endpoints declared from configuration, in addition to the compiled-in
     /// vendors.
@@ -76,6 +78,7 @@ pub struct ConfigFile {
     pub model: Option<String>,
     pub approval_policy: Option<ApprovalPolicy>,
     pub sandbox_mode: Option<SandboxMode>,
+    pub max_output_tokens: Option<u32>,
     pub compaction: Option<CompactionFile>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
     /// across layers rather than replaced, so a project can add one without
@@ -125,6 +128,7 @@ impl Config {
             merged.model = layer.file.model.clone().or(merged.model);
             merged.approval_policy = layer.file.approval_policy.or(merged.approval_policy);
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
+            merged.max_output_tokens = layer.file.max_output_tokens.or(merged.max_output_tokens);
 
             if let Some(compaction) = layer.file.compaction {
                 let base = merged
@@ -166,6 +170,17 @@ impl Config {
             });
         }
 
+        let max_output_tokens = match merged.max_output_tokens {
+            Some(value) => MaxOutputTokens::new(value).map_err(|message| ConfigError::Invalid {
+                path: sources
+                    .last()
+                    .map(LayerSource::describe)
+                    .unwrap_or_else(|| "<defaults>".to_string()),
+                message,
+            })?,
+            None => MaxOutputTokens::default(),
+        };
+
         Ok(Self {
             home,
             model: ModelSelection {
@@ -176,6 +191,7 @@ impl Config {
             },
             approval_policy: merged.approval_policy.unwrap_or_default(),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
+            max_output_tokens,
             compaction,
             providers: merged
                 .providers
@@ -306,6 +322,17 @@ mod tests {
         )
         .expect_err("typo is rejected");
         assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_configured_output_budget_is_validated_at_load() {
+        let layers = vec![layer("user", "max-output-tokens = 16000\n")];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.max_output_tokens.get(), 16_000);
+
+        let layers = vec![layer("user", "max-output-tokens = 12\n")];
+        let error = Config::from_layers(home(), &layers).expect_err("too small");
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
 
     #[test]

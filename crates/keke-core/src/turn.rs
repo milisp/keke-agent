@@ -131,7 +131,7 @@ impl Session {
                 system: Some(system.clone()),
                 messages: self.history.clone(),
                 tools: specs.clone(),
-                max_output_tokens: None,
+                max_output_tokens: Some(self.config.max_output_tokens.get()),
                 temperature: None,
             };
 
@@ -246,6 +246,9 @@ impl Session {
                     });
                     assembler.thinking.push_str(&delta);
                 }
+                StreamChunk::ThinkingSignature(signature) => {
+                    assembler.thinking_signature = Some(signature);
+                }
                 StreamChunk::ToolCallStart { id, name } => {
                     assembler.calls.push((id, name, String::new()));
                 }
@@ -301,6 +304,9 @@ impl Session {
 #[derive(Default)]
 struct MessageAssembler {
     thinking: String,
+    /// Opaque, provider-issued, and replayed unchanged: some wires reject a
+    /// thinking block that comes back without the signature they minted.
+    thinking_signature: Option<String>,
     text: String,
     calls: Vec<(ToolCallId, String, String)>,
     usage: Usage,
@@ -312,6 +318,7 @@ impl MessageAssembler {
         if !self.thinking.is_empty() {
             content.push(ContentBlock::Thinking {
                 text: self.thinking.clone(),
+                signature: self.thinking_signature.clone(),
             });
         }
         if !self.text.is_empty() {

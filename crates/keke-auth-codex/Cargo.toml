@@ -10,11 +10,13 @@ repository.workspace = true
 [dependencies]
 keke-auth-api = { workspace = true }
 keke-credentials = { workspace = true }
+keke-paths = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tracing = { workspace = true }

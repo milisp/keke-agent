@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 
 use keke_auth_api::AuthProvider;
 use keke_config_types::HomeLayout;
+use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
 use keke_plugin_api::ExtensionRegistry;
 use keke_protocol::Message;
@@ -58,6 +59,10 @@ pub enum TurnUpdate {
 pub struct SessionConfig {
     pub model: ModelSelection,
     pub home: HomeLayout,
+    /// Filled into every request, so a provider never has to invent one. One
+    /// wire format rejects a request that omits it, and letting each vendor
+    /// choose would give the same conversation a different budget per vendor.
+    pub max_output_tokens: MaxOutputTokens,
 }
 
 /// A live conversation.

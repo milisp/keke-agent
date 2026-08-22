@@ -16,8 +16,8 @@ use keke_credentials::MemoryStore;
 use keke_credentials::VendorAuthStore;
 use keke_paths::AbsPath;
 
-use crate::GrokAuth;
-use crate::GrokAuthConfig;
+use crate::CodexAuth;
+use crate::CodexAuthConfig;
 use crate::device::Delay;
 
 #[derive(Default)]
@@ -88,7 +88,7 @@ impl Delay for RecordingDelay {
 /// A `$KEKE_HOME` of its own, and an importer pointed at an empty directory.
 ///
 /// Both halves matter: no test may write into the developer's real `~/.keke`,
-/// and none may read their real `~/.grok`. The importer is redirected rather
+/// and none may read their real `~/.codex`. The importer is redirected rather
 /// than disabled so the tests exercise the same code path production does.
 pub(crate) struct Home {
     dir: tempfile::TempDir,
@@ -112,36 +112,41 @@ impl Home {
             .with_grok_home(self.dir.path().join("no-grok"))
     }
 
-    /// An importer holding a grok CLI login at `$GROK_HOME/auth.json`.
-    pub(crate) fn with_grok_cli_login(&self, body: serde_json::Value) -> Importer {
-        let home = self.dir.path().join("grok-cli");
-        std::fs::create_dir_all(&home).expect("mkdir");
-        let path = home.join("auth.json");
+    fn codex_cli_path(&self) -> std::path::PathBuf {
+        self.dir.path().join("codex-cli").join("auth.json")
+    }
+
+    /// An importer holding a codex CLI login at `$CODEX_HOME/auth.json`.
+    pub(crate) fn with_codex_cli_login(&self, body: serde_json::Value) -> Importer {
+        let path = self.codex_cli_path();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(&path, serde_json::to_vec_pretty(&body).expect("json")).expect("write");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         }
-        self.importer().with_grok_home(home)
+        self.importer()
+            .with_codex_home(path.parent().expect("parent"))
+    }
+
+    /// The codex CLI file's exact bytes, so a test can pin that keke never
+    /// touched them.
+    pub(crate) fn codex_cli_bytes(&self) -> Vec<u8> {
+        std::fs::read(self.codex_cli_path()).expect("read")
     }
 }
 
-pub(crate) fn xai(home: &Home, store: &Arc<MemoryStore>, config: GrokAuthConfig) -> GrokAuth {
-    GrokAuth::new(store.clone(), home.auth_files(), config).with_importer(home.importer())
+pub(crate) fn chatgpt(home: &Home, store: &Arc<MemoryStore>, config: CodexAuthConfig) -> CodexAuth {
+    CodexAuth::new(store.clone(), home.auth_files(), config).with_importer(home.importer())
 }
 
-pub(crate) fn store_tokens(
-    auth: &GrokAuth,
-    access_token: String,
-    refresh_token: Option<&str>,
-    mode: AuthMode,
-) {
+pub(crate) fn store_tokens(auth: &CodexAuth, access_token: String, refresh_token: Option<&str>) {
     auth.auth_files
         .save(
             &auth.config().vendor,
             &AuthFile::from_tokens(
-                mode,
+                AuthMode::Chatgpt,
                 AuthTokens {
                     access_token,
                     refresh_token: refresh_token.map(str::to_string),
@@ -152,7 +157,7 @@ pub(crate) fn store_tokens(
         .expect("save");
 }
 
-pub(crate) fn stored_tokens(auth: &GrokAuth) -> Option<AuthTokens> {
+pub(crate) fn stored_tokens(auth: &CodexAuth) -> Option<AuthTokens> {
     auth.auth_files
         .load(&auth.config().vendor)
         .expect("load")

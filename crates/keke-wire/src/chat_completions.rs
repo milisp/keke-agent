@@ -113,7 +113,7 @@ fn push_assistant(out: &mut Vec<Value>, message: &Message) {
     for block in &message.content {
         match block {
             ContentBlock::Text { text: part } => text.push_str(part),
-            ContentBlock::Thinking { text: part } => reasoning.push_str(part),
+            ContentBlock::Thinking { text: part, .. } => reasoning.push_str(part),
             ContentBlock::ToolCall(call) => tool_calls.push(json!({
                 "id": call.id.as_str(),
                 "type": "function",
@@ -153,7 +153,7 @@ fn push_user_or_tool(out: &mut Vec<Value>, message: &Message) {
     let mut results = Vec::new();
     for block in &message.content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text } => {
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
                 parts.push(json!({ "type": "text", "text": text }));
             }
             ContentBlock::Image(image) => parts.push(json!({

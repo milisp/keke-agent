@@ -97,6 +97,46 @@ impl AuthProvider for ApiKeyAuth {
     }
 }
 
+/// Sends no credentials at all.
+///
+/// A local endpoint — an ollama server on the same machine — needs none, and
+/// demanding one would make the most common declared provider unusable.
+pub(crate) struct NoAuth;
+
+impl AuthProvider for NoAuth {
+    fn id(&self) -> &'static str {
+        "none"
+    }
+
+    fn snapshot(&self) -> CredentialSnapshot {
+        CredentialSnapshot {
+            auth_id: "none".to_string(),
+            source: "none".to_string(),
+            ..CredentialSnapshot::default()
+        }
+    }
+
+    fn headers(&self) -> AuthFuture<'_, Result<AuthHeaders, AuthError>> {
+        Box::pin(async { Ok(AuthHeaders::new()) })
+    }
+
+    fn login<'a>(&'a self, _ui: Arc<dyn LoginUi>) -> AuthFuture<'a, Result<(), AuthError>> {
+        Box::pin(async {
+            Err(AuthError::Other(
+                "this endpoint needs no credentials".to_string(),
+            ))
+        })
+    }
+
+    fn refresh_after_unauthorized(&self) -> AuthFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+
+    fn logout(&self) -> AuthFuture<'_, Result<(), AuthError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use keke_credentials::MemoryStore;

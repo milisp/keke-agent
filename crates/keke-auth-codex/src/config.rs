@@ -3,25 +3,25 @@ use std::time::Duration;
 use keke_auth_api::CredentialRef;
 use keke_credentials::Vendor;
 
-/// xAI's own issuer, used when a deployment does not name one.
-pub const DEFAULT_ISSUER: &str = "https://auth.x.ai";
-/// The public client id of the xAI CLI OAuth2 application.
-pub const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
-/// The vendor slug, and therefore the auth file name: `auth.grok.json`.
-pub const DEFAULT_VENDOR: &str = "grok";
+/// OpenAI's own issuer, used when a deployment does not name one.
+pub const DEFAULT_ISSUER: &str = "https://auth.openai.com";
+/// The public client id of the ChatGPT CLI OAuth2 application.
+pub const DEFAULT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// The vendor slug, and therefore the auth file name: `auth.codex.json`.
+pub const DEFAULT_VENDOR: &str = "codex";
 /// The long-lived API key alternative to a login.
-pub const DEFAULT_API_KEY_REF: &str = "XAI_API_KEY";
+pub const DEFAULT_API_KEY_REF: &str = "OPENAI_API_KEY";
 
-const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access", "api:access"];
+const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access"];
 
-/// Everything about the xAI auth flow a deployment might reasonably change.
+/// Everything about the ChatGPT auth flow a deployment might reasonably change.
 ///
 /// These are constructor arguments rather than constants because an
 /// installation pointed at a private issuer, or registered as its own OAuth2
 /// client, must not have to fork the plugin to say so. The `Default` impl is
-/// the public xAI deployment and nothing more.
+/// the public OpenAI deployment and nothing more.
 #[derive(Clone, Debug)]
-pub struct GrokAuthConfig {
+pub struct CodexAuthConfig {
     pub issuer: String,
     pub client_id: String,
     pub scopes: Vec<String>,
@@ -44,7 +44,7 @@ pub struct GrokAuthConfig {
     pub slow_down_increment: Duration,
 }
 
-impl GrokAuthConfig {
+impl CodexAuthConfig {
     /// Configure against `issuer` for `client_id`, deriving the standard
     /// endpoint paths. Override the endpoint fields afterwards for an issuer
     /// that lays them out differently.
@@ -54,9 +54,9 @@ impl GrokAuthConfig {
         Self {
             client_id: client_id.into(),
             scopes: DEFAULT_SCOPES.iter().map(|s| (*s).to_string()).collect(),
-            authorize_endpoint: format!("{base}/oauth2/authorize"),
-            token_endpoint: format!("{base}/oauth2/token"),
-            device_authorization_endpoint: format!("{base}/oauth2/device/code"),
+            authorize_endpoint: format!("{base}/oauth/authorize"),
+            token_endpoint: format!("{base}/oauth/token"),
+            device_authorization_endpoint: format!("{base}/oauth/device/code"),
             issuer,
             vendor: fixed_vendor(DEFAULT_VENDOR),
             api_key_ref: fixed_ref(DEFAULT_API_KEY_REF),
@@ -84,7 +84,7 @@ impl GrokAuthConfig {
     }
 }
 
-impl Default for GrokAuthConfig {
+impl Default for CodexAuthConfig {
     fn default() -> Self {
         Self::new(DEFAULT_ISSUER, DEFAULT_CLIENT_ID)
     }

@@ -45,7 +45,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         config.model.model = model;
     }
 
-    let composed = Composed::build(&config.home.home)?;
+    let composed = Composed::build(&config.home.home, &config.providers)?;
 
     match cli.command {
         Command::Exec(args) => exec(args, config, composed, cwd).await,
@@ -107,6 +107,7 @@ async fn exec(
                 home: config.home.home.clone(),
                 workspace_root: config.home.workspace_root.clone(),
             },
+            max_output_tokens: config.max_output_tokens,
         })
         .provider(provider)
         .extensions(composed.extensions.clone())
@@ -194,7 +195,22 @@ async fn logout(args: VendorArgs, composed: Composed) -> Result<()> {
         .get(&args.vendor)
         .with_context(|| format!("unknown vendor `{}`", args.vendor))?;
     auth.logout().await?;
-    println!("Signed out of {}.", args.vendor);
+
+    // An imported credential belongs to another tool's file, which keke will
+    // not write. Reporting a clean sign-out while the next request still
+    // authenticates would be a lie the user only discovers later.
+    if auth.has_usable_credential() {
+        let source = auth.snapshot().source;
+        println!(
+            "Removed keke's stored credentials for {}, but it is still signed in \n\
+             through a credential keke does not own ({source}). keke reads the \n\
+             codex and grok CLIs' logins and never writes to their files — sign \n\
+             out with that tool to remove it.",
+            args.vendor
+        );
+    } else {
+        println!("Signed out of {}.", args.vendor);
+    }
     Ok(())
 }
 
