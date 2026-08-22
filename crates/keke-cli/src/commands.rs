@@ -7,6 +7,8 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::bail;
+use keke_auth_api::AuthProvider;
+use keke_auth_api::CredentialRef;
 use keke_config::Config;
 use keke_config_types::HomeLayout;
 use keke_config_types::ModelSelection;
@@ -16,6 +18,7 @@ use keke_core::TurnUpdate;
 use keke_protocol::Message;
 use keke_protocol::StopReason;
 
+use crate::api_key::ApiKeyAuth;
 use crate::cli::Cli;
 use crate::cli::Command;
 use crate::cli::ExecArgs;
@@ -252,13 +255,23 @@ fn credential_status(composed: &Composed, route: &str) -> String {
     }
 
     // No registered login flow: the endpoint takes an API key, and
-    // `ProviderInfo::env_key` names it.
+    // `ProviderInfo::env_key` names it. Ask through the credential store rather
+    // than the process environment — the key may be in the keyring or the file
+    // layer, which reading `env` directly would miss.
     let Ok(provider) = composed.providers.get(route) else {
         return "unknown".to_string();
     };
-    match provider.info().env_key.as_deref() {
-        Some(key) if std::env::var_os(key).is_some() => format!("{key} is set"),
-        Some(key) => format!("not configured — export {key}"),
-        None => "no credentials required".to_string(),
+    let Some(key) = provider.info().env_key.as_deref() else {
+        return "no credentials required".to_string();
+    };
+    let Ok(reference) = CredentialRef::new(key) else {
+        return format!("`{key}` is not a usable credential name");
+    };
+
+    let auth = ApiKeyAuth::new(reference, Arc::clone(&composed.credentials));
+    if auth.has_usable_credential() {
+        format!("{key} is set")
+    } else {
+        format!("not configured — export {key}")
     }
 }

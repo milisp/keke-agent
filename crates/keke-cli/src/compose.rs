@@ -25,6 +25,9 @@ const CREDENTIAL_SERVICE: &str = "keke";
 
 /// Everything the composition root assembled.
 pub(crate) struct Composed {
+    /// Kept so a surface can ask whether a key-only endpoint's credential
+    /// resolves — through every layer, not just the process environment.
+    pub credentials: Arc<dyn CredentialStore>,
     pub auth: AuthRegistry,
     pub providers: ProviderRegistry,
     pub extensions: ExtensionRegistry,
@@ -62,6 +65,7 @@ impl Composed {
         keke_tools::install(&mut extensions);
 
         Ok(Self {
+            credentials,
             auth,
             providers,
             extensions: extensions.build(),
