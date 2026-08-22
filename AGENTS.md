@@ -58,6 +58,22 @@ implementation lost it and paid for it.
     git dependency on `../codex` or `../grok-build` — it must build from its own
     checkout alone.
 
+11. **Runtime plugins are data, never code.** Rust has no stable dylib ABI, so a
+    plugin ships a manifest — skills, commands, hooks, MCP servers — and never a
+    library keke loads into itself. What it brings that executes runs as a child
+    process, under a budget that is a validated `keke-config-types` field. There
+    is no setting for "no budget": a hook runs before the tool it guards, so one
+    that never returns does not slow the turn down, it stops it.
+
+12. **Repository content does not execute without consent.** A plugin under the
+    workspace is content the repository controls, so its hooks and MCP servers
+    are withheld until a person approves them — `git clone` must never be
+    sufficient for execution. Approval is of contents, not of a path: the
+    recorded command lines must equal what the plugin contributes now, or it is
+    untrusted again. Gate execution only, since repository *text* already
+    reaches the model through `AGENTS.md`, and ship no flag that turns the gate
+    off — a global bypass is what a person enables once and then leaves on.
+
 ## Conventions
 
 - Crates are named `keke-*`; the directory matches the crate name.
@@ -68,6 +84,11 @@ implementation lost it and paid for it.
 - Comments explain *why*, not *what*. A comment restating the code is noise.
 - Tests assert behavior described in prose above, not implementation details.
   `a_permissive_guard_cannot_undo_a_restrictive_one` is the model.
+- The runtime-plugin format is the Claude Code ecosystem's, not keke's:
+  `plugin.json` plus its convention directories. A plugin system is worth what
+  its catalog is worth on the day it ships, so read what is already published
+  rather than inventing a schema that would start empty. keke's own strictness
+  goes into how failures are reported, not into the file names.
 
 ## Checks
 
