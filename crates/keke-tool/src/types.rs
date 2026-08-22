@@ -63,7 +63,15 @@ pub struct ToolCapabilities {
     /// Whether this call may run in parallel with other tool calls in the same
     /// step. Defaults to the kind's read-only-ness, which is the safe answer.
     pub concurrency_safe: bool,
-    /// Cooperative timeout budget. Never sent to the model.
+    /// The tool's execution budget. Never sent to the model.
+    ///
+    /// The engine enforces this — a tool that overruns is cancelled and the
+    /// call reported as [`ToolError::Timeout`]. It is surfaced to the running
+    /// tool on [`ToolCallContext::timeout_millis`] so a tool with its own
+    /// timeout argument can clamp to it instead of keeping a second number
+    /// that can drift from this one.
+    ///
+    /// [`ToolError::Timeout`]: crate::ToolError::Timeout
     pub timeout_millis: Option<u64>,
 }
 
@@ -135,6 +143,11 @@ pub struct ToolCallContext {
     /// The workspace root. Tools must keep their effects inside it unless a
     /// capability explicitly says otherwise.
     pub workspace_root: AbsPath,
+    /// The budget the engine is enforcing for this call, from
+    /// [`ToolCapabilities::timeout_millis`]. A tool that takes its own timeout
+    /// argument should clamp to this rather than exceed it — overrunning gets
+    /// the call cancelled, which loses whatever partial output it had.
+    pub timeout_millis: Option<u64>,
     /// Returns true once the turn has been aborted.
     pub cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
 }
@@ -152,6 +165,7 @@ impl fmt::Debug for ToolCallContext {
         f.debug_struct("ToolCallContext")
             .field("call_id", &self.call_id)
             .field("workspace_root", &self.workspace_root)
+            .field("timeout_millis", &self.timeout_millis)
             .finish_non_exhaustive()
     }
 }

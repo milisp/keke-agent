@@ -15,6 +15,7 @@
 
 mod store;
 
+pub use store::CredentialOrigin;
 pub use store::CredentialRef;
 pub use store::CredentialStore;
 pub use store::StoreError;

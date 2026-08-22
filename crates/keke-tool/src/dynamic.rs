@@ -190,6 +190,7 @@ mod tests {
         ToolCallContext {
             call_id: ToolCallId::new("call-1"),
             workspace_root: AbsPath::new(root).expect("absolute"),
+            timeout_millis: None,
             cancelled: Arc::new(|| false),
         }
     }

@@ -85,6 +85,7 @@ mod tests {
         let ctx = ToolCallContext {
             call_id: ToolCallId::new("call-1"),
             workspace_root: AbsPath::new(root).expect("absolute"),
+            timeout_millis: None,
             cancelled: Arc::new(|| false),
         };
         (dir, ctx)
@@ -216,6 +217,54 @@ mod tests {
         assert!(out.entries.contains(&"kept.txt".to_string()));
         assert!(out.entries.contains(&"sub/".to_string()));
         assert!(!out.entries.contains(&"secret.txt".to_string()));
+    }
+
+    /// A regex pattern is the point of the tool; a bad one is the model's
+    /// mistake and must come back as such rather than as an empty result.
+    #[tokio::test]
+    async fn grep_matches_a_regular_expression() {
+        let (_dir, ctx) = workspace();
+        std::fs::write(
+            ctx.workspace_root.as_path().join("src.rs"),
+            "fn alpha() {}\nfn beta() {}\nlet gamma = 1;\n",
+        )
+        .expect("write");
+
+        let out = Grep
+            .run(
+                ctx.clone(),
+                GrepArgs {
+                    pattern: r"^fn \w+\(".to_string(),
+                    path: None,
+                    glob: None,
+                },
+            )
+            .await
+            .expect("searches");
+
+        assert_eq!(out.hits.len(), 2, "{:?}", out.hits);
+        assert!(out.hits.iter().all(|hit| hit.contains("fn ")));
+    }
+
+    #[tokio::test]
+    async fn grep_reports_an_invalid_pattern_rather_than_finding_nothing() {
+        let (_dir, ctx) = workspace();
+        let error = Grep
+            .run(
+                ctx,
+                GrepArgs {
+                    pattern: "unclosed(".to_string(),
+                    path: None,
+                    glob: None,
+                },
+            )
+            .await
+            .expect_err("rejected");
+
+        assert!(
+            matches!(&error, ToolError::Execution { code, .. } if code == "invalid_pattern"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

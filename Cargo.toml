@@ -42,6 +42,7 @@ futures = "0.3"
 ignore = "0.4"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 rand = "0.9"
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }

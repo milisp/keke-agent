@@ -1104,6 +1104,7 @@ dependencies = [
  "keke-plugin-api",
  "keke-protocol",
  "keke-tool",
+ "regex",
  "schemars",
  "serde",
  "serde_json",

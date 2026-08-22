@@ -17,6 +17,8 @@ use serde::Serialize;
 use std::io::BufRead;
 use std::io::BufReader;
 
+use regex::Regex;
+
 use crate::support;
 
 const MAX_HITS: usize = 200;
@@ -27,7 +29,8 @@ const MAX_LINE_BYTES: usize = 400;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepArgs {
-    /// Literal substring to look for. Not a regular expression.
+    /// Rust regular expression to look for. Plain text is a valid regex, so a
+    /// literal search needs no escaping unless it contains regex metacharacters.
     pub pattern: String,
     /// Directory or file to search. Defaults to the workspace root.
     #[serde(default)]
@@ -76,8 +79,8 @@ impl Tool for Grep {
 
     fn description(&self, ctx: &ListToolsContext) -> ToolDescription {
         let mut text = String::from(
-            "Search workspace files for a literal substring, skipping gitignored, binary, and \
-             very large files. Returns `file:line:text` hits.",
+            "Search workspace files with a regular expression, skipping gitignored, binary, \
+             and very large files. Returns `file:line:text` hits.",
         );
         if ctx.has("read_file") {
             text.push_str(" Follow a hit with `read_file` to see its surrounding lines.");
@@ -111,7 +114,15 @@ impl Tool for Grep {
             ));
         }
 
-        let pattern = args.pattern.clone();
+        let matcher = Regex::new(&args.pattern).map_err(|error| {
+            ToolError::custom(
+                "invalid_pattern",
+                format!(
+                    "`{}` is not a valid regular expression: {error}",
+                    args.pattern
+                ),
+            )
+        })?;
         let glob = args.glob.clone();
         let workspace_root = ctx.workspace_root.clone();
         let cancelled = ctx.cancelled.clone();
@@ -120,7 +131,7 @@ impl Tool for Grep {
             search(
                 &workspace_root,
                 &root,
-                &pattern,
+                &matcher,
                 glob.as_deref(),
                 &*cancelled,
             )
@@ -140,7 +151,7 @@ impl Tool for Grep {
 fn search(
     workspace_root: &AbsPath,
     root: &AbsPath,
-    pattern: &str,
+    matcher: &Regex,
     glob: Option<&str>,
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(Vec<String>, bool), ToolError> {
@@ -183,7 +194,7 @@ fn search(
             // A read error here means the file is binary or vanished; either way
             // the rest of the search is still worth finishing.
             let Ok(line) = line else { break };
-            if !line.contains(pattern) {
+            if !matcher.is_match(&line) {
                 continue;
             }
             if hits.len() >= MAX_HITS {

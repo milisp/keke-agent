@@ -18,7 +18,10 @@ pub enum ToolError {
     #[error("{code}: {message}")]
     Execution { code: String, message: String },
 
-    /// Policy refused the call before the tool body ran.
+    /// Policy refused the call. Raised by a guard before the body runs, and
+    /// by a tool that rejects its own arguments on policy grounds — a path
+    /// escaping the workspace, say. Either way the model should not retry
+    /// the same call, which is what separates this from `Execution`.
     #[error("denied: {reason}")]
     Denied { reason: String },
 

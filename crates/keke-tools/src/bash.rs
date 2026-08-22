@@ -18,7 +18,11 @@ use tokio::process::Command;
 
 use crate::support;
 
+/// Used when the model names no budget.
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// The ceiling the model cannot raise past. Advertised as this tool's
+/// `ToolCapabilities::timeout_millis`, which is what the engine enforces, so
+/// the two numbers are the same number rather than two that can drift.
 const MAX_TIMEOUT_MS: u64 = 600_000;
 /// How often cancellation is observed while the child runs.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -27,7 +31,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub struct BashArgs {
     /// Shell command line, run from the workspace root.
     pub command: String,
-    /// Wall-clock budget in milliseconds. Defaults to two minutes.
+    /// Wall-clock budget in milliseconds. Defaults to two minutes, capped at
+    /// ten.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -78,15 +83,16 @@ impl Tool for Bash {
             // A shell command can touch anything the other calls in the step
             // are touching, so it never runs beside a sibling.
             concurrency_safe: false,
-            timeout_millis: Some(DEFAULT_TIMEOUT_MS),
+            timeout_millis: Some(MAX_TIMEOUT_MS),
         }
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
-        let millis = args
-            .timeout_ms
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .min(MAX_TIMEOUT_MS);
+        // Clamp to the budget the engine is enforcing rather than to a local
+        // copy of it: overrunning gets the call killed from outside, losing
+        // whatever output the command had produced.
+        let ceiling = ctx.timeout_millis.unwrap_or(MAX_TIMEOUT_MS);
+        let millis = args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(ceiling);
         let deadline = Instant::now() + Duration::from_millis(millis);
 
         let (program, flag) = if cfg!(windows) {

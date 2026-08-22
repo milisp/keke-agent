@@ -142,11 +142,46 @@ impl Tool for Echo {
     }
 }
 
+/// Advertises a tiny budget and then ignores it. The engine must stop it
+/// anyway — a tool cannot be trusted to enforce its own timeout.
+struct Overrunning;
+
+impl Tool for Overrunning {
+    type Args = EchoArgs;
+    type Output = EchoOut;
+
+    fn id(&self) -> ToolId {
+        ToolId::new("overrunning")
+    }
+
+    fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
+        ToolDescription::new("Sleeps well past its advertised budget.")
+    }
+
+    fn capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities {
+            timeout_millis: Some(80),
+            ..ToolCapabilities::of_kind(ToolKind::Meta)
+        }
+    }
+
+    async fn run(
+        &self,
+        _ctx: ToolCallContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, ToolError> {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        Ok(EchoOut {
+            echoed: "never".to_string(),
+        })
+    }
+}
+
 struct EchoPack;
 
 impl ToolContributor for EchoPack {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        vec![Arc::new(Echo)]
+        vec![Arc::new(Echo), Arc::new(Overrunning)]
     }
 }
 
@@ -502,4 +537,62 @@ async fn the_request_that_is_logged_is_the_request_that_is_sent() {
             .map(|spec| spec.name.clone())
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn the_engine_enforces_a_budget_the_tool_ignores() {
+    let harness = harness();
+    let call_id = ToolCallId::new("call-1");
+    let (provider, seen) = ScriptedProvider::new(vec![
+        vec![
+            StreamChunk::ToolCallStart {
+                id: call_id.clone(),
+                name: "overrunning".to_string(),
+            },
+            StreamChunk::ToolCallArgsDelta {
+                id: call_id.clone(),
+                delta: "{\"text\":\"x\"}".to_string(),
+            },
+            StreamChunk::ToolCallEnd { id: call_id },
+            StreamChunk::Done(StopReason::ToolUse),
+        ],
+        text_reply("noted"),
+    ]);
+
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+
+    let started = std::time::Instant::now();
+    session
+        .run_turn(Message::user("run it"))
+        .await
+        .expect("the turn survives");
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the engine must not wait for a tool that overruns: took {:?}",
+        started.elapsed()
+    );
+
+    let requests = seen.lock().expect("lock");
+    let result = requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .expect("a tool result");
+
+    // A timeout is the harness cancelling, not the tool failing.
+    assert_eq!(result.status, ToolStatus::Cancelled);
 }

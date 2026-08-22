@@ -36,6 +36,12 @@ pub enum ProviderError {
     Protocol(String),
 
     /// The turn was aborted.
+    ///
+    /// Constructed by the engine, not by a provider: [`ModelProvider::stream`]
+    /// takes no cancellation signal, so the engine cancels by dropping the
+    /// stream. A provider needs no cancellation handling of its own.
+    ///
+    /// [`ModelProvider::stream`]: crate::ModelProvider::stream
     #[error("cancelled")]
     Cancelled,
 }

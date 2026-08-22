@@ -5,7 +5,7 @@
 //! 1. The tool must exist.
 //! 2. Lifecycle contributors observe the call (they cannot block it).
 //! 3. Guards run and may deny — and only deny.
-//! 4. The tool body runs.
+//! 4. The tool body runs, under the budget it advertised.
 //!
 //! Putting guards after the observers, and giving them no way to allow, is what
 //! makes denial monotonic: no registration order can turn a denial back into
@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use keke_paths::AbsPath;
 use keke_plugin_api::ExtensionContext;
@@ -105,13 +106,29 @@ pub async fn dispatch(
         return result;
     }
 
+    // The advertised budget is enforced here rather than trusted to the tool.
+    // A tool keeping its own copy of the number would let the two drift, and a
+    // tool that simply ignored it would overrun with nothing to stop it.
+    let budget = tool.capabilities().timeout_millis;
     let ctx = ToolCallContext {
         call_id: call.id.clone(),
         workspace_root: workspace_root.clone(),
+        timeout_millis: budget,
         cancelled,
     };
 
-    let outcome = tool.call(ctx, call.arguments.clone()).await;
+    let running = tool.call(ctx, call.arguments.clone());
+    let outcome = match budget {
+        Some(millis) => {
+            match tokio::time::timeout(Duration::from_millis(millis), running).await {
+                Ok(outcome) => outcome,
+                // Dropping the future drops whatever the tool was holding; tools
+                // that spawn children set `kill_on_drop`, so this really stops.
+                Err(_) => Err(ToolError::Timeout { millis }),
+            }
+        }
+        None => running.await,
+    };
     let result = match &outcome {
         Ok(output) => ToolResult {
             id: call.id.clone(),
