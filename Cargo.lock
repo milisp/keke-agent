@@ -992,6 +992,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "futures",
+ "keke-auth-api",
  "keke-config-types",
  "keke-paths",
  "keke-plugin-api",
@@ -999,6 +1000,7 @@ dependencies = [
  "keke-provider-api",
  "keke-tool",
  "keke-workspace",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -1011,6 +1013,7 @@ dependencies = [
 name = "keke-credentials"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "keke-auth-api",
  "keke-paths",
  "keyring",
@@ -1101,13 +1104,11 @@ dependencies = [
  "keke-plugin-api",
  "keke-protocol",
  "keke-tool",
- "keke-workspace",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
 ]
 
 [[package]]

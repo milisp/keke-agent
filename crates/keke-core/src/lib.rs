@@ -1,1 +1,53 @@
-//! Placeholder. See AGENTS.md before filling this in.
+//! The agent engine.
+//!
+//! `keke-core` owns the session lifecycle, the turn loop, tool dispatch, and the
+//! rollout log. It depends only on the contract tier, and it contains nothing
+//! vendor-specific — no `keke-provider-*` or `keke-auth-*` dependency, no vendor
+//! name in a match arm. `scripts/check-layering.py` enforces that in CI, because
+//! the reference implementation that stated the same rule in prose alone did not
+//! keep it.
+//!
+//! A session holds a provider, a tool set, and an extension registry, all
+//! behind their contract traits. Swapping a vendor means constructing the
+//! session with a different `Arc<dyn ModelProvider>`.
+
+mod dispatch;
+mod prompt;
+mod rollout;
+mod session;
+mod turn;
+
+pub use dispatch::ToolSet;
+pub use dispatch::dispatch;
+pub use prompt::ORDER_ENVIRONMENT;
+pub use prompt::ORDER_IDENTITY;
+pub use prompt::ORDER_PROJECT;
+pub use prompt::assemble_system_prompt;
+pub use rollout::RolloutError;
+pub use rollout::RolloutRecorder;
+pub use rollout::read_log;
+pub use session::Session;
+pub use session::SessionBuilder;
+pub use session::SessionConfig;
+pub use session::TurnUpdate;
+pub use turn::TurnOutcome;
+
+use keke_provider_api::ProviderError;
+
+/// Why a session or turn failed.
+#[derive(Debug, thiserror::Error)]
+pub enum CoreError {
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+    #[error(transparent)]
+    Rollout(#[from] RolloutError),
+    #[error(transparent)]
+    Workspace(#[from] keke_workspace::WorkspaceError),
+    /// The model kept requesting tools without converging. A safety stop, not a
+    /// budget — reaching it means something is wrong, so it is surfaced rather
+    /// than silently truncating the turn.
+    #[error("the turn made {steps} model calls without finishing")]
+    StepLimit { steps: usize },
+    #[error("a session needs {0}")]
+    Incomplete(&'static str),
+}
