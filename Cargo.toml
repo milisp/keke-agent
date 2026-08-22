@@ -29,7 +29,11 @@ keke-workspace = { path = "crates/keke-workspace", version = "0.1.0" }
 
 # --- tier 2: plugins ---
 keke-auth-codex = { path = "crates/keke-auth-codex", version = "0.1.0" }
+keke-hooks = { path = "crates/keke-hooks", version = "0.1.0" }
+keke-mcp = { path = "crates/keke-mcp", version = "0.1.0" }
+keke-skills = { path = "crates/keke-skills", version = "0.1.0" }
 keke-auth-grok = { path = "crates/keke-auth-grok", version = "0.1.0" }
+keke-plugin = { path = "crates/keke-plugin", version = "0.1.0" }
 keke-provider-grok = { path = "crates/keke-provider-grok", version = "0.1.0" }
 keke-provider-nvidia = { path = "crates/keke-provider-nvidia", version = "0.1.0" }
 keke-test-support = { path = "crates/keke-test-support", version = "0.1.0" }

@@ -38,6 +38,12 @@ RANK = {
     # test support sits beside the plugins: it may use the contracts, and
     # anything may depend on it as a dev-dependency
     "keke-test-support": 15,
+    # tier 1.5 - the runtime-plugin manifest layer. Below the plugins because
+    # the extension crate for each contribution kind (skills, hooks, MCP) reads
+    # a resolved `PluginSet` and registers it through the ordinary contributor
+    # traits. It depends on `keke-paths` and nothing else, so a manifest can be
+    # parsed and listed without linking the engine.
+    "keke-plugin": 16,
     # tier 3 - surfaces
     "keke-acp": 30,
     "keke-tui": 31,

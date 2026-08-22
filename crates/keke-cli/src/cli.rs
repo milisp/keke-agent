@@ -45,6 +45,22 @@ pub(crate) enum Command {
     Models(VendorArgs),
     /// Report what keke resolved: config, credentials, and available tools.
     Doctor,
+    /// Inspect the runtime plugins installed on this machine.
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum PluginAction {
+    /// List installed plugins and what each contributes.
+    List,
+    /// Show one plugin in full, including anything keke cannot honor.
+    Show {
+        /// The plugin's name, as `list` prints it.
+        name: String,
+    },
 }
 
 #[derive(Debug, clap::Args)]

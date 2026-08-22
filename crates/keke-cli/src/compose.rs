@@ -63,10 +63,13 @@ impl Composed {
     /// over; the registry is frozen once built, so this has to be decided here
     /// rather than added later.
     pub(crate) fn build(
-        home: &keke_paths::AbsPath,
+        home: &keke_config_types::HomeLayout,
         declared: &[keke_config_types::ProviderDeclaration],
+        timeouts: keke_config_types::PluginTimeouts,
         approvals: Option<Arc<keke_acp::Approvals>>,
     ) -> Result<Self> {
+        let plugins = crate::plugins::discover(home)?;
+        let home = &home.home;
         let credentials: Arc<dyn CredentialStore> = Arc::new(keke_credentials::standard_store(
             CREDENTIAL_SERVICE,
             keke_credentials::FileStore::new(
@@ -128,6 +131,21 @@ impl Composed {
         // --- extensions ----------------------------------------------------
         let mut extensions = ExtensionRegistryBuilder::new();
         keke_tools::install(&mut extensions);
+
+        // Runtime plugins register through the same contributor traits as
+        // anything compiled in — `keke-core` never learns they exist. Order is
+        // priority order for approval reviewers only; for the rest it is what
+        // keeps the set identical between runs.
+        // The budgets come from configuration rather than from each crate's own
+        // constants: how long someone else's program may hold up a turn is a
+        // deployment's call (`AGENTS.md` invariant 9).
+        keke_skills::install(&mut extensions, &plugins);
+        keke_mcp::install_with(&mut extensions, &plugins, timeouts.into());
+        keke_hooks::install_with(&mut extensions, &plugins, timeouts);
+
+        // The surface's approval bridge registers last so a plugin hook cannot
+        // answer on a person's behalf. A hook may still deny — denial is
+        // monotonic and nothing here can undo it.
         if let Some(approvals) = approvals {
             keke_acp::install(&mut extensions, approvals);
         }

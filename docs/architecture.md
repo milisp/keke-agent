@@ -242,6 +242,48 @@ resource must be contained under its package root.
 This is codex's split, and it is what lets keke have runtime plugins at all
 without a stable dynamic-library ABI.
 
+### The format is not keke's
+
+`keke-plugin` reads `plugin.json` and the convention directories the Claude Code
+plugin ecosystem already uses — `skills/<name>/SKILL.md`, `commands/*.md`,
+`.mcp.json`, `hooks/hooks.json` — plus `.claude-plugin/plugin.json` as a manifest
+location. A plugin published for that ecosystem installs here unchanged.
+
+This is the one place keke does not design its own thing, and the reason is not
+taste. A plugin system's worth is the plugins available on the day it ships; a
+better schema with an empty catalog is worth nothing, and asking authors to
+publish twice is asking for the catalog to stay empty. grok-build reached the
+same conclusion and reads the same files.
+
+What keke does *not* adopt is the ecosystem's permissiveness about failure:
+
+- **Unknown metadata is ignored; an unknown contribution is reported.** A
+  manifest written for a newer host must still load, so a stray `homepage` costs
+  nothing. But a `lspServers` block keke does not implement is surfaced to the
+  person rather than dropped — silently ignoring it is how an author comes to
+  believe a capability is active when nothing runs it. The same applies to a
+  hook bound to an event keke has no lifecycle point for.
+- **Containment is checked after canonicalization.** A `..` segment or a symlink
+  out of the package passes a textual prefix test. Escaping is an error, not a
+  warning that skips the entry.
+- **Precedence where the ecosystem has precedence, ambiguity everywhere else.**
+  The same plugin name in the project and in the user's home is layering, and
+  the project copy wins. The same plugin name twice within one scope is an
+  error. Contributions never collide across plugins because they are namespaced
+  by plugin — `acme:ship`, not `ship` — which removes the class of error rather
+  than reporting it.
+
+Discovery covers `$KEKE_HOME/plugins/` and `~/.claude/plugins/` at user scope,
+and `.keke/plugins/` and `.claude/plugins/` at project scope. The scope survives
+resolution because a plugin the repository controls is not equivalent to one the
+person installed, and a trust decision needs that distinction.
+
+`keke-plugin` sits below the extension crates that consume it: it depends on
+`keke-paths` and nothing else, so a manifest can be parsed and listed without
+linking the engine. `keke-skills`, `keke-hooks`, and `keke-mcp` each read a
+resolved `PluginSet` and register through the ordinary contributor traits, which
+is how `keke-core` avoids ever learning that runtime plugins exist.
+
 ## Testing
 
 Three layers, each catching what the others cannot.

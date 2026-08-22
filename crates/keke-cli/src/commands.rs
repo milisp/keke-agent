@@ -23,6 +23,7 @@ use crate::cli::Cli;
 use crate::cli::Command;
 use crate::cli::ExecArgs;
 use crate::cli::LoginArgs;
+use crate::cli::PluginAction;
 use crate::cli::VendorArgs;
 use crate::compose::Composed;
 use crate::ui::TerminalLoginUi;
@@ -51,8 +52,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     let interactive = matches!(command, Command::Tui);
     let (approvals, requests) = keke_acp::approvals();
     let composed = Composed::build(
-        &config.home.home,
+        &config.home,
         &config.providers,
+        config.plugins,
         interactive.then(|| Arc::clone(&approvals)),
     )?;
 
@@ -64,6 +66,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Command::Logout(args) => logout(args, composed).await,
         Command::Models(args) => models(args, composed).await,
         Command::Doctor => doctor(config, composed),
+        Command::Plugin { action } => plugin(action, config),
     }
 }
 
@@ -176,8 +179,9 @@ impl keke_acp::SessionFactory for EditorSessions {
             };
             let (approvals, requests) = keke_acp::approvals();
             let composed = Composed::build(
-                &self.config.home.home,
+                &self.config.home,
                 &self.config.providers,
+                self.config.plugins,
                 Some(Arc::clone(&approvals)),
             )
             .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
@@ -407,4 +411,118 @@ fn credential_status(composed: &Composed, route: &str) -> String {
     } else {
         format!("not configured — export {key}")
     }
+}
+
+/// Inspect installed runtime plugins.
+///
+/// Listing must never activate anything: resolution locates files and reads
+/// manifests, and that is all. A person needs to be able to look at a plugin
+/// they do not yet trust.
+fn plugin(action: PluginAction, config: Config) -> Result<()> {
+    let plugins = crate::plugins::discover(&config.home)?;
+
+    match action {
+        PluginAction::List => {
+            if plugins.is_empty() {
+                println!("no plugins installed");
+                println!("\nkeke reads plugins from:");
+                println!("  {}/plugins", config.home.home);
+                println!("  ~/.claude/plugins");
+                println!("  {}/.keke/plugins", config.home.workspace_root);
+                println!("  {}/.claude/plugins", config.home.workspace_root);
+                return Ok(());
+            }
+
+            for plugin in plugins.plugins() {
+                let version = plugin.version.as_deref().unwrap_or("no version");
+                println!("{} ({version}) [{}]", plugin.name, plugin.scope);
+                if let Some(description) = &plugin.description {
+                    println!("  {description}");
+                }
+                println!(
+                    "  {} skills, {} commands, {} hooks, {} mcp servers",
+                    plugin.skills.len(),
+                    plugin.commands.len(),
+                    plugin.hooks.len(),
+                    plugin.mcp_servers.len(),
+                );
+
+                // Anything keke cannot honor is said out loud here rather than
+                // left for the person to discover as silence.
+                for kind in &plugin.unsupported {
+                    println!("  ! `{kind}` is not implemented by keke and does nothing");
+                }
+                let inert = plugin.inert_hooks().count();
+                if inert > 0 {
+                    println!("  ! {inert} hook(s) bound to events keke does not run");
+                }
+            }
+        }
+        PluginAction::Show { name } => {
+            let plugin = plugins
+                .get(&name)
+                .with_context(|| format!("no plugin named `{name}` is installed"))?;
+
+            println!("{} [{}]", plugin.name, plugin.scope);
+            println!("root: {}", plugin.root);
+            if let Some(version) = &plugin.version {
+                println!("version: {version}");
+            }
+            if let Some(description) = &plugin.description {
+                println!("description: {description}");
+            }
+
+            if !plugin.skills.is_empty() {
+                println!("\nskills:");
+                for skill in &plugin.skills {
+                    println!("  {}:{} — {}", skill.plugin, skill.name, skill.description);
+                }
+            }
+            if !plugin.commands.is_empty() {
+                println!("\ncommands:");
+                for command in &plugin.commands {
+                    println!(
+                        "  {}:{} — {}",
+                        command.plugin, command.name, command.description
+                    );
+                }
+            }
+            if !plugin.mcp_servers.is_empty() {
+                println!("\nmcp servers:");
+                for server in &plugin.mcp_servers {
+                    println!(
+                        "  {}: {} {}",
+                        server.name,
+                        server.command,
+                        server.args.join(" ")
+                    );
+                    // Names only. A value here could be a secret, and this
+                    // output is the kind of thing people paste into an issue.
+                    for (key, _) in &server.env {
+                        println!("    env {key}");
+                    }
+                }
+            }
+            if !plugin.hooks.is_empty() {
+                println!("\nhooks:");
+                for hook in &plugin.hooks {
+                    let matcher = if hook.matcher.is_empty() {
+                        "*"
+                    } else {
+                        &hook.matcher
+                    };
+                    let inert = if hook.event.is_supported() {
+                        ""
+                    } else {
+                        "  (keke does not run this event)"
+                    };
+                    println!("  {} [{matcher}] {}{inert}", hook.event, hook.command);
+                }
+            }
+            for kind in &plugin.unsupported {
+                println!("\n! `{kind}` is not implemented by keke and does nothing");
+            }
+        }
+    }
+    Ok(())
 }

@@ -80,6 +80,23 @@ pub trait Tool: Send + Sync + 'static {
         true
     }
 
+    /// Replace the schema derived from [`Tool::Args`].
+    ///
+    /// Almost no tool should implement this: deriving the schema from the
+    /// argument type is what keeps the advertised shape and the decoded shape
+    /// from drifting apart. The exception is a tool whose argument shape is not
+    /// known until runtime — an MCP server describes its own tools, and keke
+    /// learns their schemas by asking. Such a tool's `Args` can only be an open
+    /// map, and deriving from that would advertise "any object" to the model,
+    /// which is no help at all.
+    ///
+    /// Returning `None` keeps the derived schema. Overriding this does *not*
+    /// change decoding: arguments still arrive as `Args`, so a tool cannot use
+    /// this to claim a shape it will not accept.
+    fn input_schema_override(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Run the tool, emitting progress before the single terminal item.
     fn execute(
         &self,

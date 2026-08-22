@@ -25,6 +25,7 @@ use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
+use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
 use keke_config_types::SandboxMode;
 use keke_paths::AbsPath;
@@ -60,6 +61,8 @@ pub struct Config {
     pub sandbox_mode: SandboxMode,
     pub max_output_tokens: MaxOutputTokens,
     pub compaction: CompactionConfig,
+    /// Budgets for plugin-supplied programs.
+    pub plugins: PluginTimeouts,
     /// Endpoints declared from configuration, in addition to the compiled-in
     /// vendors.
     pub providers: Vec<ProviderDeclaration>,
@@ -80,6 +83,7 @@ pub struct ConfigFile {
     pub sandbox_mode: Option<SandboxMode>,
     pub max_output_tokens: Option<u32>,
     pub compaction: Option<CompactionFile>,
+    pub plugins: Option<PluginsFile>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
     /// across layers rather than replaced, so a project can add one without
     /// restating the user's.
@@ -94,6 +98,15 @@ pub struct CompactionFile {
     pub trigger_percent: Option<u8>,
     pub keep_recent_messages: Option<usize>,
     pub context_window: Option<u32>,
+}
+
+/// The plugins section, separated so a layer can override one field of it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PluginsFile {
+    pub hook_timeout_millis: Option<u64>,
+    pub mcp_startup_timeout_millis: Option<u64>,
+    pub mcp_call_timeout_millis: Option<u64>,
 }
 
 /// Values applied when no layer states them.
@@ -141,6 +154,16 @@ impl Config {
                     .or(base.keep_recent_messages);
                 base.context_window = compaction.context_window.or(base.context_window);
             }
+            if let Some(plugins) = layer.file.plugins {
+                let base = merged.plugins.get_or_insert_with(PluginsFile::default);
+                base.hook_timeout_millis = plugins.hook_timeout_millis.or(base.hook_timeout_millis);
+                base.mcp_startup_timeout_millis = plugins
+                    .mcp_startup_timeout_millis
+                    .or(base.mcp_startup_timeout_millis);
+                base.mcp_call_timeout_millis = plugins
+                    .mcp_call_timeout_millis
+                    .or(base.mcp_call_timeout_millis);
+            }
             // Declarations accumulate; a later layer redeclaring a route
             // replaces that one entry rather than the whole set.
             for (route, declaration) in &layer.file.providers {
@@ -175,6 +198,36 @@ impl Config {
             });
         }
 
+        let plugins_file = merged.plugins.unwrap_or_default();
+        let defaults = PluginTimeouts::default();
+        let invalid = |message: String| ConfigError::Invalid {
+            path: sources
+                .last()
+                .map(LayerSource::describe)
+                .unwrap_or_else(|| "<defaults>".to_string()),
+            message,
+        };
+        let plugins = PluginTimeouts {
+            hook_millis: match plugins_file.hook_timeout_millis {
+                Some(value) => {
+                    PluginTimeouts::check("hook-timeout-millis", value).map_err(invalid)?
+                }
+                None => defaults.hook_millis,
+            },
+            mcp_startup_millis: match plugins_file.mcp_startup_timeout_millis {
+                Some(value) => {
+                    PluginTimeouts::check("mcp-startup-timeout-millis", value).map_err(invalid)?
+                }
+                None => defaults.mcp_startup_millis,
+            },
+            mcp_call_millis: match plugins_file.mcp_call_timeout_millis {
+                Some(value) => {
+                    PluginTimeouts::check("mcp-call-timeout-millis", value).map_err(invalid)?
+                }
+                None => defaults.mcp_call_millis,
+            },
+        };
+
         let max_output_tokens = match merged.max_output_tokens {
             Some(value) => MaxOutputTokens::new(value).map_err(|message| ConfigError::Invalid {
                 path: sources
@@ -198,6 +251,7 @@ impl Config {
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
             max_output_tokens,
             compaction,
+            plugins,
             providers: merged
                 .providers
                 .into_iter()
@@ -344,6 +398,26 @@ mod tests {
     fn an_out_of_range_value_fails_at_load() {
         let layers = vec![layer("user", "[compaction]\ntrigger-percent = 0\n")];
         let error = Config::from_layers(home(), &layers).expect_err("rejected");
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_deployment_can_set_what_a_plugins_program_may_hold_up_a_turn_for() {
+        let layers = vec![layer(
+            "user",
+            "[plugins]\nhook-timeout-millis = 5000\nmcp-call-timeout-millis = 300000\n",
+        )];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.plugins.hook_millis, 5_000);
+        assert_eq!(config.plugins.mcp_call_millis, 300_000);
+        // The field nobody stated keeps its default rather than being zeroed.
+        assert_eq!(
+            config.plugins.mcp_startup_millis,
+            PluginTimeouts::default().mcp_startup_millis
+        );
+
+        let layers = vec![layer("user", "[plugins]\nhook-timeout-millis = 30\n")];
+        let error = Config::from_layers(home(), &layers).expect_err("too short");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
 }

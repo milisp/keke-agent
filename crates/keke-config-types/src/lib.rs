@@ -164,3 +164,57 @@ impl Default for CompactionConfig {
         }
     }
 }
+
+/// Budgets for the programs runtime plugins bring with them.
+///
+/// A hook and an MCP server are both someone else's process running inside a
+/// turn, and how long either may take is exactly the kind of number one
+/// deployment sets differently from another: a server that shells out to a
+/// package manager needs a longer budget than one that reads a file. That is
+/// why these live here rather than as `DEFAULT_*` constants inside the crates
+/// that use them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginTimeouts {
+    /// Applied to a hook that declares no timeout of its own. There is no
+    /// "wait forever" setting: a hook runs before the tool it guards, so one
+    /// that never returns does not slow the turn down, it stops it.
+    pub hook_millis: u64,
+    /// How long an MCP server has to answer `initialize` and `tools/list`.
+    pub mcp_startup_millis: u64,
+    /// The ceiling for a single `tools/call`.
+    pub mcp_call_millis: u64,
+}
+
+impl PluginTimeouts {
+    /// The shortest budget worth naming. Below this the timeout is likelier to
+    /// be a unit mistake — seconds written where milliseconds were meant — than
+    /// a deliberate setting, and every hook would deny.
+    pub const MIN_MILLIS: u64 = 100;
+    /// An hour. A budget beyond this is indistinguishable from none, which is
+    /// the state these fields exist to prevent.
+    pub const MAX_MILLIS: u64 = 3_600_000;
+
+    /// Validate one budget, naming the field so the message points at the line
+    /// that has to change.
+    pub fn check(field: &str, value: u64) -> Result<u64, String> {
+        if (Self::MIN_MILLIS..=Self::MAX_MILLIS).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "plugins.{field} must be between {} and {} milliseconds, got {value}",
+                Self::MIN_MILLIS,
+                Self::MAX_MILLIS
+            ))
+        }
+    }
+}
+
+impl Default for PluginTimeouts {
+    fn default() -> Self {
+        Self {
+            hook_millis: 30_000,
+            mcp_startup_millis: 15_000,
+            mcp_call_millis: 120_000,
+        }
+    }
+}

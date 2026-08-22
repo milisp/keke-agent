@@ -1,0 +1,20 @@
+[package]
+name = "keke-plugin"
+description = "Runtime-installable plugins: Claude-compatible manifests, discovery, and inert resolution."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-paths = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

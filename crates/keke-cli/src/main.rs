@@ -10,6 +10,7 @@ mod cli;
 mod commands;
 mod compose;
 mod declared;
+mod plugins;
 mod ui;
 
 use anyhow::Result;

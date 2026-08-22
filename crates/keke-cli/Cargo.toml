@@ -21,7 +21,11 @@ keke-config = { workspace = true }
 keke-config-types = { workspace = true }
 keke-core = { workspace = true }
 keke-credentials = { workspace = true }
+keke-hooks = { workspace = true }
+keke-mcp = { workspace = true }
 keke-paths = { workspace = true }
+keke-plugin = { workspace = true }
+keke-skills = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
@@ -31,6 +35,7 @@ keke-wire = { workspace = true }
 keke-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+dirs = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 thiserror = { workspace = true }

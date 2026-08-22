@@ -74,6 +74,12 @@ impl<T: Tool> ToolDyn for T {
     }
 
     fn input_schema(&self) -> Value {
+        // A runtime-known shape wins over the derived one; see
+        // `Tool::input_schema_override` for why that exception exists and why
+        // it cannot affect decoding.
+        if let Some(declared) = Tool::input_schema_override(self) {
+            return declared;
+        }
         serde_json::to_value(schema_for!(T::Args))
             .unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
     }
@@ -244,5 +250,49 @@ mod tests {
         let tool: ArcTool = Arc::new(Echo);
         let schema = tool.input_schema();
         assert!(schema["properties"]["text"].is_object());
+    }
+
+    /// A tool whose argument shape is only known at runtime, as an MCP server's
+    /// tools are.
+    struct Remote;
+
+    impl Tool for Remote {
+        type Args = serde_json::Map<String, Value>;
+        type Output = EchoOut;
+
+        fn id(&self) -> ToolId {
+            ToolId::new("remote")
+        }
+
+        fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
+            ToolDescription::new("asks something elsewhere")
+        }
+
+        fn input_schema_override(&self) -> Option<Value> {
+            Some(serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            }))
+        }
+
+        async fn run(
+            &self,
+            _ctx: ToolCallContext,
+            _args: Self::Args,
+        ) -> Result<Self::Output, ToolError> {
+            Ok(EchoOut {
+                echoed: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_runtime_known_schema_replaces_the_derived_one() {
+        let tool: ArcTool = Arc::new(Remote);
+        let schema = tool.input_schema();
+
+        // Deriving from an open map would advertise "any object", which tells
+        // the model nothing about what to send.
+        assert!(schema["properties"]["query"].is_object());
     }
 }

@@ -1646,6 +1646,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "clap",
+ "dirs",
  "futures",
  "keke-acp",
  "keke-auth-api",
@@ -1655,11 +1656,15 @@ dependencies = [
  "keke-config-types",
  "keke-core",
  "keke-credentials",
+ "keke-hooks",
+ "keke-mcp",
  "keke-paths",
+ "keke-plugin",
  "keke-plugin-api",
  "keke-protocol",
  "keke-provider-api",
  "keke-provider-grok",
+ "keke-skills",
  "keke-test-support",
  "keke-tools",
  "keke-tui",
@@ -1733,10 +1738,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-hooks"
+version = "0.1.0"
+dependencies = [
+ "keke-config-types",
+ "keke-paths",
+ "keke-plugin",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-tool",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "keke-mcp"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "keke-config-types",
+ "keke-paths",
+ "keke-plugin",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-tool",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "keke-paths"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "keke-plugin"
+version = "0.1.0"
+dependencies = [
+ "keke-paths",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -1798,6 +1851,20 @@ dependencies = [
  "thiserror",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "keke-skills"
+version = "0.1.0"
+dependencies = [
+ "keke-paths",
+ "keke-plugin",
+ "keke-plugin-api",
+ "keke-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
