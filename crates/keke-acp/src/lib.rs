@@ -1,6 +1,9 @@
+mod agent;
 mod conversation;
 mod local;
 
+pub use agent::SessionFactory;
+pub use agent::serve_stdio;
 pub use conversation::Conversation;
 pub use conversation::ConversationError;
 pub use conversation::ConversationFuture;

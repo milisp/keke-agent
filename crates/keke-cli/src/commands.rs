@@ -59,6 +59,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     match command {
         Command::Tui => tui(config, composed, cwd, approvals, requests).await,
         Command::Exec(args) => exec(args, config, composed, cwd).await,
+        Command::Agent { transport } => agent(transport, config, cwd).await,
         Command::Login(args) => login(args, composed).await,
         Command::Logout(args) => logout(args, composed).await,
         Command::Models(args) => models(args, composed).await,
@@ -123,6 +124,72 @@ async fn session_builder(
         builder = builder.auth(auth);
     }
     Ok(builder)
+}
+
+/// Serve ACP to an editor.
+///
+/// The editor is the one asking a person, so approval requests travel to it
+/// over the protocol rather than being answered here.
+async fn agent(
+    transport: crate::cli::AgentTransport,
+    config: Config,
+    cwd: std::path::PathBuf,
+) -> Result<()> {
+    let crate::cli::AgentTransport::Stdio = transport;
+    let factory = Arc::new(EditorSessions { config, cwd });
+    keke_acp::serve_stdio(factory)
+        .await
+        .map_err(|error| anyhow::anyhow!("the ACP connection failed: {error}"))
+}
+
+/// Opens one keke session per ACP session.
+///
+/// The vendors are composed per session rather than once, because the approval
+/// bridge is part of the frozen extension set and two sessions sharing one
+/// would route a prompt raised in one to whoever answered in the other.
+struct EditorSessions {
+    config: Config,
+    cwd: std::path::PathBuf,
+}
+
+impl keke_acp::SessionFactory for EditorSessions {
+    fn open(
+        &self,
+        cwd: std::path::PathBuf,
+    ) -> keke_acp::ConversationFuture<
+        '_,
+        Result<
+            (
+                Arc<dyn keke_acp::Conversation>,
+                tokio::sync::mpsc::UnboundedReceiver<keke_acp::Update>,
+            ),
+            keke_acp::ConversationError,
+        >,
+    > {
+        Box::pin(async move {
+            // The client names the directory; keke's own `--cwd` is the
+            // fallback for a client that does not.
+            let cwd = if cwd.as_os_str().is_empty() {
+                self.cwd.clone()
+            } else {
+                cwd
+            };
+            let (approvals, requests) = keke_acp::approvals();
+            let composed = Composed::build(
+                &self.config.home.home,
+                &self.config.providers,
+                Some(Arc::clone(&approvals)),
+            )
+            .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+            let builder =
+                session_builder(&self.config, &composed, cwd, self.config.approval_policy)
+                    .await
+                    .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+            keke_acp::local(builder, approvals, requests)
+                .await
+                .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))
+        })
+    }
 }
 
 /// Open the interactive interface.

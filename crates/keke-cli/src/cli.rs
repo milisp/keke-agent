@@ -32,6 +32,11 @@ pub(crate) enum Command {
     Tui,
     /// Run one prompt to completion and print the reply.
     Exec(ExecArgs),
+    /// Serve the Agent Client Protocol on stdin and stdout, for an editor.
+    Agent {
+        #[command(subcommand)]
+        transport: AgentTransport,
+    },
     /// Authenticate with a provider.
     Login(LoginArgs),
     /// Discard stored credentials for a provider.
@@ -72,6 +77,12 @@ fn parse_approval(raw: &str) -> Result<keke_config_types::ApprovalPolicy, String
             "unknown approval policy `{other}`; expected on-request, on-failure, or never"
         )),
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AgentTransport {
+    /// Speak ACP over stdin and stdout. The transport every editor uses today.
+    Stdio,
 }
 
 #[derive(Debug, clap::Args)]

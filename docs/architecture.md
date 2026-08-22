@@ -188,6 +188,33 @@ ACP extends by adding methods, which is how login prompts, approvals, and plugin
 management reach a client without a second protocol. If a GUI ever needs a
 server, it can be an ACP client.
 
+### The surface seam
+
+Surfaces do not speak ACP. They speak `keke_acp::Conversation` — `prompt`,
+`cancel`, `respond_to_permission` — and render a stream of `Update`s. Two things
+implement it: `LocalConversation`, which drives a session in this process, and
+whatever an ACP client attaches to. The terminal interface is written against
+the trait alone, which is what lets it work identically attached to a local
+session and to an agent across a pipe, and what lets its tests run with no
+model, no network, and no terminal (`ScriptedConversation`).
+
+`keke agent stdio` is the mirror image: keke as the ACP *agent*, driving the same
+`Conversation` on behalf of an editor. Because both surfaces drive the same
+seam, they cannot drift into offering different tools or different policy.
+
+### Asking a person
+
+`ApprovalPolicy` decides *whether* to ask, from the tool's own declared
+`ToolKind`; the reviewers decide *what the answer is*. `keke-acp`'s `Approvals`
+is an `ApprovalReviewContributor` like any other, which is the only way the
+engine learns a surface exists — nothing in `keke-core` knows one does.
+
+Approval runs after the guards and before the tool body. That order is what
+keeps denial monotonic: a guard's denial is already final by the time anyone is
+asked. **Nobody answering is a denial**, not a permission: `keke exec` has no one
+to ask, so a call needing approval is refused unless it is told `--approval
+never`.
+
 ## Extension points
 
 `keke-plugin-api` defines narrow contributor traits — `ToolContributor`,
