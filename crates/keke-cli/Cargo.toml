@@ -12,6 +12,8 @@ name = "keke"
 path = "src/main.rs"
 
 [dependencies]
+keke-acp = { workspace = true }
+keke-tui = { workspace = true }
 keke-auth-api = { workspace = true }
 keke-auth-codex = { workspace = true }
 keke-auth-grok = { workspace = true }

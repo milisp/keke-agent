@@ -58,9 +58,14 @@ pub(crate) struct Composed {
 
 impl Composed {
     /// Build the full set of vendors, tools, and extensions.
+    /// `approvals` is the surface's answer to an approval request. A surface
+    /// that cannot ask passes `None`, and the engine's default — denial — takes
+    /// over; the registry is frozen once built, so this has to be decided here
+    /// rather than added later.
     pub(crate) fn build(
         home: &keke_paths::AbsPath,
         declared: &[keke_config_types::ProviderDeclaration],
+        approvals: Option<Arc<keke_acp::Approvals>>,
     ) -> Result<Self> {
         let credentials: Arc<dyn CredentialStore> = Arc::new(keke_credentials::standard_store(
             CREDENTIAL_SERVICE,
@@ -123,6 +128,9 @@ impl Composed {
         // --- extensions ----------------------------------------------------
         let mut extensions = ExtensionRegistryBuilder::new();
         keke_tools::install(&mut extensions);
+        if let Some(approvals) = approvals {
+            keke_acp::install(&mut extensions, approvals);
+        }
 
         Ok(Self {
             credentials,

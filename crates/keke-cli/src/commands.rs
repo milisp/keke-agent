@@ -45,15 +45,97 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         config.model.model = model;
     }
 
-    let composed = Composed::build(&config.home.home, &config.providers)?;
+    // Only the interactive surface can answer an approval request, so only it
+    // installs the bridge; everything else runs with the engine's default.
+    let command = cli.command.unwrap_or(Command::Tui);
+    let interactive = matches!(command, Command::Tui);
+    let (approvals, requests) = keke_acp::approvals();
+    let composed = Composed::build(
+        &config.home.home,
+        &config.providers,
+        interactive.then(|| Arc::clone(&approvals)),
+    )?;
 
-    match cli.command {
+    match command {
+        Command::Tui => tui(config, composed, cwd, approvals, requests).await,
         Command::Exec(args) => exec(args, config, composed, cwd).await,
         Command::Login(args) => login(args, composed).await,
         Command::Logout(args) => logout(args, composed).await,
         Command::Models(args) => models(args, composed).await,
         Command::Doctor => doctor(config, composed),
     }
+}
+
+/// Resolve the provider for `route`, failing with what is actually available.
+fn provider_for(composed: &Composed, route: &str) -> Result<keke_provider_api::ArcProvider> {
+    // `context` would make the hint the headline and the failure the cause,
+    // which reads backwards; the failure is what happened.
+    composed.providers.get(route).map_err(|error| {
+        anyhow::anyhow!(
+            "{error}\n\navailable providers: {}",
+            composed.providers.routes().collect::<Vec<_>>().join(", ")
+        )
+    })
+}
+
+/// Assemble the session every surface runs on.
+///
+/// Shared so the interface and `exec` cannot drift into offering different
+/// tools, a different budget, or a different approval policy.
+async fn session_builder(
+    config: &Config,
+    composed: &Composed,
+    cwd: std::path::PathBuf,
+    approval: keke_config_types::ApprovalPolicy,
+) -> Result<SessionBuilder> {
+    let route = config.model.provider.clone();
+    let provider = provider_for(composed, &route)?;
+    let auth = composed.auth_for(&route);
+
+    // Checked before the turn starts: discovering this after a rollout log has
+    // been opened and a request built is a worse experience than one line here.
+    if auth
+        .as_ref()
+        .is_some_and(|auth| !auth.has_usable_credential())
+    {
+        bail!("not signed in to `{route}`; run `keke login {route}`");
+    }
+
+    let mut builder = SessionBuilder::new()
+        .config(SessionConfig {
+            model: ModelSelection {
+                provider: route,
+                model: config.model.model.clone(),
+            },
+            home: HomeLayout {
+                home: config.home.home.clone(),
+                workspace_root: config.home.workspace_root.clone(),
+            },
+            max_output_tokens: config.max_output_tokens,
+            compaction: config.compaction,
+            approval,
+        })
+        .provider(provider)
+        .extensions(composed.extensions.clone())
+        .cwd(cwd);
+
+    if let Some(auth) = auth {
+        builder = builder.auth(auth);
+    }
+    Ok(builder)
+}
+
+/// Open the interactive interface.
+async fn tui(
+    config: Config,
+    composed: Composed,
+    cwd: std::path::PathBuf,
+    approvals: Arc<keke_acp::Approvals>,
+    requests: keke_acp::ApprovalRequests,
+) -> Result<()> {
+    let builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+    let (conversation, updates) = keke_acp::local(builder, approvals, requests).await?;
+    keke_tui::run(conversation, updates).await
 }
 
 async fn exec(
@@ -76,49 +158,15 @@ async fn exec(
         bail!("no prompt given; pass one as an argument or on stdin");
     }
 
-    let route = config.model.provider.clone();
-    // `context` would make the hint the headline and the failure the cause,
-    // which reads backwards; the failure is what happened.
-    let provider = composed.providers.get(&route).map_err(|error| {
-        anyhow::anyhow!(
-            "{error}\n\navailable providers: {}",
-            composed.providers.routes().collect::<Vec<_>>().join(", ")
-        )
-    })?;
-
-    let auth = composed.auth_for(&route);
-    // Checked before the turn starts: discovering this after a rollout log has
-    // been opened and a request built is a worse experience than one line here.
-    if auth
-        .as_ref()
-        .is_some_and(|auth| !auth.has_usable_credential())
-    {
-        bail!("not signed in to `{route}`; run `keke login {route}`");
-    }
-
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut builder = SessionBuilder::new()
-        .config(SessionConfig {
-            model: ModelSelection {
-                provider: route.clone(),
-                model: config.model.model.clone(),
-            },
-            home: HomeLayout {
-                home: config.home.home.clone(),
-                workspace_root: config.home.workspace_root.clone(),
-            },
-            max_output_tokens: config.max_output_tokens,
-            compaction: config.compaction,
-            approval: args.approval.unwrap_or(config.approval_policy),
-        })
-        .provider(provider)
-        .extensions(composed.extensions.clone())
-        .cwd(cwd)
-        .updates(tx);
-
-    if let Some(auth) = auth {
-        builder = builder.auth(auth);
-    }
+    let builder = session_builder(
+        &config,
+        &composed,
+        cwd,
+        args.approval.unwrap_or(config.approval_policy),
+    )
+    .await?
+    .updates(tx);
 
     let mut session = builder.build().await?;
     let log_path = session.log_path().to_path_buf();

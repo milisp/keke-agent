@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 keke-core = { workspace = true }
+keke-plugin-api = { workspace = true }
 keke-paths = { workspace = true }
 keke-protocol = { workspace = true }
 agent-client-protocol = { workspace = true }
@@ -21,6 +22,12 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sy
 tracing = { workspace = true }
 
 [dev-dependencies]
+keke-config-types = { workspace = true }
+keke-paths = { workspace = true }
+keke-provider-api = { workspace = true }
+keke-tool = { workspace = true }
+schemars = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]

@@ -9,8 +9,9 @@ use clap::Subcommand;
 #[derive(Debug, Parser)]
 #[command(name = "keke", version, about, disable_help_subcommand = true)]
 pub(crate) struct Cli {
+    /// Omitted, keke opens the interactive interface.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Directory to work in. Defaults to the current directory.
     #[arg(long, short = 'C', global = true)]
@@ -27,6 +28,8 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Open the interactive interface. The default when no command is given.
+    Tui,
     /// Run one prompt to completion and print the reply.
     Exec(ExecArgs),
     /// Authenticate with a provider.
