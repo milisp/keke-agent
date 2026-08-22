@@ -4,8 +4,7 @@ A multi-vendor terminal coding agent, built so that vendor-specific behavior
 lives in replaceable plugins rather than in a monolith.
 
 > Status: `keke exec` works end to end — a turn runs, tools execute, and the
-> session is recorded in a replayable log. The xAI provider and its OAuth flow
-> are in; ChatGPT, the ACP server, and the TUI are next.
+> session is recorded in a replayable log. The ACP server and the TUI are next.
 
 ## Design in one paragraph
 
@@ -22,10 +21,26 @@ See [`docs/architecture.md`](docs/architecture.md) for the reasoning, and
 ## Try it
 
 ```sh
-export XAI_API_KEY=...        # or: cargo run -p keke-cli -- login
-cargo run -p keke-cli -- exec "what does this project do?"
-cargo run -p keke-cli -- doctor
+keke login grok               # or: export XAI_API_KEY=...
+keke exec "what does this project do?"
+keke doctor                   # what got resolved, and what is missing
 ```
+
+Point it at any OpenAI-compatible endpoint without touching the code — declare
+it in `$KEKE_HOME/config.toml`:
+
+```toml
+[providers.ollama]
+base-url = "http://localhost:11434/v1"
+default-model = "gpt-oss:20b-cloud"
+
+[providers.nvidia]
+base-url = "https://integrate.api.nvidia.com/v1"
+env-key = "NVIDIA_API_KEY"
+```
+
+`wire = "chat-completions" | "responses" | "messages"` picks the format; the
+default is chat completions.
 
 ## Layout
 
@@ -35,8 +50,10 @@ crates/
   keke-config-types  keke-provider-api  keke-auth-api
   keke-plugin-api
   keke-core  keke-config  keke-credentials  keke-workspace   # tier 1: engine
-  keke-provider-xai  keke-auth-xai  keke-tools               # tier 2: plugins
-  keke-cli                                                   # tier 3: surfaces
+  keke-wire                                                  # the three wire formats
+  keke-provider-grok  keke-provider-nvidia                    # tier 2: plugins
+  keke-auth-grok  keke-auth-codex  keke-tools
+  keke-cli                                                    # tier 3: surfaces
 ```
 
 ## Development
