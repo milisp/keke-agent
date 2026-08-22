@@ -18,6 +18,7 @@ keke-plugin-api = { path = "crates/keke-plugin-api", version = "0.1.0" }
 keke-protocol = { path = "crates/keke-protocol", version = "0.1.0" }
 keke-provider-api = { path = "crates/keke-provider-api", version = "0.1.0" }
 keke-tool = { path = "crates/keke-tool", version = "0.1.0" }
+keke-wire = { path = "crates/keke-wire", version = "0.1.0" }
 
 # --- tier 1: engine ---
 keke-config = { path = "crates/keke-config", version = "0.1.0" }
@@ -26,12 +27,16 @@ keke-credentials = { path = "crates/keke-credentials", version = "0.1.0" }
 keke-workspace = { path = "crates/keke-workspace", version = "0.1.0" }
 
 # --- tier 2: plugins ---
-keke-auth-xai = { path = "crates/keke-auth-xai", version = "0.1.0" }
-keke-provider-xai = { path = "crates/keke-provider-xai", version = "0.1.0" }
+keke-auth-codex = { path = "crates/keke-auth-codex", version = "0.1.0" }
+keke-auth-grok = { path = "crates/keke-auth-grok", version = "0.1.0" }
+keke-provider-grok = { path = "crates/keke-provider-grok", version = "0.1.0" }
+keke-provider-nvidia = { path = "crates/keke-provider-nvidia", version = "0.1.0" }
+keke-test-support = { path = "crates/keke-test-support", version = "0.1.0" }
 keke-tools = { path = "crates/keke-tools", version = "0.1.0" }
 
 # --- third-party ---
 anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

@@ -26,17 +26,17 @@ use keke_provider_api::WireApi;
 use serde::Deserialize;
 
 /// The public xAI endpoint. Overridable per deployment through
-/// [`XaiProvider::new`], which is how a proxy or a test server is pointed at.
+/// [`GrokProvider::new`], which is how a proxy or a test server is pointed at.
 const DEFAULT_BASE_URL: &str = "https://api.x.ai/v1";
 
 /// xAI's Grok models over the chat-completions wire.
-pub struct XaiProvider {
+pub struct GrokProvider {
     info: ProviderInfo,
     auth: Arc<dyn AuthProvider>,
     http: reqwest::Client,
 }
 
-impl XaiProvider {
+impl GrokProvider {
     #[must_use]
     pub fn new(auth: Arc<dyn AuthProvider>, base_url: Option<String>) -> Self {
         let base_url = base_url
@@ -44,11 +44,11 @@ impl XaiProvider {
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         Self {
             info: ProviderInfo {
-                route: "xai".to_string(),
+                route: "grok".to_string(),
                 display_name: "xAI Grok".to_string(),
                 base_url: base_url.trim_end_matches('/').to_string(),
                 wire_api: WireApi::ChatCompletions,
-                auth_id: Some("xai".to_string()),
+                auth_id: Some("grok".to_string()),
                 env_key: Some("XAI_API_KEY".to_string()),
             },
             auth,
@@ -79,7 +79,7 @@ impl XaiProvider {
     }
 }
 
-impl ModelProvider for XaiProvider {
+impl ModelProvider for GrokProvider {
     fn info(&self) -> &ProviderInfo {
         &self.info
     }

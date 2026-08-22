@@ -27,11 +27,17 @@ RANK = {
     "keke-provider-api": 3,
     "keke-auth-api": 3,
     "keke-plugin-api": 4,
+    # tier 0.5 - shared wire implementation, above the contracts and below the
+    # vendor plugins that configure it
+    "keke-wire": 5,
     # tier 1 - engine
     "keke-config": 10,
     "keke-credentials": 10,
     "keke-workspace": 11,
     "keke-core": 12,
+    # test support sits beside the plugins: it may use the contracts, and
+    # anything may depend on it as a dev-dependency
+    "keke-test-support": 15,
     # tier 3 - surfaces
     "keke-acp": 30,
     "keke-tui": 31,

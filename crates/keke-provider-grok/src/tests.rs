@@ -27,7 +27,7 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-use super::XaiProvider;
+use super::GrokProvider;
 
 /// Counts calls so the per-request header rule can be asserted directly.
 #[derive(Default)]
@@ -37,12 +37,12 @@ struct StubAuth {
 
 impl AuthProvider for StubAuth {
     fn id(&self) -> &'static str {
-        "xai"
+        "grok"
     }
 
     fn snapshot(&self) -> CredentialSnapshot {
         CredentialSnapshot {
-            auth_id: "xai".to_string(),
+            auth_id: "grok".to_string(),
             source: "test".to_string(),
             ..CredentialSnapshot::default()
         }
@@ -77,9 +77,9 @@ fn stream_response(body: String) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
 }
 
-async fn provider_over(server: &MockServer) -> (XaiProvider, Arc<StubAuth>) {
+async fn provider_over(server: &MockServer) -> (GrokProvider, Arc<StubAuth>) {
     let auth = Arc::new(StubAuth::default());
-    let provider = XaiProvider::new(auth.clone(), Some(format!("{}/v1", server.uri())));
+    let provider = GrokProvider::new(auth.clone(), Some(format!("{}/v1", server.uri())));
     (provider, auth)
 }
 
@@ -91,7 +91,7 @@ fn request() -> ModelRequest {
     }
 }
 
-async fn collect(provider: &XaiProvider) -> Vec<Result<StreamChunk, ProviderError>> {
+async fn collect(provider: &GrokProvider) -> Vec<Result<StreamChunk, ProviderError>> {
     provider
         .stream(request())
         .await
@@ -100,7 +100,7 @@ async fn collect(provider: &XaiProvider) -> Vec<Result<StreamChunk, ProviderErro
         .await
 }
 
-async fn collect_ok(provider: &XaiProvider) -> Vec<StreamChunk> {
+async fn collect_ok(provider: &GrokProvider) -> Vec<StreamChunk> {
     collect(provider)
         .await
         .into_iter()
@@ -407,12 +407,12 @@ async fn models_are_listed_from_the_models_endpoint() {
 
 #[test]
 fn provider_info_names_its_route_and_credentials() {
-    let provider = XaiProvider::new(Arc::new(StubAuth::default()), None);
+    let provider = GrokProvider::new(Arc::new(StubAuth::default()), None);
     let info = provider.info();
 
-    assert_eq!(info.route, "xai");
+    assert_eq!(info.route, "grok");
     assert_eq!(info.display_name, "xAI Grok");
-    assert_eq!(info.auth_id.as_deref(), Some("xai"));
+    assert_eq!(info.auth_id.as_deref(), Some("grok"));
     assert_eq!(info.env_key.as_deref(), Some("XAI_API_KEY"));
     assert_eq!(info.base_url, "https://api.x.ai/v1");
     assert_eq!(info.wire_api, keke_provider_api::WireApi::ChatCompletions);

@@ -35,14 +35,14 @@ pub use config::DEFAULT_API_KEY_REF;
 pub use config::DEFAULT_CLIENT_ID;
 pub use config::DEFAULT_ISSUER;
 pub use config::DEFAULT_TOKENS_REF;
-pub use config::XaiAuthConfig;
+pub use config::GrokAuthConfig;
 
 use crate::device::Delay;
 use crate::device::TokioDelay;
 use crate::tokens::SOURCE_ENV;
 use crate::tokens::StoredTokens;
 
-pub const AUTH_ID: &str = "xai";
+pub const AUTH_ID: &str = "grok";
 
 /// Outcome of the last refresh, and the generation it belongs to.
 ///
@@ -56,8 +56,8 @@ struct Refresh {
 }
 
 /// The xAI [`AuthProvider`].
-pub struct XaiAuth {
-    config: XaiAuthConfig,
+pub struct GrokAuth {
+    config: GrokAuthConfig,
     store: Arc<dyn CredentialStore>,
     http: reqwest::Client,
     refresh: Mutex<Refresh>,
@@ -65,8 +65,8 @@ pub struct XaiAuth {
     delay: Arc<dyn Delay>,
 }
 
-impl XaiAuth {
-    pub fn new(store: Arc<dyn CredentialStore>, config: XaiAuthConfig) -> Self {
+impl GrokAuth {
+    pub fn new(store: Arc<dyn CredentialStore>, config: GrokAuthConfig) -> Self {
         Self {
             config,
             store,
@@ -82,11 +82,11 @@ impl XaiAuth {
 
     /// Against the public xAI issuer.
     pub fn with_defaults(store: Arc<dyn CredentialStore>) -> Self {
-        Self::new(store, XaiAuthConfig::default())
+        Self::new(store, GrokAuthConfig::default())
     }
 
     #[must_use]
-    pub fn config(&self) -> &XaiAuthConfig {
+    pub fn config(&self) -> &GrokAuthConfig {
         &self.config
     }
 
@@ -192,7 +192,7 @@ fn stable_id(namespace: &str, secret: &str) -> String {
     )
 }
 
-impl AuthProvider for XaiAuth {
+impl AuthProvider for GrokAuth {
     fn id(&self) -> &'static str {
         AUTH_ID
     }
@@ -315,8 +315,8 @@ mod tests {
 
     #[test]
     fn the_registry_key_is_stable() {
-        let auth = XaiAuth::with_defaults(Arc::new(MemoryStore::new()));
-        assert_eq!(auth.id(), "xai");
+        let auth = GrokAuth::with_defaults(Arc::new(MemoryStore::new()));
+        assert_eq!(auth.id(), "grok");
     }
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn a_blank_stored_credential_is_not_a_credential() {
         let store = Arc::new(MemoryStore::new());
-        let auth = XaiAuth::with_defaults(store.clone());
+        let auth = GrokAuth::with_defaults(store.clone());
         store.save(&auth.config.tokens_ref, "").unwrap();
         store.save(&auth.config.api_key_ref, "   ").unwrap();
 
@@ -345,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn a_snapshot_never_carries_the_token() {
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::default());
+        let auth = xai(&store, GrokAuthConfig::default());
         store_tokens(
             &store,
             &auth,
@@ -355,7 +355,7 @@ mod tests {
         );
 
         let snapshot = auth.snapshot();
-        assert_eq!(snapshot.auth_id, "xai");
+        assert_eq!(snapshot.auth_id, "grok");
         assert_eq!(snapshot.source, "device-code");
         assert_eq!(snapshot.account_id.as_deref(), Some("user-7"));
         assert_eq!(snapshot.organization_id.as_deref(), Some("org-3"));
@@ -365,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn an_api_key_is_the_fallback_and_reports_its_source() {
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::default());
+        let auth = xai(&store, GrokAuthConfig::default());
         store.save(&auth.config.api_key_ref, "xai-key-1").unwrap();
 
         let headers: Vec<_> = auth
@@ -386,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn logout_clears_the_minted_credential_but_not_a_supplied_key() {
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::default());
+        let auth = xai(&store, GrokAuthConfig::default());
         store_tokens(&store, &auth, "access".into(), None, tokens::SOURCE_OAUTH);
         store.save(&auth.config.api_key_ref, "xai-key-1").unwrap();
 
@@ -419,7 +419,7 @@ mod tests {
             .await;
 
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::new(server.uri(), "client-1"));
+        let auth = xai(&store, GrokAuthConfig::new(server.uri(), "client-1"));
         store_tokens(
             &store,
             &auth,
@@ -458,7 +458,7 @@ mod tests {
             .await;
 
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::new(server.uri(), "client-1"));
+        let auth = xai(&store, GrokAuthConfig::new(server.uri(), "client-1"));
         store_tokens(
             &store,
             &auth,
@@ -485,7 +485,7 @@ mod tests {
             .await;
 
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::new(server.uri(), "client-1"));
+        let auth = xai(&store, GrokAuthConfig::new(server.uri(), "client-1"));
         let expired = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() - 30));
         store_tokens(
             &store,
@@ -507,7 +507,7 @@ mod tests {
     async fn a_token_that_is_still_good_is_used_as_is() {
         let server = MockServer::start().await;
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::new(server.uri(), "client-1"));
+        let auth = xai(&store, GrokAuthConfig::new(server.uri(), "client-1"));
         let fresh = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() + 3600));
         store_tokens(
             &store,
@@ -541,7 +541,7 @@ mod tests {
             .await;
 
         let store = Arc::new(MemoryStore::new());
-        let auth = xai(&store, XaiAuthConfig::new(server.uri(), "client-1"));
+        let auth = xai(&store, GrokAuthConfig::new(server.uri(), "client-1"));
         let expired = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() - 30));
         store_tokens(
             &store,

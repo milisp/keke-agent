@@ -21,7 +21,7 @@ const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access"
 /// client, must not have to fork the plugin to say so. The `Default` impl is
 /// the public xAI deployment and nothing more.
 #[derive(Clone, Debug)]
-pub struct XaiAuthConfig {
+pub struct GrokAuthConfig {
     pub issuer: String,
     pub client_id: String,
     pub scopes: Vec<String>,
@@ -44,7 +44,7 @@ pub struct XaiAuthConfig {
     pub slow_down_increment: Duration,
 }
 
-impl XaiAuthConfig {
+impl GrokAuthConfig {
     /// Configure against `issuer` for `client_id`, deriving the standard
     /// endpoint paths. Override the endpoint fields afterwards for an issuer
     /// that lays them out differently.
@@ -84,7 +84,7 @@ impl XaiAuthConfig {
     }
 }
 
-impl Default for XaiAuthConfig {
+impl Default for GrokAuthConfig {
     fn default() -> Self {
         Self::new(DEFAULT_ISSUER, DEFAULT_CLIENT_ID)
     }

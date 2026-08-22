@@ -213,7 +213,7 @@ fn an_unknown_provider_names_the_ones_that_exist() {
     assert!(!output.status.success());
     assert!(stderr.contains("nope"), "{stderr}");
     assert!(
-        stderr.contains("xai"),
+        stderr.contains("grok"),
         "the hint must list what exists: {stderr}"
     );
 }
@@ -230,7 +230,7 @@ fn doctor_reports_what_was_resolved() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("xai"), "{stdout}");
+    assert!(stdout.contains("grok"), "{stdout}");
     assert!(
         stdout.contains("keke login"),
         "an unauthenticated provider must say how to fix it: {stdout}"

@@ -24,7 +24,7 @@ pub enum WireApi {
 /// Static facts about a provider.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderInfo {
-    /// The registry key, e.g. `"xai"` or `"chatgpt"`. Stable; config names it.
+    /// The registry key, e.g. `"grok"` or `"chatgpt"`. Stable; config names it.
     pub route: String,
     /// Human-readable name for surfaces.
     pub display_name: String,

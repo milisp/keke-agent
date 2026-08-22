@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 keke-auth-api = { workspace = true }
-keke-auth-xai = { workspace = true }
+keke-auth-grok = { workspace = true }
 keke-config = { workspace = true }
 keke-config-types = { workspace = true }
 keke-core = { workspace = true }
@@ -22,7 +22,7 @@ keke-paths = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
-keke-provider-xai = { workspace = true }
+keke-provider-grok = { workspace = true }
 keke-tools = { workspace = true }
 keke-workspace = { workspace = true }
 anyhow = { workspace = true }

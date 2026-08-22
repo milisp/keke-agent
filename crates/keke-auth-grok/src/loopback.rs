@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpListener;
 use url::Url;
 
-use crate::XaiAuthConfig;
+use crate::GrokAuthConfig;
 use crate::endpoint::exchange;
 use crate::pkce::Pkce;
 use crate::pkce::random_token;
@@ -35,7 +35,7 @@ pub(crate) async fn bind() -> std::io::Result<TcpListener> {
 
 pub(crate) async fn run(
     http: &Client,
-    config: &XaiAuthConfig,
+    config: &GrokAuthConfig,
     ui: &dyn LoginUi,
     listener: TcpListener,
 ) -> Result<StoredTokens, AuthError> {
@@ -73,7 +73,7 @@ pub(crate) async fn run(
 }
 
 fn authorize_url(
-    config: &XaiAuthConfig,
+    config: &GrokAuthConfig,
     redirect_uri: &str,
     pkce: &Pkce,
     state: &str,
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn the_authorize_url_carries_the_s256_challenge() {
-        let config = XaiAuthConfig::new("https://issuer.test", "client-1");
+        let config = GrokAuthConfig::new("https://issuer.test", "client-1");
         let pkce = Pkce::generate();
         let url = authorize_url(&config, "http://127.0.0.1:1234/callback", &pkce, "st").unwrap();
         let params: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
@@ -246,7 +246,7 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::matchers::path;
 
-        use crate::XaiAuth;
+        use crate::GrokAuth;
         use crate::test_support::RecordingUi;
 
         let server = MockServer::start().await;
@@ -261,9 +261,9 @@ mod tests {
             .await;
 
         let store = Arc::new(MemoryStore::new());
-        let auth = Arc::new(XaiAuth::new(
+        let auth = Arc::new(GrokAuth::new(
             store.clone(),
-            XaiAuthConfig::new(server.uri(), "client-1"),
+            GrokAuthConfig::new(server.uri(), "client-1"),
         ));
         let ui = RecordingUi::new();
 

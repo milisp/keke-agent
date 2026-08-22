@@ -11,8 +11,8 @@ use keke_auth_api::CredentialStore as _;
 use keke_auth_api::LoginUi;
 use keke_credentials::MemoryStore;
 
-use crate::XaiAuth;
-use crate::XaiAuthConfig;
+use crate::GrokAuth;
+use crate::GrokAuthConfig;
 use crate::device::Delay;
 use crate::tokens::StoredTokens;
 
@@ -81,13 +81,13 @@ impl Delay for RecordingDelay {
     }
 }
 
-pub(crate) fn xai(store: &Arc<MemoryStore>, config: XaiAuthConfig) -> XaiAuth {
-    XaiAuth::new(store.clone(), config)
+pub(crate) fn xai(store: &Arc<MemoryStore>, config: GrokAuthConfig) -> GrokAuth {
+    GrokAuth::new(store.clone(), config)
 }
 
 pub(crate) fn store_tokens(
     store: &Arc<MemoryStore>,
-    auth: &XaiAuth,
+    auth: &GrokAuth,
     access_token: String,
     refresh_token: Option<&str>,
     source: &str,

@@ -86,7 +86,7 @@ pub struct CompactionFile {
 ///
 /// These are defaults, not policy: every one of them is overridable from a
 /// config file, which is what invariant 9 in `AGENTS.md` requires.
-const DEFAULT_PROVIDER: &str = "xai";
+const DEFAULT_PROVIDER: &str = "grok";
 const DEFAULT_MODEL: &str = "grok-4";
 
 impl Config {
@@ -197,7 +197,7 @@ mod tests {
         let config = Config::from_layers(home(), &layers).expect("merges");
 
         // The project layer overrode only `model`; `provider` survived.
-        assert_eq!(config.model.provider, "xai");
+        assert_eq!(config.model.provider, "grok");
         assert_eq!(config.model.model, "grok-4-fast");
     }
 

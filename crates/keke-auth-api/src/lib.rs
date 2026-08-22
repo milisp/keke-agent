@@ -112,7 +112,7 @@ impl AuthHeaders {
 
 /// A vendor's authentication implementation.
 pub trait AuthProvider: Send + Sync + 'static {
-    /// Stable registry key, e.g. `"chatgpt"` or `"xai"`.
+    /// Stable registry key, e.g. `"chatgpt"` or `"grok"`.
     fn id(&self) -> &'static str;
 
     /// Non-secret description of the current credential.

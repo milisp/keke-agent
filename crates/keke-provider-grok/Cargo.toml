@@ -1,6 +1,6 @@
 [package]
-name = "keke-auth-xai"
-description = "xAI authentication: OAuth2 loopback, device code, and API key."
+name = "keke-provider-grok"
+description = "The xAI Grok model provider."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,20 +9,18 @@ repository.workspace = true
 
 [dependencies]
 keke-auth-api = { workspace = true }
-keke-credentials = { workspace = true }
-base64 = { workspace = true }
-rand = { workspace = true }
+keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
+eventsource-stream = { workspace = true }
+futures = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tracing = { workspace = true }
-url = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = { workspace = true }
 [lints]
 workspace = true

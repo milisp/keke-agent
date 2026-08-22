@@ -1,6 +1,6 @@
 [package]
-name = "keke-provider-xai"
-description = "The xAI Grok model provider."
+name = "keke-provider-nvidia"
+description = "The NVIDIA NIM model provider."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,18 +9,12 @@ repository.workspace = true
 
 [dependencies]
 keke-auth-api = { workspace = true }
-keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
-eventsource-stream = { workspace = true }
-futures = { workspace = true }
-reqwest = { workspace = true }
+keke-wire = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
+keke-test-support = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-wiremock = { workspace = true }
 [lints]
 workspace = true

@@ -51,8 +51,8 @@ pub(crate) struct ExecArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct LoginArgs {
-    /// Which vendor to authenticate with.
-    #[arg(long, default_value = "xai")]
+    /// Which vendor to authenticate with, e.g. `codex` or `grok`.
+    #[arg(default_value = "grok")]
     pub vendor: String,
 
     /// Use the device-code flow instead of a browser redirect. Needed when
@@ -63,6 +63,7 @@ pub(crate) struct LoginArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct VendorArgs {
-    #[arg(long, default_value = "xai")]
+    /// Which vendor to act on, e.g. `codex` or `grok`.
+    #[arg(default_value = "grok")]
     pub vendor: String,
 }

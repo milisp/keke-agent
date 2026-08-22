@@ -12,7 +12,7 @@ use keke_auth_api::LoginUi;
 use reqwest::Client;
 use serde::Deserialize;
 
-use crate::XaiAuthConfig;
+use crate::GrokAuthConfig;
 use crate::endpoint::TokenOutcome;
 use crate::endpoint::post_token;
 use crate::tokens::SOURCE_DEVICE_CODE;
@@ -54,7 +54,7 @@ struct DeviceAuthorization {
 
 pub(crate) async fn run(
     http: &Client,
-    config: &XaiAuthConfig,
+    config: &GrokAuthConfig,
     ui: &dyn LoginUi,
     delay: &dyn Delay,
 ) -> Result<StoredTokens, AuthError> {
@@ -73,7 +73,7 @@ pub(crate) async fn run(
 
 async fn authorize(
     http: &Client,
-    config: &XaiAuthConfig,
+    config: &GrokAuthConfig,
 ) -> Result<DeviceAuthorization, AuthError> {
     let response = http
         .post(&config.device_authorization_endpoint)
@@ -115,7 +115,7 @@ async fn authorize(
 
 async fn poll(
     http: &Client,
-    config: &XaiAuthConfig,
+    config: &GrokAuthConfig,
     ui: &dyn LoginUi,
     delay: &dyn Delay,
     grant: DeviceAuthorization,
@@ -189,7 +189,7 @@ mod tests {
     use wiremock::matchers::path;
 
     use super::*;
-    use crate::XaiAuth;
+    use crate::GrokAuth;
     use crate::test_support::RecordingDelay;
     use crate::test_support::RecordingUi;
     use crate::tokens::StoredTokens;
@@ -247,9 +247,9 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let ui = RecordingUi::new();
         let delay = RecordingDelay::new();
-        let auth = XaiAuth::new(
+        let auth = GrokAuth::new(
             store.clone(),
-            XaiAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_delay(delay.clone());
 
@@ -303,9 +303,9 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let ui = RecordingUi::new();
         let delay = RecordingDelay::new();
-        let auth = XaiAuth::new(
+        let auth = GrokAuth::new(
             store.clone(),
-            XaiAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_delay(delay.clone());
 
@@ -348,9 +348,9 @@ mod tests {
             .await;
 
         let store = Arc::new(MemoryStore::new());
-        let auth = XaiAuth::new(
+        let auth = GrokAuth::new(
             store.clone(),
-            XaiAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_delay(RecordingDelay::new());
 
@@ -372,9 +372,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let auth = XaiAuth::new(
+        let auth = GrokAuth::new(
             Arc::new(MemoryStore::new()),
-            XaiAuthConfig::new(server.uri(), "client-1").device_code_only(true),
+            GrokAuthConfig::new(server.uri(), "client-1").device_code_only(true),
         )
         .with_delay(RecordingDelay::new());
 

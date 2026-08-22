@@ -90,7 +90,7 @@ async fn exec(
         .as_ref()
         .is_some_and(|auth| !auth.has_usable_credential())
     {
-        bail!("not signed in to `{route}`; run `keke login --vendor {route}`");
+        bail!("not signed in to `{route}`; run `keke login {route}`");
     }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

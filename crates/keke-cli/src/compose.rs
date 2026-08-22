@@ -43,13 +43,13 @@ impl Composed {
 
         // --- vendors -------------------------------------------------------
         let mut auth = AuthRegistry::new();
-        let xai_auth: Arc<dyn AuthProvider> = Arc::new(keke_auth_xai::XaiAuth::with_defaults(
+        let xai_auth: Arc<dyn AuthProvider> = Arc::new(keke_auth_grok::GrokAuth::with_defaults(
             Arc::clone(&credentials),
         ));
         auth.register(Arc::clone(&xai_auth));
 
         let mut providers = ProviderRegistry::new();
-        let xai: ArcProvider = Arc::new(keke_provider_xai::XaiProvider::new(
+        let xai: ArcProvider = Arc::new(keke_provider_grok::GrokProvider::new(
             Arc::clone(&xai_auth),
             std::env::var("XAI_BASE_URL").ok(),
         ));
