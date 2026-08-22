@@ -53,6 +53,44 @@ impl LayeredStore {
     }
 }
 
+/// Which backends [`standard_store`] is allowed to use.
+///
+/// This exists because the OS keyring is *shared machine state*. A test that
+/// spawns the real binary would otherwise read whatever the developer running
+/// it happens to have logged into, so the suite would pass or fail depending on
+/// the machine. The same switch is what a CI runner or a container without a
+/// keyring daemon needs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StoreMode {
+    /// Keyring when the platform has one, else the file layer.
+    #[default]
+    Auto,
+    /// Never touch the keyring, even where one exists.
+    FileOnly,
+}
+
+impl StoreMode {
+    /// Read the mode from `KEKE_CREDENTIAL_STORE`.
+    ///
+    /// An unrecognized value falls back to [`StoreMode::Auto`] with a warning
+    /// rather than failing: a typo here should not stop keke from starting, but
+    /// it should not silently mean something either.
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("KEKE_CREDENTIAL_STORE").as_deref() {
+            Ok("file") => Self::FileOnly,
+            Ok("auto") | Err(_) => Self::Auto,
+            Ok(other) => {
+                tracing::warn!(
+                    value = other,
+                    "unrecognized KEKE_CREDENTIAL_STORE; expected `auto` or `file`"
+                );
+                Self::Auto
+            }
+        }
+    }
+}
+
 /// The default composition: keyring over `<home>/credentials.json` over the
 /// environment.
 ///
@@ -60,10 +98,17 @@ impl LayeredStore {
 /// failing every read, so an SSH session or a container degrades to the file
 /// layer rather than to no credentials at all.
 pub fn standard_store(service: &str, file: FileStore) -> LayeredStore {
-    let keyring = KeyringStore::new(service);
+    standard_store_with_mode(service, file, StoreMode::from_env())
+}
+
+/// [`standard_store`] with the backend choice made explicitly.
+pub fn standard_store_with_mode(service: &str, file: FileStore, mode: StoreMode) -> LayeredStore {
     let mut store = LayeredStore::new();
-    if keyring.available() {
-        store = store.layer(keyring, KeyringStore::origin());
+    if mode == StoreMode::Auto {
+        let keyring = KeyringStore::new(service);
+        if keyring.available() {
+            store = store.layer(keyring, KeyringStore::origin());
+        }
     }
     store
         .layer(file, FileStore::origin())

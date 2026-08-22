@@ -21,7 +21,9 @@ pub use file::FileStore;
 pub use file::keke_home;
 pub use keyring_store::KeyringStore;
 pub use layered::LayeredStore;
+pub use layered::StoreMode;
 pub use layered::standard_store;
+pub use layered::standard_store_with_mode;
 pub use memory::MemoryStore;
 
 /// Apply the "an empty stored value is absent" rule.

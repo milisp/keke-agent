@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn later_layers_override_earlier_ones_field_by_field() {
         let layers = vec![
-            layer("user", "provider = \"xai\"\nmodel = \"grok-4\"\n"),
+            layer("user", "provider = \"grok\"\nmodel = \"grok-4\"\n"),
             layer("project", "model = \"grok-4-fast\"\n"),
         ];
         let config = Config::from_layers(home(), &layers).expect("merges");
