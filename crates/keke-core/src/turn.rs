@@ -53,6 +53,12 @@ pub struct TurnOutcome {
 impl Session {
     /// Run one turn to completion.
     pub async fn run_turn(&mut self, input: Message) -> Result<TurnOutcome, CoreError> {
+        // A cancel belongs to the turn it interrupted. Carrying it forward made
+        // the next turn stop after its first tool batch, which reads as the
+        // agent giving up for no reason — and only when that turn used a tool,
+        // since that is the one place the flag is read.
+        self.reset_cancellation();
+
         let turn = TurnId::new();
         let ext_ctx = ExtensionContext::new(self.id, self.thread);
 

@@ -598,3 +598,83 @@ async fn the_engine_enforces_a_budget_the_tool_ignores() {
     // A timeout is the harness cancelling, not the tool failing.
     assert_eq!(result.status, ToolStatus::Cancelled);
 }
+
+/// A TUI runs many turns in one session, so the history has to carry and the
+/// cancel flag must not.
+#[tokio::test]
+async fn a_second_turn_sees_the_first_and_starts_uncancelled() {
+    let harness = harness();
+    let call_id = ToolCallId::new("call-1");
+    let (provider, seen) = ScriptedProvider::new(vec![
+        text_reply("first"),
+        vec![
+            StreamChunk::ToolCallStart {
+                id: call_id.clone(),
+                name: "echo".to_string(),
+            },
+            StreamChunk::ToolCallArgsDelta {
+                id: call_id.clone(),
+                delta: "{\"text\":\"x\"}".to_string(),
+            },
+            StreamChunk::ToolCallEnd { id: call_id },
+            StreamChunk::Done(StopReason::ToolUse),
+        ],
+        text_reply("second"),
+        text_reply("third"),
+    ]);
+
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+
+    session
+        .run_turn(Message::user("one"))
+        .await
+        .expect("turn one");
+
+    // A cancelled turn must not poison the next one: pressing Ctrl-C and then
+    // asking another question is the commonest thing a person does. The flag is
+    // only read after a tool batch, so the next turn has to use a tool for a
+    // stale one to show itself.
+    session.cancel();
+    let second = session
+        .run_turn(Message::user("two"))
+        .await
+        .expect("turn two");
+    assert_eq!(
+        second.stop_reason,
+        StopReason::EndTurn,
+        "a cancel from a finished turn must not end the next one"
+    );
+
+    let outcome = session
+        .run_turn(Message::user("three"))
+        .await
+        .expect("turn three");
+    assert_eq!(
+        outcome.stop_reason,
+        StopReason::EndTurn,
+        "a stale cancel flag must not end a later turn"
+    );
+
+    // The third request carries everything before it.
+    let requests = seen.lock().expect("lock");
+    let transcript: Vec<String> = requests
+        .last()
+        .expect("a request")
+        .messages
+        .iter()
+        .map(Message::text)
+        .collect();
+    assert!(
+        transcript.contains(&"one".to_string()) && transcript.contains(&"first".to_string()),
+        "the first turn must still be in view: {transcript:?}"
+    );
+}
