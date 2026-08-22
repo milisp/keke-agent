@@ -1,0 +1,31 @@
+[package]
+name = "keke-cli"
+description = "The keke binary: the single composition root."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-auth-api = { workspace = true }
+keke-auth-xai = { workspace = true }
+keke-config = { workspace = true }
+keke-config-types = { workspace = true }
+keke-core = { workspace = true }
+keke-credentials = { workspace = true }
+keke-paths = { workspace = true }
+keke-plugin-api = { workspace = true }
+keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
+keke-provider-xai = { workspace = true }
+keke-tools = { workspace = true }
+keke-workspace = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+[lints]
+workspace = true

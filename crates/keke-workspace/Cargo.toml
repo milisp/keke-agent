@@ -1,0 +1,21 @@
+[package]
+name = "keke-workspace"
+description = "The execution host: filesystem access, VCS state, and process spawning."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-paths = { workspace = true }
+ignore = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+[lints]
+workspace = true

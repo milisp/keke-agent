@@ -19,14 +19,43 @@ keke-protocol = { path = "crates/keke-protocol", version = "0.1.0" }
 keke-provider-api = { path = "crates/keke-provider-api", version = "0.1.0" }
 keke-tool = { path = "crates/keke-tool", version = "0.1.0" }
 
+# --- tier 1: engine ---
+keke-config = { path = "crates/keke-config", version = "0.1.0" }
+keke-core = { path = "crates/keke-core", version = "0.1.0" }
+keke-credentials = { path = "crates/keke-credentials", version = "0.1.0" }
+keke-workspace = { path = "crates/keke-workspace", version = "0.1.0" }
+
+# --- tier 2: plugins ---
+keke-auth-xai = { path = "crates/keke-auth-xai", version = "0.1.0" }
+keke-provider-xai = { path = "crates/keke-provider-xai", version = "0.1.0" }
+keke-tools = { path = "crates/keke-tools", version = "0.1.0" }
+
 # --- third-party ---
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+eventsource-stream = "0.2"
 futures = "0.3"
+ignore = "0.4"
+keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
 thiserror = "2"
 tokio = "1"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
+wiremock = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

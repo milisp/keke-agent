@@ -1,0 +1,30 @@
+[package]
+name = "keke-core"
+description = "The agent engine: session lifecycle, the turn loop, tool dispatch, and the rollout log."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-paths = { workspace = true }
+keke-plugin-api = { workspace = true }
+keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
+keke-tool = { workspace = true }
+keke-workspace = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+[lints]
+workspace = true
