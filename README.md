@@ -1,11 +1,13 @@
 # keke
 
-A multi-vendor terminal coding agent, built so that vendor-specific behavior
-lives in replaceable plugins rather than in a monolith.
+> **keke** is an unbundled, BYOK, provider-agnostic AI coding harness built in Rust. 
+> Inspired by OpenAI codex, xAI grok-build, and deepseek-harness — 
+> featuring strict CI-enforced layering where vendor-specific behavior lives in 
+> replaceable plugins rather than a monolith.
 
-> Status: `keke exec`, the ACP server, and the TUI all work end to end, with
-> runtime plugin install/update/remove gated behind consent. See
-> [`docs/PROGRESS.md`](docs/PROGRESS.md) for what's done and what's next.
+## Status
+
+`keke exec`, the ACP server, and the TUI all work end to end, with runtime plugin operations gated behind consent. Check [`docs/PROGRESS.md`](docs/PROGRESS.md) for the active roadmap.
 
 ## Design in one paragraph
 
@@ -21,25 +23,29 @@ See [`docs/architecture.md`](docs/architecture.md) for the reasoning, and
 
 ## Try it
 
-```sh
-keke login grok               # or: export XAI_API_KEY=...
-keke exec "what does this project do?"
-keke resume                   # pick the last conversation back up
-keke resume --list            # ...or choose one; `keke resume 01a02d66` takes an id prefix
-keke doctor                   # what got resolved, and what is missing
-```
+Works out of the box with your existing API keys, local models, or CLI logins:
 
-Point it at any OpenAI-compatible endpoint without touching the code — declare
+```sh
+# 1. Quick start with environment variables
+export ANTHROPIC_API_KEY=sk-ant-...  # or OPENAI_API_KEY, XAI_API_KEY
+keke exec "what does this project do?"
+
+# 2. Interactive logins
+keke login codex
+keke login grok
+
+# 3. Resume & inspect sessions
+keke resume                          # pick up the last conversation
+keke doctor                          # inspect resolved providers & credentials
+
+
+Point it at any endpoint without touching the code — declare
 it in `$KEKE_HOME/config.toml`:
 
 ```toml
 [providers.ollama]
 base-url = "http://localhost:11434/v1"
-default-model = "gpt-oss:20b-cloud"
-
-[providers.nvidia]
-base-url = "https://integrate.api.nvidia.com/v1"
-env-key = "NVIDIA_API_KEY"
+default-model = "gpt-oss:20b"
 ```
 
 `wire = "chat-completions" | "responses" | "messages"` picks the format; the
