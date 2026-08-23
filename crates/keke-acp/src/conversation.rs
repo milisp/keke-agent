@@ -18,6 +18,7 @@ use keke_config_types::ApprovalPolicy;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
+use keke_protocol::Usage;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -60,6 +61,10 @@ pub enum Update {
         call: ToolCall,
         reason: String,
     },
+    /// One model step's token accounting. A surface shows what the turn is
+    /// costing while it is still running, which is while a person can still
+    /// decide to stop it.
+    TokensUsed(Usage),
     TurnEnded(StopReason),
     /// The turn failed. The conversation stays usable.
     Failed(String),

@@ -135,6 +135,11 @@ fn builtins() -> Vec<SlashCommand> {
     [
         (Builtin::Help, "help", "list the commands"),
         (Builtin::Clear, "clear", "clear the transcript on screen"),
+        // The same thing under the name people reach for first. Two names for
+        // one behavior rather than a second behavior: keke has one conversation
+        // per process, so "new" cannot mean a fresh session here without the
+        // word meaning something different from what it did a moment ago.
+        (Builtin::Clear, "new", "clear the transcript on screen"),
         (
             Builtin::Mode,
             "mode",

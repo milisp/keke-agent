@@ -241,6 +241,9 @@ async fn pump(
     while let Some(update) = updates.recv().await {
         match update {
             Update::TurnStarted => {}
+            // ACP has no place for token accounting today, and inventing a
+            // message for it would be keke's dialect rather than the protocol.
+            Update::TokensUsed(_) => {}
             Update::TextDelta(text) => {
                 notify(&cx, &id, SessionUpdate::AgentMessageChunk(chunk(text)))?;
             }

@@ -8,6 +8,8 @@
 use keke_acp::PermissionAnswer;
 use keke_acp::PermissionId;
 use keke_protocol::ContentBlock;
+use keke_protocol::Message;
+use keke_protocol::Role;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolCallId;
 use keke_protocol::ToolResult;
@@ -173,6 +175,49 @@ impl Transcript {
             Cell::Permission(prompt) if prompt.answer.is_none() => Some(prompt),
             _ => None,
         })
+    }
+
+    /// Rebuild the visible transcript from a resumed session's history.
+    ///
+    /// Reads the same messages the engine resumes with, so the screen and the
+    /// next request agree about what was said. A tool call is drawn from the
+    /// assistant message that made it and finished by the result that answered
+    /// it, exactly as the live path does — a call whose result never made it
+    /// into the log stays visibly unfinished rather than being drawn as a
+    /// success nobody recorded.
+    pub fn replay(&mut self, history: &[Message]) {
+        for message in history {
+            match message.role {
+                // The system prompt is not something a person said, and showing
+                // it would bury the conversation under it on every resume.
+                Role::System => {}
+                Role::User => {
+                    let text = message.text();
+                    if !text.trim().is_empty() {
+                        self.push(Cell::User(text));
+                    }
+                }
+                Role::Assistant => {
+                    let text = message.text();
+                    if !text.trim().is_empty() {
+                        self.push(Cell::Assistant(text));
+                    }
+                    for block in &message.content {
+                        if let ContentBlock::ToolCall(call) = block {
+                            self.start_tool(call);
+                        }
+                    }
+                }
+                Role::Tool => {
+                    for block in &message.content {
+                        if let ContentBlock::ToolResult(result) = block {
+                            self.finish_tool(result);
+                        }
+                    }
+                }
+            }
+        }
+        self.seal();
     }
 
     /// Mark every still-running call cancelled.

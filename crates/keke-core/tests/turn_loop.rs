@@ -1029,3 +1029,51 @@ async fn a_reviewer_cannot_undo_a_guard() {
         "a guarded call must not even reach the person"
     );
 }
+
+/// Invariant 6, cashed in: a session keke can replay is one keke can continue.
+/// The second run rebuilds its history from the first run's log alone, keeps
+/// writing to that same log, and sends the earlier exchange back to the model.
+#[tokio::test]
+async fn a_resumed_session_continues_the_log_it_was_rebuilt_from() {
+    let harness = harness();
+
+    let (provider, _seen) = ScriptedProvider::new(vec![text_reply("hello there")]);
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    session
+        .run_turn(Message::user("hi"))
+        .await
+        .expect("turn completes");
+    let id = session.id();
+    let log = session.log_path().to_path_buf();
+    drop(session);
+
+    let resumed = keke_core::load_session(&harness.home.home, id).expect("reads the log");
+    assert_eq!(resumed.history.len(), 2, "{:?}", resumed.history);
+    assert_eq!(resumed.usage.total(), 15);
+
+    let (provider, seen) = ScriptedProvider::new(vec![text_reply("still here")]);
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .resume(id, resumed.history)
+        .build()
+        .await
+        .expect("builds");
+    session
+        .run_turn(Message::user("still there?"))
+        .await
+        .expect("turn completes");
+
+    // What the model saw carries the first exchange, not just the new prompt.
+    let requests = seen.lock().expect("lock");
+    assert_eq!(requests[0].messages.len(), 3);
+    assert_eq!(requests[0].messages[0].text(), "hi");
+    // And one log, not two: the resumed session appends to the file it came
+    // from, or the record of the conversation is split in half.
+    assert_eq!(session.log_path(), log);
+}

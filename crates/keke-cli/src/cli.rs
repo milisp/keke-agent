@@ -43,6 +43,8 @@ fn parse_effort(raw: &str) -> Result<keke_config_types::ReasoningEffort, String>
 pub(crate) enum Command {
     /// Open the interactive interface. The default when no command is given.
     Tui,
+    /// Reopen a previous session and keep talking.
+    Resume(ResumeArgs),
     /// Run one prompt to completion and print the reply.
     Exec(ExecArgs),
     /// Serve the Agent Client Protocol on stdin and stdout, for an editor.
@@ -112,6 +114,16 @@ pub(crate) enum PluginAction {
         /// The plugin's name, as `list` prints it.
         name: String,
     },
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ResumeArgs {
+    /// Which session, as `--list` prints it. The most recent one if omitted.
+    pub session: Option<String>,
+
+    /// List what can be resumed instead of resuming anything.
+    #[arg(long)]
+    pub list: bool,
 }
 
 #[derive(Debug, clap::Args)]

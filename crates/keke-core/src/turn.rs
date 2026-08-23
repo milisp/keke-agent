@@ -159,6 +159,10 @@ impl Session {
 
             let (message, stop_reason, step_usage) = self.stream_one_step(turn, request).await?;
             usage.add(step_usage);
+            self.emit(TurnUpdate::StepUsage {
+                turn,
+                usage: step_usage,
+            });
 
             self.log(SessionEvent::ModelResponse {
                 turn,

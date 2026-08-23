@@ -25,6 +25,7 @@ use crate::cli::Command;
 use crate::cli::ExecArgs;
 use crate::cli::LoginArgs;
 use crate::cli::PluginAction;
+use crate::cli::ResumeArgs;
 use crate::cli::VendorArgs;
 use crate::compose::Composed;
 use crate::ui::TerminalLoginUi;
@@ -53,7 +54,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     // Only the interactive surface can answer an approval request, so only it
     // installs the bridge; everything else runs with the engine's default.
     let command = cli.command.unwrap_or(Command::Tui);
-    let interactive = matches!(command, Command::Tui);
+    // `resume` is the interface too, so it installs the approval bridge for the
+    // same reason: it is the one surface with somebody to ask.
+    let interactive = matches!(command, Command::Tui | Command::Resume(_));
     let (approvals, requests) = keke_acp::approvals();
     let composed = Composed::build(
         &config.home,
@@ -63,7 +66,19 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     )?;
 
     match command {
-        Command::Tui => tui(config, composed, cwd, approvals, requests).await,
+        Command::Tui => {
+            tui(
+                config,
+                composed,
+                cwd,
+                approvals,
+                requests,
+                keke_tui::Resumed::default(),
+                None,
+            )
+            .await
+        }
+        Command::Resume(args) => resume(args, config, composed, cwd, approvals, requests).await,
         Command::Exec(args) => exec(args, config, composed, cwd).await,
         Command::Agent { transport } => agent(transport, config, cwd).await,
         Command::Login(args) => login(args, composed).await,
@@ -201,6 +216,91 @@ impl keke_acp::SessionFactory for EditorSessions {
     }
 }
 
+/// Reopen a previous session, or list what there is to reopen.
+///
+/// The history comes from the rollout log and nowhere else: what keke can
+/// replay is what keke can continue, so there is no second record for the two
+/// to disagree about.
+async fn resume(
+    args: ResumeArgs,
+    config: Config,
+    composed: Composed,
+    cwd: std::path::PathBuf,
+    approvals: Arc<keke_acp::Approvals>,
+    requests: keke_acp::ApprovalRequests,
+) -> Result<()> {
+    let home = &config.home.home;
+    if args.list {
+        let sessions = keke_core::list_sessions(home)?;
+        if sessions.is_empty() {
+            println!(
+                "no sessions under {}",
+                keke_core::sessions_dir(home).display()
+            );
+            return Ok(());
+        }
+        for session in sessions {
+            println!(
+                "{}  {}  {} turn(s)  {}",
+                session.id,
+                if session.updated_at.is_empty() {
+                    "-"
+                } else {
+                    &session.updated_at
+                },
+                session.turns,
+                session.summary
+            );
+        }
+        return Ok(());
+    }
+
+    let id = match &args.session {
+        Some(named) => uuid::Uuid::parse_str(named)
+            .map(keke_protocol::SessionId::from)
+            .map_err(|_| {
+                anyhow::anyhow!("`{named}` is not a session id; try `keke resume --list`")
+            })?,
+        None => {
+            keke_core::latest_session(home)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no session to resume under {}",
+                        keke_core::sessions_dir(home).display()
+                    )
+                })?
+                .id
+        }
+    };
+
+    let resumed = keke_core::load_session(home, id)
+        .with_context(|| format!("reading the log for session {id}"))?;
+    // Where the session was started wins over where keke was invoked: resuming
+    // a conversation about another directory and silently pointing its tools at
+    // this one would be a different session wearing the same name.
+    let cwd = resumed.cwd.as_ref().map_or(cwd, std::path::PathBuf::from);
+    let notice = format!(
+        "resumed session {id} — {} message(s), {} tokens so far",
+        resumed.history.len(),
+        resumed.usage.total()
+    );
+    let seed = keke_tui::Resumed {
+        history: resumed.history.clone(),
+        usage: resumed.usage,
+        notice: Some(notice),
+    };
+    tui(
+        config,
+        composed,
+        cwd,
+        approvals,
+        requests,
+        seed,
+        Some((id, resumed.history)),
+    )
+    .await
+}
+
 /// Open the interactive interface.
 async fn tui(
     config: Config,
@@ -208,8 +308,13 @@ async fn tui(
     cwd: std::path::PathBuf,
     approvals: Arc<keke_acp::Approvals>,
     requests: keke_acp::ApprovalRequests,
+    seed: keke_tui::Resumed,
+    resume: Option<(keke_protocol::SessionId, Vec<keke_protocol::Message>)>,
 ) -> Result<()> {
-    let builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+    let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+    if let Some((id, history)) = resume {
+        builder = builder.resume(id, history);
+    }
     let commands = composed
         .commands
         .iter()
@@ -228,6 +333,7 @@ async fn tui(
         updates,
         keke_tui::SlashCommands::new(commands),
         config.approval_policy,
+        seed,
     )
     .await
 }

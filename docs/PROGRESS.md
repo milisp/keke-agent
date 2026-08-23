@@ -40,6 +40,12 @@ drift the way the README status line did.
   `plugin:name — description` index line is injected up front, the body is
   read on demand by qualified name.
 
+- **Resume** — `keke resume [id]` (`--list` to see what there is) rebuilds a
+  session's history from its rollout log alone and appends to that same log,
+  seeding the TUI transcript from the same messages the model gets.
+- **Live turn clock and token count** in the TUI status bar, ticking while a
+  turn runs.
+
 ## In progress / next
 
 - **MCP tool-call closure, end to end** — install a real MCP plugin

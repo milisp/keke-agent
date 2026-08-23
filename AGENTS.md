@@ -65,7 +65,9 @@ implementation lost it and paid for it.
     is no setting for "no budget": a hook runs before the tool it guards, so one
     that never returns does not slow the turn down, it stops it.
 
-12. **Repository content does not execute without consent.** A plugin under the
+12. use parallel subagent when you should
+
+13. **Repository content does not execute without consent.** A plugin under the
     workspace is content the repository controls, so its hooks and MCP servers
     are withheld until a person approves them — `git clone` must never be
     sufficient for execution. Approval is of contents, not of a path: the

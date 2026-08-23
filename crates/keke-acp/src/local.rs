@@ -242,6 +242,7 @@ fn translate(turn: TurnUpdate) -> Update {
         TurnUpdate::ThinkingDelta { delta, .. } => Update::ThinkingDelta(delta),
         TurnUpdate::ToolCallStarted { call } => Update::ToolCallStarted(call),
         TurnUpdate::ToolCallEnded { result } => Update::ToolCallEnded(result),
+        TurnUpdate::StepUsage { usage, .. } => Update::TokensUsed(usage),
         TurnUpdate::TurnEnded { stop_reason, .. } => Update::TurnEnded(stop_reason),
     }
 }

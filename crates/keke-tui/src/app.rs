@@ -5,6 +5,8 @@
 //! is assertable without a backend.
 
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use keke_acp::Conversation;
 use keke_acp::PermissionAnswer;
@@ -12,6 +14,7 @@ use keke_acp::PermissionId;
 use keke_acp::Update;
 use keke_config_types::ApprovalPolicy;
 use keke_protocol::StopReason;
+use keke_protocol::Usage;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -57,6 +60,15 @@ pub struct App {
     completion: usize,
     approval: ApprovalPolicy,
     turn: Turn,
+    /// When the running turn started, and how long the last one took. Both are
+    /// held because the status bar keeps showing the duration after the turn
+    /// ends: "worked for 12s" is what a person looks for once the answer is on
+    /// screen and they have stopped watching the clock.
+    started: Option<Instant>,
+    last_turn: Option<Duration>,
+    /// Tokens this session has spent, including whatever a resumed log already
+    /// accounted for.
+    usage: Usage,
     show_thinking: bool,
     should_quit: bool,
 }
@@ -77,6 +89,9 @@ impl App {
                 completion: 0,
                 approval: ApprovalPolicy::default(),
                 turn: Turn::Idle,
+                started: None,
+                last_turn: None,
+                usage: Usage::default(),
                 show_thinking: true,
                 should_quit: false,
             },
@@ -100,12 +115,45 @@ impl App {
         self
     }
 
+    /// Seed the surface from a resumed session: what was said, and what it has
+    /// already spent.
+    ///
+    /// The transcript is rebuilt from the same history the engine resumes with,
+    /// so what a person reads on screen is what the model is about to be sent —
+    /// a summary written separately would be free to drift from it.
+    #[must_use]
+    pub fn with_history(mut self, history: &[keke_protocol::Message], usage: Usage) -> Self {
+        self.transcript.replay(history);
+        self.usage = usage;
+        self
+    }
+
     pub fn approval_policy(&self) -> ApprovalPolicy {
         self.approval
     }
 
     pub fn turn(&self) -> Turn {
         self.turn
+    }
+
+    /// What this session has spent so far.
+    pub fn usage(&self) -> Usage {
+        self.usage
+    }
+
+    /// How long the current turn has been running, or how long the last one
+    /// took. `None` before the first turn.
+    pub fn elapsed(&self) -> Option<Duration> {
+        match self.started {
+            Some(started) => Some(started.elapsed()),
+            None => self.last_turn,
+        }
+    }
+
+    /// Whether a turn is on the clock, so the caller redraws on a timer rather
+    /// than only when something arrives.
+    pub fn is_timing(&self) -> bool {
+        self.started.is_some()
     }
 
     pub fn show_thinking(&self) -> bool {
@@ -128,19 +176,19 @@ impl App {
     pub fn apply(&mut self, update: Update) {
         match update {
             Update::TurnStarted => {
-                self.turn = Turn::Running;
+                self.begin_turn();
                 self.transcript.seal();
             }
             Update::TextDelta(text) => {
-                self.turn = Turn::Running;
+                self.begin_turn();
                 self.transcript.push_text_delta(&text);
             }
             Update::ThinkingDelta(text) => {
-                self.turn = Turn::Running;
+                self.begin_turn();
                 self.transcript.push_thinking_delta(&text);
             }
             Update::ToolCallStarted(call) => {
-                self.turn = Turn::Running;
+                self.begin_turn();
                 self.transcript.start_tool(&call);
             }
             Update::ToolCallEnded(result) => {
@@ -153,12 +201,13 @@ impl App {
                     )));
                 }
             }
+            Update::TokensUsed(usage) => self.usage.add(usage),
             Update::PermissionRequested { id, call, reason } => {
                 self.turn = Turn::AwaitingPermission;
                 self.transcript.request_permission(id, &call, reason);
             }
             Update::TurnEnded(reason) => {
-                self.turn = Turn::Idle;
+                self.end_turn();
                 self.transcript.seal();
                 if let StopReason::Refusal { message } = reason {
                     self.transcript
@@ -168,7 +217,7 @@ impl App {
             Update::Failed(message) => {
                 // Deliberately does not quit: the seam promises the
                 // conversation survives a failed turn.
-                self.turn = Turn::Idle;
+                self.end_turn();
                 self.transcript.push(Cell::Error(message));
             }
         }
@@ -195,7 +244,7 @@ impl App {
         self.transcript.push(Cell::User(text.clone()));
         // Submitting is an intent to watch the answer, so it returns to live.
         self.scroll.follow();
-        self.turn = Turn::Running;
+        self.begin_turn();
 
         let conversation = Arc::clone(&self.conversation);
         let local = self.local.clone();
@@ -215,9 +264,28 @@ impl App {
             self.conversation.cancel();
             self.transcript.cancel_running_tools();
             self.transcript.push(Cell::Notice("cancelled".to_string()));
-            self.turn = Turn::Idle;
+            self.end_turn();
         } else {
             self.should_quit = true;
+        }
+    }
+
+    /// Mark the turn running, starting the clock if it was not already.
+    ///
+    /// Not restarted per update: a turn's elapsed time is measured from the
+    /// prompt, so the number a person reads is how long they have waited rather
+    /// than how long since the last token.
+    fn begin_turn(&mut self) {
+        self.turn = Turn::Running;
+        if self.started.is_none() {
+            self.started = Some(Instant::now());
+        }
+    }
+
+    fn end_turn(&mut self) {
+        self.turn = Turn::Idle;
+        if let Some(started) = self.started.take() {
+            self.last_turn = Some(started.elapsed());
         }
     }
 
@@ -293,6 +361,10 @@ impl App {
     }
 
     /// Cycle the approval mode: the shift-tab gesture.
+    ///
+    /// Silent, unlike `/mode`. The gesture is meant to be tapped through the
+    /// modes while looking at the status bar, and a line per tap would push the
+    /// conversation off screen to say what the bar is already saying.
     pub fn cycle_approval_policy(&mut self) {
         let next = match self.approval {
             ApprovalPolicy::OnRequest => ApprovalPolicy::OnFailure,
@@ -305,8 +377,12 @@ impl App {
     pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) {
         self.approval = policy;
         self.conversation.set_approval_policy(policy);
-        // Said in the transcript as well as in the status bar: loosening what
-        // the agent may do without asking is worth a line in the record.
+    }
+
+    /// Set the mode and say so, which is what a typed `/mode` does: the person
+    /// asked in the transcript, so the answer belongs there too.
+    fn set_approval_policy_aloud(&mut self, policy: ApprovalPolicy) {
+        self.set_approval_policy(policy);
         self.transcript.push(Cell::Notice(format!(
             "approval mode: {}",
             crate::slash::policy_name(policy)
@@ -343,8 +419,12 @@ impl App {
                     .push(Cell::Notice(format!("reasoning {state}")));
             }
             SlashAction::Builtin(Builtin::Mode) => match crate::slash::policy(arguments) {
-                Ok(Some(policy)) => self.set_approval_policy(policy),
-                Ok(None) => self.cycle_approval_policy(),
+                Ok(Some(policy)) => self.set_approval_policy_aloud(policy),
+                Ok(None) => {
+                    self.cycle_approval_policy();
+                    let policy = self.approval;
+                    self.set_approval_policy_aloud(policy);
+                }
                 Err(unknown) => self.transcript.push(Cell::Error(unknown)),
             },
             SlashAction::Prompt(path) => match std::fs::read_to_string(&path) {
@@ -377,7 +457,7 @@ impl App {
     /// Start a turn with text that did not come from the input box.
     fn send(&mut self, text: String) {
         self.scroll.follow();
-        self.turn = Turn::Running;
+        self.begin_turn();
         let conversation = Arc::clone(&self.conversation);
         let local = self.local.clone();
         tokio::spawn(async move {

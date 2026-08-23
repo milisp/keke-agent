@@ -24,6 +24,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the reasoning, and
 ```sh
 keke login grok               # or: export XAI_API_KEY=...
 keke exec "what does this project do?"
+keke resume                   # pick the last conversation back up (--list to choose)
 keke doctor                   # what got resolved, and what is missing
 ```
 

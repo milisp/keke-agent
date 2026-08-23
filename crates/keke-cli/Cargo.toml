@@ -20,6 +20,7 @@ keke-auth-grok = { workspace = true }
 keke-config = { workspace = true }
 keke-config-types = { workspace = true }
 keke-core = { workspace = true }
+uuid = { workspace = true }
 keke-credentials = { workspace = true }
 keke-hooks = { workspace = true }
 keke-mcp = { workspace = true }

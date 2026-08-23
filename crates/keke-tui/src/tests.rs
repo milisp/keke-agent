@@ -568,6 +568,9 @@ async fn shift_tab_cycles_the_approval_mode_and_tells_the_agent() {
 
     app.handle_key(key(KeyCode::BackTab));
     assert_eq!(app.approval_policy(), ApprovalPolicy::OnFailure);
+    // The gesture is silent: the status bar already says which mode is on, and
+    // a line per tap would push the conversation off screen to repeat it.
+    assert!(app.transcript.is_empty(), "{:?}", app.transcript.cells());
     app.handle_key(shift(KeyCode::Tab));
     assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
     app.handle_key(key(KeyCode::BackTab));
@@ -615,4 +618,92 @@ async fn clear_empties_the_screen_and_quit_leaves() {
     type_text(&mut app, "/quit");
     app.handle_key(key(KeyCode::Enter));
     assert!(app.should_quit());
+}
+
+/// The gesture says nothing; the typed command answers where it was asked.
+#[tokio::test]
+async fn the_mode_command_says_which_mode_it_set() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/mode never");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("never")));
+}
+
+/// `/new` is the name people reach for; it does what `/clear` does.
+#[tokio::test]
+async fn new_clears_the_screen_like_clear() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    app.apply(Update::TextDelta("some output".to_string()));
+    assert!(!app.transcript.is_empty());
+
+    type_text(&mut app, "/new");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(app.transcript.is_empty(), "{:?}", app.transcript.cells());
+}
+
+/// A person watching a turn wants the clock and the cost, and wants the clock
+/// to stop rather than keep running once the answer is up.
+#[tokio::test]
+async fn a_turn_is_timed_and_its_tokens_are_counted() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    assert_eq!(app.elapsed(), None);
+    assert!(!app.is_timing());
+
+    app.apply(Update::TurnStarted);
+    assert!(app.is_timing());
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 100,
+        output_tokens: 20,
+        ..keke_protocol::Usage::default()
+    }));
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 5,
+        ..keke_protocol::Usage::default()
+    }));
+    app.apply(Update::TurnEnded(StopReason::EndTurn));
+
+    assert!(!app.is_timing(), "the clock stops when the turn does");
+    assert!(app.elapsed().is_some(), "how long it took is still shown");
+    assert_eq!(app.usage().total(), 125);
+}
+
+/// A resumed session shows what was said, so the screen and the next request
+/// agree about the conversation.
+#[tokio::test]
+async fn a_resumed_history_is_replayed_onto_the_screen() {
+    use keke_protocol::Message;
+    use keke_protocol::Role;
+
+    let asked = call("c1", "read_file");
+    let history = vec![
+        Message::user("read it"),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(asked.clone())],
+        },
+        Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(ToolResult::ok(
+                asked.id.clone(),
+                "the file",
+            ))],
+        },
+        Message::assistant("here it is"),
+    ];
+
+    let (scripted, _updates) = ScriptedConversation::new(Vec::new());
+    let app = App::new(Arc::new(scripted) as Arc<_>)
+        .0
+        .with_history(&history, keke_protocol::Usage::default());
+
+    let cells = app.transcript.cells();
+    assert!(matches!(&cells[0], Cell::User(text) if text == "read it"));
+    assert!(matches!(
+        &cells[1],
+        Cell::Tool(tool) if tool.state == CallState::Finished(ToolStatus::Ok)
+    ));
+    assert!(matches!(&cells[2], Cell::Assistant(text) if text == "here it is"));
 }

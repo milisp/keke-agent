@@ -21,6 +21,7 @@ use keke_protocol::ThreadId;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
 use keke_protocol::TurnId;
+use keke_protocol::Usage;
 use keke_provider_api::ArcProvider;
 use keke_workspace::Workspace;
 
@@ -50,6 +51,15 @@ pub enum TurnUpdate {
     },
     ToolCallEnded {
         result: ToolResult,
+    },
+    /// One model step's token accounting, as soon as the provider reports it.
+    ///
+    /// Live rather than only at the end of the turn: a surface showing what a
+    /// turn is costing has to show it while the turn is still running, which is
+    /// the moment a person can still decide to stop it.
+    StepUsage {
+        turn: TurnId,
+        usage: Usage,
     },
     TurnEnded {
         turn: TurnId,
@@ -206,6 +216,13 @@ pub struct SessionBuilder {
     registry: Option<ExtensionRegistry>,
     cwd: Option<PathBuf>,
     updates: Option<tokio::sync::mpsc::UnboundedSender<TurnUpdate>>,
+    resume: Option<Resumed>,
+}
+
+/// The session a build continues instead of starting.
+struct Resumed {
+    id: SessionId,
+    history: Vec<Message>,
 }
 
 impl SessionBuilder {
@@ -247,6 +264,18 @@ impl SessionBuilder {
         self
     }
 
+    /// Continue an existing session: append to its log and start from its
+    /// history rather than from nothing.
+    ///
+    /// The history is rebuilt from the log by [`crate::load_session`], never
+    /// carried in a side file — a session keke can replay is a session keke can
+    /// continue, and there is no second place for the two to disagree.
+    #[must_use]
+    pub fn resume(mut self, id: SessionId, history: Vec<Message>) -> Self {
+        self.resume = Some(Resumed { id, history });
+        self
+    }
+
     /// Receive live turn updates. Without this the turn still runs and is still
     /// logged; nothing is rendered.
     #[must_use]
@@ -260,13 +289,18 @@ impl SessionBuilder {
         let config = self.config.ok_or(CoreError::Incomplete("a config"))?;
         let provider = self.provider.ok_or(CoreError::Incomplete("a provider"))?;
 
-        let id = SessionId::new();
+        let resumed = self.resume;
+        let id = resumed.as_ref().map_or_else(SessionId::new, |it| it.id);
+        // The recorder opens for append, so a resumed session writes on past
+        // the end of the log it was rebuilt from.
         let mut recorder = RolloutRecorder::create(&config.home.home, id).await?;
         let workspace = Workspace::new(config.home.workspace_root.clone());
         let cwd = self
             .cwd
             .unwrap_or_else(|| config.home.workspace_root.as_path().to_path_buf());
 
+        // Written again on a resume: the log then says what the continued run
+        // was configured with, which may not be what the first one was.
         recorder
             .append(SessionEvent::SessionStart {
                 cwd: cwd.display().to_string(),
@@ -291,7 +325,7 @@ impl SessionBuilder {
             registry: self.registry.unwrap_or_default(),
             workspace,
             cwd,
-            history: Vec::new(),
+            history: resumed.map(|it| it.history).unwrap_or_default(),
             recorder,
             updates: self.updates,
             cancelled,
