@@ -57,6 +57,14 @@ pub struct WireClient {
     http: reqwest::Client,
     base_url: String,
     auth: Arc<dyn AuthProvider>,
+    /// Whether this endpoint lets a request name its own sampling controls.
+    ///
+    /// A subscription backend decides the reply budget itself and rejects a
+    /// request that states one — `{"detail":"Unsupported parameter:
+    /// max_output_tokens"}`, and the same for `temperature` — where the
+    /// pay-per-token API of the same shape accepts both. Which kind an address
+    /// is cannot be read off the wire format, so the composition root says.
+    sampling_is_fixed: bool,
 }
 
 impl WireClient {
@@ -68,7 +76,16 @@ impl WireClient {
             http: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             auth,
+            sampling_is_fixed: false,
         }
+    }
+
+    /// Mark this endpoint as one that fixes sampling itself — see
+    /// [`WireClient::sampling_is_fixed`].
+    #[must_use]
+    pub fn with_fixed_sampling(mut self) -> Self {
+        self.sampling_is_fixed = true;
+        self
     }
 
     /// Reuse an existing client, so a host sharing a connection pool and
@@ -83,6 +100,7 @@ impl WireClient {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             auth,
+            sampling_is_fixed: false,
         }
     }
 
@@ -107,7 +125,10 @@ impl WireClient {
             WireApi::ChatCompletions => {
                 ("/chat/completions", chat_completions_body(&request, true))
             }
-            WireApi::Responses => ("/responses", responses_body(&request, true)),
+            WireApi::Responses => (
+                "/responses",
+                responses_body(&request, true, self.sampling_is_fixed),
+            ),
             WireApi::Messages => ("/messages", messages_body(&request, true)),
             WireApi::Custom => return Err(custom_unsupported()),
         };

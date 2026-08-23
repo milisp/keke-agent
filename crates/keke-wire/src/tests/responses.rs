@@ -293,6 +293,40 @@ async fn the_conversation_is_sent_as_input_items() {
     assert_eq!(input.len(), 4);
 }
 
+/// The ChatGPT backend refuses a request that omits this with
+/// `{"detail": "Store must be set to false"}`, and the engine has its own
+/// history either way.
+#[test]
+fn the_response_is_never_stored_server_side() {
+    assert_eq!(
+        crate::responses_body(&request(), true, false)["store"],
+        json!(false)
+    );
+    assert_eq!(
+        crate::responses_body(&request(), false, false)["store"],
+        json!(false)
+    );
+}
+
+/// A subscription backend answers `400 Unsupported parameter` to either of
+/// these, so the engine's budget goes unstated rather than failing the turn.
+#[test]
+fn an_endpoint_that_fixes_its_own_sampling_is_not_told_a_budget() {
+    let request = ModelRequest {
+        max_output_tokens: Some(4096),
+        temperature: Some(0.5),
+        ..request()
+    };
+
+    let stated = crate::responses_body(&request, true, false);
+    assert_eq!(stated["max_output_tokens"], json!(4096));
+    assert_eq!(stated["temperature"], json!(0.5));
+
+    let fixed = crate::responses_body(&request, true, true);
+    assert!(fixed.get("max_output_tokens").is_none(), "{fixed}");
+    assert!(fixed.get("temperature").is_none(), "{fixed}");
+}
+
 /// This wire nests the level under `reasoning`, and takes it as written.
 #[test]
 fn effort_is_nested_under_reasoning() {
@@ -302,13 +336,14 @@ fn effort_is_nested_under_reasoning() {
             ..request()
         },
         false,
+        false,
     );
     assert_eq!(body["reasoning"], json!({"effort": "max"}));
 }
 
 #[test]
 fn an_unset_effort_leaves_the_field_off() {
-    let body = crate::responses_body(&request(), false);
+    let body = crate::responses_body(&request(), false, false);
     assert!(body.get("reasoning").is_none(), "{body}");
 }
 

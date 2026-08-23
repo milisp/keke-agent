@@ -62,8 +62,22 @@ impl ModelProvider for DeclaredProvider {
 /// Wrap a `WireClient` as a provider, for a vendor whose only behavior is its
 /// endpoint and credential — including compiled-in ones like codex.
 pub(crate) fn wire_provider(info: ProviderInfo, auth: Arc<dyn AuthProvider>) -> ArcProvider {
+    wire_provider_with(info, auth, false)
+}
+
+/// [`wire_provider`] for an endpoint that fixes its own sampling — a
+/// subscription backend, which refuses a request that names a reply budget or
+/// a temperature. Only the composition root knows which addresses those are.
+pub(crate) fn wire_provider_with(
+    info: ProviderInfo,
+    auth: Arc<dyn AuthProvider>,
+    sampling_is_fixed: bool,
+) -> ArcProvider {
     let api = info.wire_api;
-    let client = WireClient::new(info.base_url.clone(), auth);
+    let mut client = WireClient::new(info.base_url.clone(), auth);
+    if sampling_is_fixed {
+        client = client.with_fixed_sampling();
+    }
     Arc::new(DeclaredProvider { info, api, client })
 }
 

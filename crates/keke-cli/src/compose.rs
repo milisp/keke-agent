@@ -148,8 +148,9 @@ impl Composed {
             keke_auth_codex::CodexAuth::with_defaults(Arc::clone(&credentials), auth_files),
         );
         auth.register(Arc::clone(&codex_auth));
+        let codex_is_subscription = is_subscription(codex_auth.as_ref());
         providers
-            .register(crate::declared::wire_provider(
+            .register(crate::declared::wire_provider_with(
                 ProviderInfo {
                     route: keke_auth_codex::AUTH_ID.to_string(),
                     display_name: "OpenAI Codex".to_string(),
@@ -159,6 +160,7 @@ impl Composed {
                     env_key: Some(keke_auth_codex::DEFAULT_API_KEY_REF.to_string()),
                 },
                 codex_auth,
+                codex_is_subscription,
             ))
             .context("registering the codex provider")?;
 
