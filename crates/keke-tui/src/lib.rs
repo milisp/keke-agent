@@ -55,17 +55,13 @@ pub use transcript::PermissionCell;
 pub use transcript::ToolCell;
 pub use transcript::Transcript;
 
-/// What a resumed session hands the interface: what was said, what it spent,
-/// and one line saying where it came from. Empty for a fresh session, which is
-/// why it is a value rather than an `Option` at every call site.
+/// What a resumed session hands the interface: what was said and what it
+/// spent. Empty for a fresh session, which is why it is a value rather than an
+/// `Option` at every call site.
 #[derive(Debug, Default)]
 pub struct Resumed {
     pub history: Vec<keke_protocol::Message>,
     pub usage: keke_protocol::Usage,
-    /// Said once in the status bar, e.g. `resumed session … (12 messages)`.
-    /// The restored conversation is already on screen; this is only about
-    /// where it came from, so it expires rather than joining it.
-    pub notice: Option<String>,
 }
 
 /// Run the interface until the person quits.
@@ -92,9 +88,6 @@ pub async fn run(
         .with_prompt_history(history);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {
         app = app.with_history(&resumed.history, resumed.usage);
-    }
-    if let Some(notice) = resumed.notice {
-        app.announce(notice);
     }
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no

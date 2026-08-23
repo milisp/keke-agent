@@ -307,17 +307,6 @@ fn copying_takes_the_last_reply_and_hands_it_over_once() {
     assert_eq!(app.take_pending_copy(), None);
 }
 
-/// A login notice has to stay readable; where the session came from does not.
-#[test]
-fn resuming_is_said_in_the_status_bar_and_not_in_the_conversation() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    let before = app.transcript.len();
-    app.announce("resumed session abc — 12 message(s)");
-
-    assert_eq!(app.flash(), Some("resumed session abc — 12 message(s)"));
-    assert_eq!(app.transcript.len(), before);
-}
-
 #[test]
 fn copying_says_so_in_the_status_bar_and_not_in_the_conversation() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());

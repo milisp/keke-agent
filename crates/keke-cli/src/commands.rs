@@ -300,15 +300,9 @@ async fn resume(
     // a conversation about another directory and silently pointing its tools at
     // this one would be a different session wearing the same name.
     let cwd = resumed.cwd.as_ref().map_or(cwd, std::path::PathBuf::from);
-    let notice = format!(
-        "resumed session {id} — {} message(s), {} tokens so far",
-        resumed.history.len(),
-        resumed.usage.total()
-    );
     let seed = keke_tui::Resumed {
         history: resumed.history.clone(),
         usage: resumed.usage,
-        notice: Some(notice),
     };
     tui(
         config,

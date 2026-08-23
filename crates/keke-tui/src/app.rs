@@ -362,13 +362,6 @@ impl App {
         self.transcript.push(Cell::Notice(notice.to_string()));
     }
 
-    /// Say something about the session itself — that it was resumed, and from
-    /// where. Not a transcript cell: nobody said it, and a line sitting above
-    /// the first reply reads as if the agent opened the conversation with it.
-    pub fn announce(&mut self, text: impl Into<String>) {
-        self.set_flash(text);
-    }
-
     /// Send whatever is in the input box, if anything.
     ///
     /// The prompt is spawned rather than awaited so a slow agent cannot stop
