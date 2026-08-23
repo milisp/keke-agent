@@ -156,8 +156,10 @@ pub async fn serve_stdio(
 ) -> Result<(), agent_client_protocol::Error> {
     let sessions = Arc::new(Sessions::default());
 
+    // `builder()` would declare a v1 endpoint and reject a client asking for
+    // v2, whatever types the handlers are written against.
     Agent
-        .builder()
+        .v2()
         .name("keke")
         .on_receive_request(
             async move |request: InitializeRequest, responder, _cx| {

@@ -86,7 +86,10 @@ async fn an_editor_prompts_keke_and_answers_its_permission_request() {
     let seen = Arc::new(Mutex::new(Seen::default()));
 
     agent_client_protocol::Client
-        .builder()
+        // v2, matching the endpoint: a v1 client's own compat layer would
+        // rewrite the version it asks for, and the test would then pass
+        // against whichever version keke happened to serve.
+        .v2()
         .on_receive_notification(
             {
                 let seen = Arc::clone(&seen);
@@ -234,7 +237,7 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
 
     // The first run says something worth resuming.
     let started = agent_client_protocol::Client
-        .builder()
+        .v2()
         .connect_with(agent(), {
             let cwd = cwd.clone();
             |connection: ConnectionTo<Agent>| async move {
@@ -259,7 +262,10 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
 
     let seen = Arc::new(Mutex::new(Seen::default()));
     agent_client_protocol::Client
-        .builder()
+        // v2, matching the endpoint: a v1 client's own compat layer would
+        // rewrite the version it asks for, and the test would then pass
+        // against whichever version keke happened to serve.
+        .v2()
         .on_receive_notification(
             {
                 let seen = Arc::clone(&seen);
@@ -378,7 +384,10 @@ async fn an_editor_switches_the_model_and_the_next_request_uses_it() {
     );
 
     agent_client_protocol::Client
-        .builder()
+        // v2, matching the endpoint: a v1 client's own compat layer would
+        // rewrite the version it asks for, and the test would then pass
+        // against whichever version keke happened to serve.
+        .v2()
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
             |connection: ConnectionTo<Agent>| async move {
@@ -433,5 +442,54 @@ async fn an_editor_switches_the_model_and_the_next_request_uses_it() {
         asked,
         vec!["grok-4-fast".to_string()],
         "the chosen model must be the one the provider was asked for"
+    );
+}
+
+/// What is actually on the wire, driven with bytes rather than with the SDK's
+/// client.
+///
+/// The SDK's client rewrites `protocolVersion` to whatever version *it* was
+/// built for, so a test written against it passes whichever version keke
+/// serves — which is how keke shipped a v1 endpoint with v2 handlers. A pipe
+/// has nobody to do the rewriting.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_endpoint_on_the_wire_speaks_v2() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let mut keke = std::process::Command::new(env!("CARGO_BIN_EXE_keke"))
+        .args(["agent", "stdio"])
+        .env("KEKE_HOME", home.path().display().to_string())
+        .env("KEKE_CREDENTIAL_STORE", "file")
+        .env("KEKE_IMPORT", "off")
+        .env("KEKE_PROVIDER", "grok")
+        .env("KEKE_MODEL", "grok-4.6")
+        .env("XAI_API_KEY", "test-key")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("keke agent stdio starts");
+
+    use std::io::Write;
+    keke.stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2,"info":{"name":"web-ui","version":"0.1"},"capabilities":{}}}
+"#,
+        )
+        .expect("the request is written");
+
+    let output = keke.wait_with_output().expect("keke exits with the pipe");
+    let line = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value =
+        serde_json::from_str(line.lines().next().unwrap_or_default()).expect("one JSON response");
+
+    assert_eq!(
+        response["result"]["protocolVersion"], 2,
+        "a client asking for v2 must be answered in v2: {response}"
+    );
+    assert!(
+        response["result"]["capabilities"]["session"].is_object(),
+        "the session surface must be advertised: {response}"
     );
 }
