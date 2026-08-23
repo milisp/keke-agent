@@ -180,7 +180,7 @@ async fn rate_limiting_carries_the_stated_delay_and_rejection_is_unauthorized() 
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"error": "no access"})))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"error": "invalid token"})))
         .mount(&server)
         .await;
     let (client, _auth) = client_over(&server);
@@ -197,7 +197,10 @@ async fn rate_limiting_carries_the_stated_delay_and_rejection_is_unauthorized() 
     );
 
     let rejected = client.stream(API, request()).await.err().expect("rejected");
-    assert!(matches!(rejected, ProviderError::Unauthorized(_)));
+    assert!(
+        matches!(rejected, ProviderError::Unauthorized(_)),
+        "a 403 that blames the credential is worth a refresh: {rejected:?}"
+    );
 }
 
 #[tokio::test]
@@ -307,4 +310,30 @@ fn effort_is_nested_under_reasoning() {
 fn an_unset_effort_leaves_the_field_off() {
     let body = crate::responses_body(&request(), false);
     assert!(body.get("reasoning").is_none(), "{body}");
+}
+
+/// An account that has run out of credits answers 403 too, and no token
+/// refresh can fix that — see `keke_wire::http`.
+#[tokio::test]
+async fn an_out_of_credits_403_is_reported_as_an_account_problem() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "code": "personal-team-blocked:spending-limit",
+            "error": "You have run out of credits or need a Grok subscription.",
+        })))
+        .mount(&server)
+        .await;
+    let (client, _auth) = client_over(&server);
+
+    let refused = client.stream(API, request()).await.err().expect("refused");
+    assert!(
+        matches!(refused, ProviderError::NotEntitled(ref detail) if detail.contains("run out of credits")),
+        "got {refused:?}"
+    );
+    assert!(
+        !refused.needs_reauth(),
+        "refreshing the token would replace the account message with an auth error"
+    );
 }

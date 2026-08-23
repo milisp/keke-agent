@@ -35,7 +35,12 @@ pub(crate) async fn check_status(
     let body = response.text().await.unwrap_or_default();
     let detail = error_detail(&body);
     Err(match status.as_u16() {
-        401 | 403 => ProviderError::Unauthorized(detail),
+        401 => ProviderError::Unauthorized(detail),
+        // A 403 is the ambiguous one: vendors use it both for a rejected
+        // credential and for an account that has run out of credits. Only the
+        // former is worth refreshing a token over.
+        403 if names_an_auth_failure(&body) => ProviderError::Unauthorized(detail),
+        402 | 403 => ProviderError::NotEntitled(detail),
         404 => ProviderError::UnknownModel(detail),
         429 => ProviderError::RateLimited {
             retry_after_millis: retry_after,
@@ -44,6 +49,27 @@ pub(crate) async fn check_status(
         code if (500..600).contains(&code) => ProviderError::Transient(detail),
         code => ProviderError::Protocol(format!("provider returned HTTP {code}: {detail}")),
     })
+}
+
+/// Whether a 403's body blames the credential rather than the account.
+///
+/// xAI answers an out-of-credits account with
+/// `personal-team-blocked:spending-limit`, which is not something a token
+/// refresh can fix; it answers a bad credential with `unauthenticated`.
+fn names_an_auth_failure(body: &str) -> bool {
+    const AUTH_MARKERS: &[&str] = &[
+        "unauthenticated",
+        "unauthorized",
+        "invalid_api_key",
+        "invalid api key",
+        "invalid_token",
+        "invalid token",
+        "expired",
+        "missing",
+        "revoked",
+    ];
+    let body = body.to_ascii_lowercase();
+    AUTH_MARKERS.iter().any(|marker| body.contains(marker))
 }
 
 /// `retry-after` is seconds or an HTTP date; only the seconds form carries a
@@ -78,4 +104,35 @@ pub(crate) fn error_detail(body: &str) -> String {
             .map(str::to_string),
     });
     message.unwrap_or_else(|| body.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim from `GET https://api.x.ai/v1/models` with a valid xAI
+    /// subscription token on an account with no credits.
+    const XAI_OUT_OF_CREDITS: &str = r#"{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits or need a Grok subscription. Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok."}"#;
+
+    #[test]
+    fn an_out_of_credits_403_is_not_an_authentication_failure() {
+        assert!(!names_an_auth_failure(XAI_OUT_OF_CREDITS));
+
+        let error = ProviderError::NotEntitled(error_detail(XAI_OUT_OF_CREDITS).to_string());
+        assert!(
+            !error.needs_reauth(),
+            "refreshing a token buys no credits, and the retry hides the account message"
+        );
+        assert!(!error.is_retryable());
+        assert!(
+            error.to_string().contains("run out of credits"),
+            "the vendor's own words are what tell a person what to do: {error}"
+        );
+    }
+
+    #[test]
+    fn a_403_that_blames_the_credential_still_refreshes() {
+        let body = r#"{"code":"unauthenticated","error":"API key is missing."}"#;
+        assert!(names_an_auth_failure(body));
+    }
 }
