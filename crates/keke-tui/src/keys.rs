@@ -152,6 +152,6 @@ pub(crate) fn hints(awaiting_permission: bool) -> &'static str {
     if awaiting_permission {
         "y allow · a always · n deny · ^C cancel"
     } else {
-        "enter send · / commands · shift-tab mode · ^T thinking"
+        "shift-tab mode · ^T thinking"
     }
 }
