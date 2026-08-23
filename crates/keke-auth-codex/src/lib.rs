@@ -67,6 +67,18 @@ struct Refresh {
     outcome: Result<(), String>,
 }
 
+/// Why a refresh was asked for.
+///
+/// A 401 is not a clock: the issuer rejected a token this process still
+/// believes is live, so the stored credential being fresh proves nothing and
+/// the exchange happens anyway. An expiry check, by contrast, is satisfied by
+/// whatever another process already wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshMode {
+    IfStale,
+    Force,
+}
+
 /// The ChatGPT [`AuthProvider`].
 pub struct CodexAuth {
     config: CodexAuthConfig,
@@ -184,14 +196,14 @@ impl CodexAuth {
     /// renewed" with the reason discarded is indistinguishable between a
     /// blocked network and a refresh token the issuer has revoked, and those
     /// call for opposite responses from the person reading it.
-    async fn refresh_once(&self) -> Result<(), AuthError> {
+    async fn refresh_once(&self, mode: RefreshMode) -> Result<(), AuthError> {
         let observed = self.generation.load(Ordering::Acquire);
         let mut state = self.refresh.lock().await;
         if state.generation != observed {
             return state.outcome.clone().map_err(AuthError::RefreshFailed);
         }
 
-        let outcome = match self.perform_refresh().await {
+        let outcome = match self.perform_refresh(mode).await {
             Ok(()) => Ok(()),
             Err(err) => {
                 tracing::warn!(auth = AUTH_ID, error = %err, "chatgpt token refresh failed");
@@ -205,10 +217,25 @@ impl CodexAuth {
         outcome.map_err(AuthError::RefreshFailed)
     }
 
-    async fn perform_refresh(&self) -> Result<(), AuthError> {
-        let tokens = self
-            .tokens()?
+    async fn perform_refresh(&self, mode: RefreshMode) -> Result<(), AuthError> {
+        // The lock is taken before the credential is read and held past the
+        // write: between an unlocked read and the exchange, another keke
+        // process can rotate the refresh token, and presenting the superseded
+        // one gets `invalid_grant` — which reads as a revoked login.
+        let mutation = self.auth_files.begin(&self.config.vendor)?;
+        let tokens = mutation
+            .load()?
+            .filter(AuthFile::has_credential)
+            .or_else(|| self.imported())
+            .and_then(|file| file.tokens)
             .ok_or_else(|| AuthError::NotConfigured(AUTH_ID.to_string()))?;
+
+        // Whoever held the lock may have been refreshing the very credential
+        // this call was queued to renew.
+        if mode == RefreshMode::IfStale && !tokens::is_stale(&tokens, self.config.refresh_leeway) {
+            return Ok(());
+        }
+
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AuthError::RefreshFailed("the stored credential has no refresh token".into())
         })?;
@@ -227,7 +254,11 @@ impl CodexAuth {
         )
         .await?;
 
-        self.save(response.into_tokens(Some(refresh_token), tokens.account_id))
+        mutation.save(&AuthFile::from_tokens(
+            AuthMode::Chatgpt,
+            response.into_tokens(Some(refresh_token), tokens.account_id),
+        ))?;
+        Ok(())
     }
 }
 
@@ -313,11 +344,13 @@ impl AuthProvider for CodexAuth {
                     if !tokens::is_stale(&tokens, self.config.refresh_leeway) {
                         return Ok(AuthHeaders::bearer(&tokens.access_token));
                     }
-                    self.refresh_once().await.map_err(|err| {
-                        AuthError::RefreshFailed(format!(
-                            "the ChatGPT access token expired and could not be renewed: {err}"
-                        ))
-                    })?;
+                    self.refresh_once(RefreshMode::IfStale)
+                        .await
+                        .map_err(|err| {
+                            AuthError::RefreshFailed(format!(
+                                "the ChatGPT access token expired and could not be renewed: {err}"
+                            ))
+                        })?;
                     let refreshed = self.tokens()?.ok_or_else(|| {
                         AuthError::RefreshFailed("the refreshed credential vanished".into())
                     })?;
@@ -379,7 +412,7 @@ impl AuthProvider for CodexAuth {
     }
 
     fn refresh_after_unauthorized(&self) -> AuthFuture<'_, bool> {
-        Box::pin(async move { self.refresh_once().await.is_ok() })
+        Box::pin(async move { self.refresh_once(RefreshMode::Force).await.is_ok() })
     }
 
     /// Clears only the credential this plugin minted. An API key the deployment

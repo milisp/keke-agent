@@ -44,6 +44,7 @@ pub use memory::MemoryStore;
 pub use vendor::AuthFile;
 pub use vendor::AuthMode;
 pub use vendor::AuthTokens;
+pub use vendor::Mutation;
 pub use vendor::SCHEMA_VERSION;
 pub use vendor::Vendor;
 pub use vendor::VendorAuthStore;

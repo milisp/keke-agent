@@ -194,6 +194,32 @@ impl AuthFile {
     }
 }
 
+/// The mutation lock on one vendor's credential, held until dropped.
+///
+/// Read the credential through [`Self::load`] *after* taking this, never
+/// before: a refresh that read first would spend a refresh token another
+/// process has since rotated away, and an issuer that rotates answers a
+/// superseded token with `invalid_grant` — indistinguishable, to the person
+/// reading the error, from a revoked login.
+#[derive(Debug)]
+pub struct Mutation<'a> {
+    store: &'a VendorAuthStore,
+    vendor: Vendor,
+    _lock: MutationLock,
+}
+
+impl Mutation<'_> {
+    /// The stored credential as it is right now, under the lock.
+    pub fn load(&self) -> Result<Option<AuthFile>, AuthFileError> {
+        self.store.load(&self.vendor)
+    }
+
+    /// Replace it, still under the lock.
+    pub fn save(&self, file: &AuthFile) -> Result<(), AuthFileError> {
+        self.store.write(&self.vendor, file)
+    }
+}
+
 /// The per-vendor auth files in one directory.
 ///
 /// Holds a directory rather than a path per vendor so a caller composes it once
@@ -283,6 +309,21 @@ impl VendorAuthStore {
         let (file, out) = change(self.load(vendor)?)?;
         self.write(vendor, &file)?;
         Ok(out)
+    }
+
+    /// Take the mutation lock and hold it across an `await`.
+    ///
+    /// [`Self::update`] cannot span a token request: its closure is
+    /// synchronous, and a refresh has to read the stored credential, ask the
+    /// issuer, and write the answer back without another process rotating the
+    /// refresh token in between. This hands the lock out instead, so the whole
+    /// exchange happens under it.
+    pub fn begin(&self, vendor: &Vendor) -> Result<Mutation<'_>, AuthFileError> {
+        Ok(Mutation {
+            store: self,
+            vendor: vendor.clone(),
+            _lock: self.lock(vendor)?,
+        })
     }
 
     fn lock(&self, vendor: &Vendor) -> Result<MutationLock, AuthFileError> {

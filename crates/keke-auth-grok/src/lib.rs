@@ -68,6 +68,18 @@ struct Refresh {
     outcome: Result<(), String>,
 }
 
+/// Why a refresh was asked for.
+///
+/// A 401 is not a clock: the issuer rejected a token this process still
+/// believes is live, so the stored credential being fresh proves nothing and
+/// the exchange happens anyway. An expiry check, by contrast, is satisfied by
+/// whatever another process already wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshMode {
+    IfStale,
+    Force,
+}
+
 /// The xAI [`AuthProvider`].
 pub struct GrokAuth {
     config: GrokAuthConfig,
@@ -183,14 +195,14 @@ impl GrokAuth {
     /// renewed" with the reason discarded is indistinguishable between a
     /// blocked network and a refresh token the issuer has revoked, and those
     /// call for opposite responses from the person reading it.
-    async fn refresh_once(&self) -> Result<(), AuthError> {
+    async fn refresh_once(&self, mode: RefreshMode) -> Result<(), AuthError> {
         let observed = self.generation.load(Ordering::Acquire);
         let mut state = self.refresh.lock().await;
         if state.generation != observed {
             return state.outcome.clone().map_err(AuthError::RefreshFailed);
         }
 
-        let outcome = match self.perform_refresh().await {
+        let outcome = match self.perform_refresh(mode).await {
             Ok(()) => Ok(()),
             Err(err) => {
                 tracing::warn!(auth = AUTH_ID, error = %err, "xai token refresh failed");
@@ -204,13 +216,27 @@ impl GrokAuth {
         outcome.map_err(AuthError::RefreshFailed)
     }
 
-    async fn perform_refresh(&self) -> Result<(), AuthError> {
-        let current = self
-            .credential()?
+    async fn perform_refresh(&self, mode: RefreshMode) -> Result<(), AuthError> {
+        // The lock is taken before the credential is read and held past the
+        // write: between an unlocked read and the exchange, another keke
+        // process can rotate the refresh token, and presenting the superseded
+        // one gets `invalid_grant` — which reads as a revoked login.
+        let mutation = self.auth_files.begin(&self.config.vendor)?;
+        let current = mutation
+            .load()?
+            .filter(AuthFile::has_credential)
+            .or_else(|| self.imported())
             .ok_or_else(|| AuthError::NotConfigured(AUTH_ID.to_string()))?;
         let tokens = current
             .tokens
             .ok_or_else(|| AuthError::RefreshFailed("the credential is not refreshable".into()))?;
+
+        // Whoever held the lock may have been refreshing the very credential
+        // this call was queued to renew.
+        if mode == RefreshMode::IfStale && !tokens::is_stale(&tokens, self.config.refresh_leeway) {
+            return Ok(());
+        }
+
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AuthError::RefreshFailed("the stored credential has no refresh token".into())
         })?;
@@ -239,10 +265,11 @@ impl GrokAuth {
         )
         .await?;
 
-        self.save(
+        mutation.save(&AuthFile::from_tokens(
             current.auth_mode,
             response.into_tokens(Some(refresh_token), tokens.account_id),
-        )
+        ))?;
+        Ok(())
     }
 }
 
@@ -328,11 +355,13 @@ impl AuthProvider for GrokAuth {
                     if !tokens::is_stale(&tokens, self.config.refresh_leeway) {
                         return Ok(AuthHeaders::bearer(&tokens.access_token));
                     }
-                    self.refresh_once().await.map_err(|err| {
-                        AuthError::RefreshFailed(format!(
-                            "the xAI access token expired and could not be renewed: {err}"
-                        ))
-                    })?;
+                    self.refresh_once(RefreshMode::IfStale)
+                        .await
+                        .map_err(|err| {
+                            AuthError::RefreshFailed(format!(
+                                "the xAI access token expired and could not be renewed: {err}"
+                            ))
+                        })?;
                     let refreshed = self.tokens()?.ok_or_else(|| {
                         AuthError::RefreshFailed("the refreshed credential vanished".into())
                     })?;
@@ -413,7 +442,7 @@ impl AuthProvider for GrokAuth {
     }
 
     fn refresh_after_unauthorized(&self) -> AuthFuture<'_, bool> {
-        Box::pin(async move { self.refresh_once().await.is_ok() })
+        Box::pin(async move { self.refresh_once(RefreshMode::Force).await.is_ok() })
     }
 
     /// Clears only the credential this plugin minted. An API key the deployment
@@ -727,6 +756,43 @@ mod tests {
             0,
             "a live token must not cost a round trip"
         );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_another_process_already_did_is_not_repeated() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "access-2",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+
+        // What a sibling process leaves behind: the stored credential is
+        // already live by the time this one takes the lock.
+        let live = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() + 3600));
+        store_tokens(&auth, live.clone(), Some("refresh-2"), AuthMode::Oidc);
+
+        auth.refresh_once(RefreshMode::IfStale)
+            .await
+            .expect("a live stored credential is a refresh already done");
+        assert_eq!(
+            token_requests(&server).await,
+            0,
+            "spending a refresh token the sibling has rotated away would get invalid_grant"
+        );
+        assert_eq!(stored_tokens(&auth).expect("tokens").access_token, live);
+
+        // A 401 is not a clock: the issuer rejected a token this process still
+        // believes is live, so that one is exchanged anyway.
+        assert!(auth.refresh_after_unauthorized().await);
+        assert_eq!(token_requests(&server).await, 1);
     }
 
     #[tokio::test]
