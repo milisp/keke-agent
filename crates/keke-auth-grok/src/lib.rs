@@ -43,8 +43,10 @@ use sha2::Digest as _;
 use sha2::Sha256;
 use tokio::sync::Mutex;
 
+pub use config::CLIENT_IDENTIFIER;
 pub use config::DEFAULT_API_KEY_REF;
 pub use config::DEFAULT_CLIENT_ID;
+pub use config::DEFAULT_CLIENT_VERSION;
 pub use config::DEFAULT_ISSUER;
 pub use config::DEFAULT_VENDOR;
 pub use config::GrokAuthConfig;
@@ -182,6 +184,18 @@ impl GrokAuth {
         self.auth_files
             .save(&self.config.vendor, &AuthFile::from_tokens(mode, tokens))?;
         Ok(())
+    }
+
+    /// A login's headers.
+    ///
+    /// The subscription surface — where a login and its included hours are
+    /// spent — gates on the client version and answers `426` without it. The
+    /// header belongs here rather than in the provider because it is xAI's
+    /// requirement, and `keke-wire` must not learn any vendor's.
+    fn subscription_headers(access_token: &str, client_version: &str) -> AuthHeaders {
+        AuthHeaders::bearer(access_token)
+            .with("x-grok-client-version", client_version)
+            .with("x-grok-client-identifier", config::CLIENT_IDENTIFIER)
     }
 
     /// An API key the deployment supplied, from the layered credential store.
@@ -353,7 +367,10 @@ impl AuthProvider for GrokAuth {
             if let Some(file) = self.credential()? {
                 if let Some(tokens) = file.tokens {
                     if !tokens::is_stale(&tokens, self.config.refresh_leeway) {
-                        return Ok(AuthHeaders::bearer(&tokens.access_token));
+                        return Ok(Self::subscription_headers(
+                            &tokens.access_token,
+                            &self.config.client_version,
+                        ));
                     }
                     self.refresh_once(RefreshMode::IfStale)
                         .await
@@ -365,7 +382,10 @@ impl AuthProvider for GrokAuth {
                     let refreshed = self.tokens()?.ok_or_else(|| {
                         AuthError::RefreshFailed("the refreshed credential vanished".into())
                     })?;
-                    return Ok(AuthHeaders::bearer(&refreshed.access_token));
+                    return Ok(Self::subscription_headers(
+                        &refreshed.access_token,
+                        &self.config.client_version,
+                    ));
                 }
                 if let Some(key) = file.api_key {
                     return Ok(AuthHeaders::bearer(&key));
@@ -471,6 +491,15 @@ mod tests {
     use wiremock::matchers::body_string_contains;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
+
+    /// What a request would carry as its bearer.
+    fn bearer(headers: &AuthHeaders) -> String {
+        headers
+            .iter()
+            .find(|(name, _)| *name == "authorization")
+            .map(|(_, value)| value.to_string())
+            .expect("an authorization header")
+    }
 
     /// Only the token exchanges: an OIDC discovery probe is not a refresh, and
     /// counting it would make these assertions about the wrong thing.
@@ -648,8 +677,8 @@ mod tests {
 
         let headers = auth.headers().await.expect("headers");
         assert_eq!(
-            headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", "Bearer from-keke-login")],
+            bearer(&headers),
+            "Bearer from-keke-login",
             "the auth file keke wrote must outrank another tool's login"
         );
     }
@@ -730,11 +759,47 @@ mod tests {
         store_tokens(&auth, expired, Some("refresh-1"), AuthMode::Oidc);
 
         let headers = auth.headers().await.expect("headers");
+        assert_eq!(bearer(&headers), "Bearer access-2");
+        assert_eq!(token_requests(&server).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_login_carries_the_client_version_the_subscription_proxy_gates_on() {
+        let server = MockServer::start().await;
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+        let fresh = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() + 3600));
+        store_tokens(&auth, fresh, Some("refresh-1"), AuthMode::Oidc);
+
+        let headers = auth.headers().await.expect("headers");
+        let sent: Vec<_> = headers.iter().collect();
+        assert!(
+            sent.contains(&("x-grok-client-version", config::DEFAULT_CLIENT_VERSION)),
+            "cli-chat-proxy.grok.com answers 426 without it: {sent:?}"
+        );
+        assert!(
+            sent.contains(&("x-grok-client-identifier", "keke")),
+            "keke names itself rather than posing as another client: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_supplied_api_key_is_sent_bare() {
+        let server = MockServer::start().await;
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+        store
+            .save(&auth.config.api_key_ref, "xai-key-1")
+            .expect("save");
+
+        let headers = auth.headers().await.expect("headers");
         assert_eq!(
             headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", "Bearer access-2")]
+            vec![("authorization", "Bearer xai-key-1")],
+            "a key is spent at the public API, which gates on nothing"
         );
-        assert_eq!(token_requests(&server).await, 1);
     }
 
     #[tokio::test]
@@ -747,10 +812,7 @@ mod tests {
         store_tokens(&auth, fresh.clone(), Some("refresh-1"), AuthMode::Oidc);
 
         let headers = auth.headers().await.expect("headers");
-        assert_eq!(
-            headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", format!("Bearer {fresh}").as_str())]
-        );
+        assert_eq!(bearer(&headers), format!("Bearer {fresh}"));
         assert_eq!(
             token_requests(&server).await,
             0,

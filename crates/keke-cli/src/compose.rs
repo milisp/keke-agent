@@ -25,6 +25,12 @@ use keke_provider_api::WireApi;
 /// Where a ChatGPT subscription's tokens are accepted. An API key is not valid
 /// here, and a subscription token is not valid at the public API — so the base
 /// URL follows the credential rather than being a single constant.
+/// Where a grok *login* is spent. A subscription credential — and the free
+/// hours that come with it — is not valid at the pay-per-token API, which
+/// answers it `403 personal-team-blocked:spending-limit`: the credential is
+/// accepted and the account refused, which reads as a billing problem the
+/// person does not have.
+const GROK_SUBSCRIPTION_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -33,6 +39,15 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 /// Sending a subscription token to the public API, or an API key to the
 /// subscription backend, fails as a 401 that looks like a bad credential rather
 /// than like the wrong address.
+/// Whether this credential is a login rather than a key.
+///
+/// The two are spent at different addresses for both vendors, and sending
+/// either to the other's fails as an authentication error that names neither
+/// the address nor the account.
+fn is_subscription(auth: &dyn AuthProvider) -> bool {
+    !matches!(auth.snapshot().source.as_str(), "apikey" | "env")
+}
+
 fn codex_base_url(auth: &dyn AuthProvider) -> String {
     if let Ok(explicit) = std::env::var("OPENAI_BASE_URL") {
         return explicit;
@@ -101,11 +116,32 @@ impl Composed {
             auth_files.clone(),
         ));
         auth.register(Arc::clone(&grok_auth));
+        let grok_base_url = std::env::var("XAI_BASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty());
         providers
-            .register(Arc::new(keke_provider_grok::GrokProvider::new(
-                grok_auth,
-                std::env::var("XAI_BASE_URL").ok(),
-            )) as ArcProvider)
+            .register(if is_subscription(grok_auth.as_ref()) {
+                // The subscription surface speaks the responses wire, not
+                // chat-completions — a login sent to the latter is refused
+                // before the model is ever reached.
+                crate::declared::wire_provider(
+                    ProviderInfo {
+                        route: keke_auth_grok::AUTH_ID.to_string(),
+                        display_name: "xAI Grok".to_string(),
+                        base_url: grok_base_url
+                            .unwrap_or_else(|| GROK_SUBSCRIPTION_BASE_URL.to_string()),
+                        wire_api: WireApi::Responses,
+                        auth_id: Some(keke_auth_grok::AUTH_ID.to_string()),
+                        env_key: Some(keke_auth_grok::DEFAULT_API_KEY_REF.to_string()),
+                    },
+                    grok_auth,
+                )
+            } else {
+                Arc::new(keke_provider_grok::GrokProvider::new(
+                    grok_auth,
+                    grok_base_url,
+                )) as ArcProvider
+            })
             .context("registering the grok provider")?;
 
         let codex_auth: Arc<dyn AuthProvider> = Arc::new(

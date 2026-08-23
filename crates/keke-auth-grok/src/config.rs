@@ -12,6 +12,20 @@ pub const DEFAULT_VENDOR: &str = "grok";
 /// The long-lived API key alternative to a login.
 pub const DEFAULT_API_KEY_REF: &str = "XAI_API_KEY";
 
+/// The client version the subscription proxy gates on.
+///
+/// Not keke's version: `cli-chat-proxy.grok.com` refuses a request whose
+/// `x-grok-client-version` is older than the release it currently requires,
+/// with `426 Your Grok CLI version (none) is outdated`. It is the protocol
+/// generation this crate speaks, and a deployment that meets a raised gate
+/// before keke ships a new release needs to say so without forking the plugin.
+pub const DEFAULT_CLIENT_VERSION: &str = "0.1.202";
+
+/// What keke calls itself to that proxy. The gate is on the version alone —
+/// this is honest attribution, not a passport, so keke does not pose as
+/// another client.
+pub const CLIENT_IDENTIFIER: &str = "keke";
+
 const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access", "api:access"];
 
 /// Everything about the xAI auth flow a deployment might reasonably change.
@@ -42,6 +56,8 @@ pub struct GrokAuthConfig {
     pub device_code_only: bool,
     /// Added to the poll interval each time the issuer answers `slow_down`.
     pub slow_down_increment: Duration,
+    /// Sent as `x-grok-client-version` — see [`DEFAULT_CLIENT_VERSION`].
+    pub client_version: String,
 }
 
 impl GrokAuthConfig {
@@ -64,6 +80,7 @@ impl GrokAuthConfig {
             login_timeout: Duration::from_secs(300),
             device_code_only: false,
             slow_down_increment: Duration::from_secs(5),
+            client_version: DEFAULT_CLIENT_VERSION.to_string(),
         }
     }
 
