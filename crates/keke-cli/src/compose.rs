@@ -54,6 +54,10 @@ pub(crate) struct Composed {
     pub auth: AuthRegistry,
     pub providers: ProviderRegistry,
     pub extensions: ExtensionRegistry,
+    /// The plugins' slash commands. Kept as data rather than as a registry
+    /// because a command is a prompt file: only a surface that has someone to
+    /// type it means anything by it.
+    pub commands: Vec<keke_plugin::ResolvedCommand>,
 }
 
 impl Composed {
@@ -155,11 +159,13 @@ impl Composed {
             keke_acp::install(&mut extensions, approvals);
         }
 
+        let commands = plugins.commands().cloned().collect();
         Ok(Self {
             credentials,
             auth,
             providers,
             extensions: extensions.build(),
+            commands,
         })
     }
 

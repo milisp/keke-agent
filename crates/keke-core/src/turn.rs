@@ -197,7 +197,7 @@ impl Session {
                         ext_ctx,
                         workspace_root: self.workspace.root(),
                         cancelled: Arc::clone(&self.cancelled),
-                        policy: self.config.approval,
+                        policy: self.approval.get(),
                         memory: &self.approvals,
                     },
                 )

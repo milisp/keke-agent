@@ -10,6 +10,7 @@ use keke_acp::PermissionAnswer;
 use keke_acp::PermissionId;
 use keke_acp::ScriptedConversation;
 use keke_acp::Update;
+use keke_config_types::ApprovalPolicy;
 use keke_protocol::ContentBlock;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
@@ -417,4 +418,201 @@ fn content_blocks_other_than_text_do_not_fake_a_detail_line() {
         panic!("the tool cell must be there");
     };
     assert_eq!(tool.detail, None);
+}
+
+// --- slash commands and approval modes --------------------------------------
+
+/// The same helper, with a command list a person can complete against.
+fn app_with_commands(
+    script: Vec<Vec<Update>>,
+    plugins: Vec<crate::PluginCommand>,
+) -> (
+    App,
+    Arc<ScriptedConversation>,
+    UnboundedReceiver<Update>,
+    UnboundedReceiver<Update>,
+) {
+    let (app, scripted, updates, local) = app_with(script);
+    (
+        app.with_commands(crate::SlashCommands::new(plugins)),
+        scripted,
+        updates,
+        local,
+    )
+}
+
+fn shift(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::SHIFT)
+}
+
+#[tokio::test]
+async fn typing_a_slash_opens_the_command_menu() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    type_text(&mut app, "/hel");
+
+    let names: Vec<&str> = app
+        .completions()
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["help"]);
+
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.input.text(), "/help ");
+}
+
+/// The menu closes once the name is settled, so arguments are ordinary typing.
+#[tokio::test]
+async fn the_menu_closes_once_arguments_are_being_typed() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    type_text(&mut app, "/mode never");
+    assert!(app.completions().is_empty());
+}
+
+#[tokio::test]
+async fn a_command_runs_instead_of_reaching_the_model() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    type_text(&mut app, "/help");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(scripted.prompts().is_empty(), "a command is not a prompt");
+    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("/mode")));
+}
+
+#[tokio::test]
+async fn an_unknown_command_is_reported_rather_than_sent() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    type_text(&mut app, "/nope");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(scripted.prompts().is_empty());
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(text)) if text.contains("/nope")));
+}
+
+/// A prompt that opens with a path is prose, not a command.
+#[tokio::test]
+async fn a_leading_path_is_still_a_prompt() {
+    let (mut app, scripted, mut updates, _local) = app_with_commands(
+        vec![vec![
+            Update::TurnStarted,
+            Update::TurnEnded(StopReason::EndTurn),
+        ]],
+        Vec::new(),
+    );
+    type_text(&mut app, "/usr/bin/env is missing");
+    app.handle_key(key(KeyCode::Enter));
+    drain(&mut app, &mut updates, 2).await;
+
+    assert_eq!(
+        scripted.prompts(),
+        vec!["/usr/bin/env is missing".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_plugin_command_sends_its_file_as_the_prompt() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("review.md");
+    std::fs::write(&path, "Review the diff.").expect("writing the command file");
+
+    let (mut app, scripted, mut updates, _local) = app_with_commands(
+        vec![vec![
+            Update::TurnStarted,
+            Update::TurnEnded(StopReason::EndTurn),
+        ]],
+        vec![crate::SlashCommand::prompt(
+            "reviewer",
+            "review",
+            "review the diff",
+            path,
+        )],
+    );
+    type_text(&mut app, "/review carefully");
+    app.handle_key(key(KeyCode::Enter));
+    drain(&mut app, &mut updates, 2).await;
+
+    assert_eq!(
+        scripted.prompts(),
+        vec!["Review the diff.\n\ncarefully".to_string()]
+    );
+    // What the person typed is what they see; the body went to the model.
+    assert!(
+        app.transcript
+            .cells()
+            .contains(&Cell::User("/review carefully".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn a_command_file_that_cannot_be_read_is_reported_not_sent() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(
+        Vec::new(),
+        vec![crate::SlashCommand::prompt(
+            "reviewer",
+            "review",
+            "review the diff",
+            "/nonexistent/review.md",
+        )],
+    );
+    type_text(&mut app, "/review");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(scripted.prompts().is_empty());
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(_))));
+}
+
+#[tokio::test]
+async fn shift_tab_cycles_the_approval_mode_and_tells_the_agent() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    assert_eq!(app.approval_policy(), ApprovalPolicy::OnRequest);
+
+    app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::OnFailure);
+    app.handle_key(shift(KeyCode::Tab));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
+    app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::OnRequest);
+
+    // The surface's idea of the mode is worthless unless the agent has it too.
+    assert_eq!(
+        scripted.policies(),
+        vec![
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Never,
+            ApprovalPolicy::OnRequest,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_mode_command_names_a_mode_and_refuses_a_typo() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/mode never");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
+
+    type_text(&mut app, "/mode nevr");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.approval_policy(),
+        ApprovalPolicy::Never,
+        "a typo must not move the mode"
+    );
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(_))));
+    assert_eq!(scripted.policies(), vec![ApprovalPolicy::Never]);
+}
+
+#[tokio::test]
+async fn clear_empties_the_screen_and_quit_leaves() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    app.apply(Update::TextDelta("hi".to_string()));
+
+    type_text(&mut app, "/clear");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.transcript.is_empty());
+
+    type_text(&mut app, "/quit");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.should_quit());
 }

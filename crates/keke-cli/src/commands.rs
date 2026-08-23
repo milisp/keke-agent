@@ -210,8 +210,26 @@ async fn tui(
     requests: keke_acp::ApprovalRequests,
 ) -> Result<()> {
     let builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+    let commands = composed
+        .commands
+        .iter()
+        .map(|command| {
+            keke_tui::SlashCommand::prompt(
+                &command.plugin,
+                &command.name,
+                &command.description,
+                command.path.as_path(),
+            )
+        })
+        .collect();
     let (conversation, updates) = keke_acp::local(builder, approvals, requests).await?;
-    keke_tui::run(conversation, updates).await
+    keke_tui::run(
+        conversation,
+        updates,
+        keke_tui::SlashCommands::new(commands),
+        config.approval_policy,
+    )
+    .await
 }
 
 async fn exec(

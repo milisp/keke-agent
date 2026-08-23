@@ -14,6 +14,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use keke_config_types::ApprovalPolicy;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
@@ -90,6 +91,14 @@ pub trait Conversation: Send + Sync {
 
     /// Answer an outstanding permission request.
     fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer);
+
+    /// Change how much the agent may do without asking.
+    ///
+    /// A person switching modes mid-conversation is answering about the work in
+    /// front of them, so this is on the seam rather than in the session's
+    /// startup configuration: a surface that offers the switch must be able to
+    /// make it whatever the agent is attached to.
+    fn set_approval_policy(&self, policy: ApprovalPolicy);
 }
 
 /// A conversation that replays a prepared script.
@@ -104,6 +113,7 @@ pub struct ScriptedConversation {
     prompts: Arc<Mutex<Vec<String>>>,
     answers: Arc<Mutex<Vec<(PermissionId, PermissionAnswer)>>>,
     cancels: Arc<Mutex<usize>>,
+    policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
 }
 
 impl ScriptedConversation {
@@ -118,6 +128,7 @@ impl ScriptedConversation {
                 prompts: Arc::new(Mutex::new(Vec::new())),
                 answers: Arc::new(Mutex::new(Vec::new())),
                 cancels: Arc::new(Mutex::new(0)),
+                policies: Arc::new(Mutex::new(Vec::new())),
             },
             receiver,
         )
@@ -134,6 +145,15 @@ impl ScriptedConversation {
     #[must_use]
     pub fn answers(&self) -> Vec<(PermissionId, PermissionAnswer)> {
         self.answers
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every policy the surface has asked for, in order.
+    #[must_use]
+    pub fn policies(&self) -> Vec<ApprovalPolicy> {
+        self.policies
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -181,6 +201,12 @@ impl Conversation for ScriptedConversation {
     fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer) {
         if let Ok(mut seen) = self.answers.lock() {
             seen.push((id.clone(), answer));
+        }
+    }
+
+    fn set_approval_policy(&self, policy: ApprovalPolicy) {
+        if let Ok(mut seen) = self.policies.lock() {
+            seen.push(policy);
         }
     }
 }

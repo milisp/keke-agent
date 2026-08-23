@@ -20,6 +20,7 @@ mod session;
 mod turn;
 
 pub use approval::ApprovalMemory;
+pub use approval::ApprovalSwitch;
 pub use approval::approval_reason;
 pub use compact::estimate_history;
 pub use compact::estimate_tokens;

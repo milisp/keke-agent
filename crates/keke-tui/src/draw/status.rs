@@ -24,6 +24,17 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let mut spans = vec![Span::styled(format!(" {state} "), style)];
+    // Always shown, never only after a change: a person who cannot see the
+    // current mode has to guess whether the next command will ask them.
+    let policy = app.approval_policy();
+    spans.push(Span::styled(
+        format!("· {} ", crate::slash::policy_name(policy)),
+        if policy == keke_config_types::ApprovalPolicy::Never {
+            Style::new().fg(Color::Red)
+        } else {
+            Style::new().fg(Color::Cyan)
+        },
+    ));
     if !app.show_thinking() {
         spans.push(Span::styled(
             "· thinking hidden ",

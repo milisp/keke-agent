@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 keke-acp = { workspace = true }
 keke-auth-api = { workspace = true }
+keke-config-types = { workspace = true }
 keke-protocol = { workspace = true }
 anyhow = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
@@ -20,6 +21,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]

@@ -1905,9 +1905,11 @@ dependencies = [
  "futures",
  "keke-acp",
  "keke-auth-api",
+ "keke-config-types",
  "keke-protocol",
  "ratatui",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]

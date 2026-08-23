@@ -12,6 +12,7 @@ mod input;
 mod keys;
 mod login;
 mod scroll;
+pub mod slash;
 mod transcript;
 
 use std::io;
@@ -39,6 +40,9 @@ pub use input::InputBox;
 pub use login::Notice;
 pub use login::TuiLoginUi;
 pub use scroll::Scrollback;
+pub use slash::PluginCommand;
+pub use slash::SlashCommand;
+pub use slash::SlashCommands;
 pub use transcript::CallState;
 pub use transcript::Cell;
 pub use transcript::PermissionCell;
@@ -48,12 +52,17 @@ pub use transcript::Transcript;
 /// Run the interface until the person quits.
 ///
 /// `updates` is the agent's stream; the app also produces its own, so both are
-/// drained here rather than merged upstream.
+/// drained here rather than merged upstream. `commands` and `approval` come
+/// from the composition root: nothing here knows what a plugin is, or what the
+/// configured policy was.
 pub async fn run(
     conversation: Arc<dyn Conversation>,
     updates: UnboundedReceiver<Update>,
+    commands: SlashCommands,
+    approval: keke_config_types::ApprovalPolicy,
 ) -> anyhow::Result<()> {
     let (app, local) = App::new(conversation);
+    let app = app.with_commands(commands).with_approval_policy(approval);
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no
     // echo is worse than whatever went wrong.

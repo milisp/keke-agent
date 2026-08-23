@@ -13,6 +13,14 @@ use keke_acp::PermissionAnswer;
 
 use crate::app::App;
 
+/// The keys the completion menu takes over while it is open.
+fn menu_key(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::Enter | KeyCode::Esc
+    )
+}
+
 /// How many transcript lines one wheel notch moves.
 const WHEEL_LINES: usize = 3;
 
@@ -38,6 +46,16 @@ impl App {
             // fallbacks — one of the three works everywhere.
             KeyCode::Char('j') if control => self.input.insert_newline(),
             KeyCode::Enter if shift || alt => self.input.insert_newline(),
+            // Shift-Tab reaches a terminal as `BackTab`, except where it does
+            // not; both spellings mean the same gesture.
+            KeyCode::BackTab => self.cycle_approval_policy(),
+            KeyCode::Tab if shift => self.cycle_approval_policy(),
+            // The completion menu owns the keys only while it is open, so
+            // nothing a person can press changes meaning without them seeing
+            // the list it applies to.
+            _ if !self.completions().is_empty() && menu_key(key.code) => {
+                self.handle_completion_key(key);
+            }
             KeyCode::Enter => self.submit(),
             _ if self.open_permission_id().is_some() => self.handle_permission_key(key),
             KeyCode::Char(ch) if !control => self.input.insert_char(ch),
@@ -49,6 +67,23 @@ impl App {
             KeyCode::Down => self.input.move_down(),
             KeyCode::Home => self.input.move_home(),
             KeyCode::End => self.input.move_end(),
+            _ => {}
+        }
+    }
+
+    /// While the completion menu is up, these keys drive it.
+    fn handle_completion_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.select_previous_completion(),
+            KeyCode::Down => self.select_next_completion(),
+            KeyCode::Tab => self.complete(),
+            // Enter runs the highlighted command rather than whatever prefix is
+            // in the box: the highlight is what the person is looking at.
+            KeyCode::Enter => {
+                self.complete();
+                self.submit();
+            }
+            KeyCode::Esc => self.input.clear(),
             _ => {}
         }
     }
@@ -82,6 +117,6 @@ pub(crate) fn hints(awaiting_permission: bool) -> &'static str {
     if awaiting_permission {
         "y allow · a always · n deny · ^C cancel"
     } else {
-        "enter send · shift/alt-enter or ^J newline · ^T thinking · ^C cancel · ^D quit"
+        "enter send · / commands · shift-tab mode · ^T thinking · ^C cancel · ^D quit"
     }
 }

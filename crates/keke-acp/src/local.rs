@@ -11,6 +11,8 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use keke_config_types::ApprovalPolicy;
+use keke_core::ApprovalSwitch;
 use keke_core::CoreError;
 use keke_core::SessionBuilder;
 use keke_core::TurnUpdate;
@@ -150,6 +152,10 @@ pub struct LocalConversation {
     commands: UnboundedSender<Command>,
     cancel: Box<dyn Fn() + Send + Sync>,
     approvals: Arc<Approvals>,
+    /// Held rather than sent as a command: the session task is busy for as long
+    /// as a turn runs, so a queued mode change would arrive after the calls it
+    /// was meant to govern.
+    approval: Arc<ApprovalSwitch>,
 }
 
 /// Start a session and hand back the conversation and its updates.
@@ -165,6 +171,7 @@ pub async fn local(
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut session = builder.updates(turn_tx).build().await?;
     let cancel = session.canceller();
+    let approval = session.approval_switch();
 
     let (updates, update_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(publish(turn_rx, requests, updates.clone()));
@@ -192,6 +199,7 @@ pub async fn local(
             commands,
             cancel: Box::new(cancel),
             approvals,
+            approval,
         }),
         update_rx,
     ))
@@ -262,6 +270,10 @@ impl Conversation for LocalConversation {
 
     fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer) {
         self.approvals.answer(id, answer);
+    }
+
+    fn set_approval_policy(&self, policy: ApprovalPolicy) {
+        self.approval.set(policy);
     }
 }
 

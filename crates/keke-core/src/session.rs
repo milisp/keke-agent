@@ -92,6 +92,9 @@ pub struct Session {
     pub(crate) updates: Option<tokio::sync::mpsc::UnboundedSender<TurnUpdate>>,
     pub(crate) cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     pub(crate) approvals: Arc<crate::ApprovalMemory>,
+    /// The live policy. Kept beside the config rather than in it because it is
+    /// the one setting a person changes without restarting the session.
+    pub(crate) approval: Arc<crate::ApprovalSwitch>,
     flag: Arc<AtomicBool>,
 }
 
@@ -148,6 +151,28 @@ impl Session {
     #[must_use]
     pub fn approvals(&self) -> &Arc<crate::ApprovalMemory> {
         &self.approvals
+    }
+
+    /// How much this session may do without asking, right now.
+    #[must_use]
+    pub fn approval_policy(&self) -> ApprovalPolicy {
+        self.approval.get()
+    }
+
+    /// Change the policy, taking effect on the next tool call rather than the
+    /// next turn — a person raising the bar mid-turn means the call in front of
+    /// them, not the one after the answer they are still waiting for.
+    pub fn set_approval_policy(&self, policy: ApprovalPolicy) {
+        self.approval.set(policy);
+    }
+
+    /// A handle that changes this session's policy, detached from its lifetime.
+    ///
+    /// A surface holds this rather than the session, the same way a signal
+    /// handler holds [`Session::canceller`].
+    #[must_use]
+    pub fn approval_switch(&self) -> Arc<crate::ApprovalSwitch> {
+        Arc::clone(&self.approval)
     }
 
     /// Clear the abort flag so the session can take another turn.
@@ -250,6 +275,7 @@ impl SessionBuilder {
             })
             .await?;
 
+        let approval = config.approval;
         let flag = Arc::new(AtomicBool::new(false));
         let cancelled = {
             let flag = Arc::clone(&flag);
@@ -270,6 +296,7 @@ impl SessionBuilder {
             updates: self.updates,
             cancelled,
             approvals: Arc::new(crate::ApprovalMemory::default()),
+            approval: Arc::new(crate::ApprovalSwitch::new(approval)),
             flag,
         })
     }

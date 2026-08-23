@@ -8,6 +8,8 @@
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 
 use keke_config_types::ApprovalPolicy;
 use keke_tool::ToolCapabilities;
@@ -64,6 +66,18 @@ impl ApprovalMemory {
 
 #[cfg(test)]
 mod tests {
+    use super::ApprovalSwitch;
+
+    /// The switch is what the turn loop reads, so a change has to be visible
+    /// through a shared handle rather than only to whoever set it.
+    #[test]
+    fn a_switch_shares_the_policy_it_is_given() {
+        let switch = std::sync::Arc::new(ApprovalSwitch::new(ApprovalPolicy::OnRequest));
+        let held = std::sync::Arc::clone(&switch);
+        switch.set(ApprovalPolicy::Never);
+        assert_eq!(held.get(), ApprovalPolicy::Never);
+    }
+
     use super::*;
 
     fn capabilities(kind: ToolKind) -> ToolCapabilities {
@@ -102,5 +116,50 @@ mod tests {
         memory.allow_always("bash");
         assert!(memory.is_always_allowed("bash"));
         assert!(!memory.is_always_allowed("write_file"));
+    }
+}
+
+/// The approval policy a session is running under, shared so it can change
+/// while a turn is in flight.
+///
+/// A person who raises the bar mid-turn means "ask me about the next call", not
+/// "ask me once this turn is over", so the loop has to read the live value
+/// rather than a copy taken when the turn began. Copyable handles also let a
+/// surface hold the switch without holding the session, the same way
+/// [`Session::canceller`](crate::Session::canceller) works.
+#[derive(Debug)]
+pub struct ApprovalSwitch(AtomicU8);
+
+impl ApprovalSwitch {
+    #[must_use]
+    pub fn new(policy: ApprovalPolicy) -> Self {
+        Self(AtomicU8::new(encode(policy)))
+    }
+
+    #[must_use]
+    pub fn get(&self) -> ApprovalPolicy {
+        decode(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn set(&self, policy: ApprovalPolicy) {
+        self.0.store(encode(policy), Ordering::Relaxed);
+    }
+}
+
+fn encode(policy: ApprovalPolicy) -> u8 {
+    match policy {
+        ApprovalPolicy::OnRequest => 0,
+        ApprovalPolicy::OnFailure => 1,
+        ApprovalPolicy::Never => 2,
+    }
+}
+
+fn decode(raw: u8) -> ApprovalPolicy {
+    match raw {
+        1 => ApprovalPolicy::OnFailure,
+        2 => ApprovalPolicy::Never,
+        // Only `encode` ever writes the cell, so anything else is impossible;
+        // the strictest policy is the safe reading if it ever happened.
+        _ => ApprovalPolicy::OnRequest,
     }
 }
