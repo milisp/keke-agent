@@ -138,7 +138,7 @@ impl Session {
 
         for _step in 0..MAX_STEPS_PER_TURN {
             let request = ModelRequest {
-                model: self.config.model.model.clone(),
+                model: self.model.get().to_string(),
                 system: Some(system.clone()),
                 messages: self.history.clone(),
                 tools: specs.clone(),
@@ -154,6 +154,7 @@ impl Session {
                 messages: request.messages.clone(),
                 tools: specs.iter().map(|spec| spec.name.clone()).collect(),
                 reasoning_effort: request.reasoning_effort,
+                model: Some(request.model.clone()),
             })
             .await?;
 
@@ -264,7 +265,7 @@ impl Session {
         let recent = recent.to_vec();
 
         let request = ModelRequest {
-            model: self.config.model.model.clone(),
+            model: self.model.get().to_string(),
             system: None,
             messages,
             tools: Vec::new(),

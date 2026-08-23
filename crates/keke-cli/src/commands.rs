@@ -175,44 +175,152 @@ struct EditorSessions {
     cwd: std::path::PathBuf,
 }
 
+impl EditorSessions {
+    /// The directory to root a session in.
+    ///
+    /// The client names it; keke's own `--cwd` is the fallback for a client
+    /// that does not.
+    fn rooted_at(&self, cwd: std::path::PathBuf) -> std::path::PathBuf {
+        if cwd.as_os_str().is_empty() {
+            self.cwd.clone()
+        } else {
+            cwd
+        }
+    }
+
+    /// What the session's provider serves, for the client to choose between.
+    ///
+    /// A provider that cannot be asked leaves the list empty rather than
+    /// failing the session: not being able to switch models is a smaller loss
+    /// than not being able to open the conversation at all.
+    async fn models(&self, composed: &Composed) -> Vec<String> {
+        let route = &self.config.model.provider;
+        let Ok(provider) = provider_for(composed, route) else {
+            return Vec::new();
+        };
+        match provider.list_models().await {
+            Ok(models) => models.into_iter().map(|model| model.id).collect(),
+            Err(error) => {
+                tracing::warn!(%route, %error, "could not list models for the editor");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Build one session, new or continuing, and start it.
+    async fn start(
+        &self,
+        cwd: std::path::PathBuf,
+        resume: Option<(keke_protocol::SessionId, Vec<keke_protocol::Message>)>,
+    ) -> Result<keke_acp::Opened> {
+        let (approvals, requests) = keke_acp::approvals();
+        let composed = Composed::build(
+            &self.config.home,
+            &self.config.providers,
+            self.config.plugins,
+            Some(Arc::clone(&approvals)),
+        )?;
+        let mut builder =
+            session_builder(&self.config, &composed, cwd, self.config.approval_policy).await?;
+        let history = resume.as_ref().map(|(_, history)| history.clone());
+        if let Some((id, history)) = resume {
+            builder = builder.resume(id, history);
+        }
+        let mut opened = keke_acp::local(builder, approvals, requests).await?;
+        opened.history = history.unwrap_or_default();
+        opened.models = self.models(&composed).await;
+        Ok(opened)
+    }
+}
+
 impl keke_acp::SessionFactory for EditorSessions {
     fn open(
         &self,
         cwd: std::path::PathBuf,
-    ) -> keke_acp::ConversationFuture<
-        '_,
-        Result<
-            (
-                Arc<dyn keke_acp::Conversation>,
-                tokio::sync::mpsc::UnboundedReceiver<keke_acp::Update>,
-            ),
-            keke_acp::ConversationError,
-        >,
-    > {
+    ) -> keke_acp::ConversationFuture<'_, Result<keke_acp::Opened, keke_acp::ConversationError>>
+    {
         Box::pin(async move {
-            // The client names the directory; keke's own `--cwd` is the
-            // fallback for a client that does not.
-            let cwd = if cwd.as_os_str().is_empty() {
-                self.cwd.clone()
-            } else {
-                cwd
-            };
-            let (approvals, requests) = keke_acp::approvals();
-            let composed = Composed::build(
-                &self.config.home,
-                &self.config.providers,
-                self.config.plugins,
-                Some(Arc::clone(&approvals)),
-            )
-            .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
-            let builder =
-                session_builder(&self.config, &composed, cwd, self.config.approval_policy)
-                    .await
-                    .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
-            keke_acp::local(builder, approvals, requests)
+            self.start(self.rooted_at(cwd), None)
                 .await
                 .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))
         })
+    }
+
+    fn list(
+        &self,
+        cwd: Option<std::path::PathBuf>,
+    ) -> keke_acp::ConversationFuture<
+        '_,
+        Result<Vec<keke_acp::SessionListing>, keke_acp::ConversationError>,
+    > {
+        Box::pin(async move {
+            let sessions = keke_core::list_sessions(&self.config.home.home)
+                .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+            Ok(sessions
+                .into_iter()
+                // A log with no turns is an interface someone opened and
+                // closed; listing them buries the conversations under the
+                // empty files, exactly as `keke resume --list` decided.
+                .filter(|session| session.turns > 0)
+                .filter(|session| match (&cwd, &session.cwd) {
+                    (Some(wanted), Some(started_in)) => std::path::Path::new(started_in) == wanted,
+                    // A filter the log cannot answer excludes the session
+                    // rather than guessing it matches.
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                })
+                .map(|session| keke_acp::SessionListing {
+                    id: session.id.to_string(),
+                    cwd: session
+                        .cwd
+                        .as_ref()
+                        .map_or_else(|| self.cwd.clone(), std::path::PathBuf::from),
+                    title: session.summary,
+                    updated_at: session.updated_at,
+                })
+                .collect())
+        })
+    }
+
+    fn resume(
+        &self,
+        id: String,
+        cwd: std::path::PathBuf,
+    ) -> keke_acp::ConversationFuture<'_, Result<keke_acp::Opened, keke_acp::ConversationError>>
+    {
+        Box::pin(async move {
+            self.reopen(id, cwd)
+                .await
+                .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))
+        })
+    }
+}
+
+impl EditorSessions {
+    /// Resolve what the client sent back to one session, and continue it.
+    async fn reopen(&self, id: String, cwd: std::path::PathBuf) -> Result<keke_acp::Opened> {
+        let home = &self.config.home.home;
+        // The same prefix matching `keke resume` takes, so a client may hand
+        // back either the id it was shown or the whole thing.
+        let session = match keke_core::find_session(home, &id)? {
+            keke_core::SessionMatch::One(session) => session,
+            // Invariant 8: two claimants and no way to choose is an error, not
+            // a pick.
+            keke_core::SessionMatch::Ambiguous(candidates) => {
+                bail!("`{id}` matches {} sessions", candidates.len())
+            }
+            keke_core::SessionMatch::None => bail!("no session `{id}`"),
+        };
+        let resumed = keke_core::load_session(home, session.id)
+            .with_context(|| format!("reading the log for session {}", session.id))?;
+        // Where the session was started wins over where the client says it is:
+        // pointing a resumed conversation's tools at another directory is a
+        // different session wearing the same name.
+        let cwd = resumed
+            .cwd
+            .as_ref()
+            .map_or_else(|| self.rooted_at(cwd), std::path::PathBuf::from);
+        self.start(cwd, Some((resumed.id, resumed.history))).await
     }
 }
 
@@ -346,7 +454,8 @@ async fn tui(
             )
         })
         .collect();
-    let (conversation, updates) = keke_acp::local(builder, approvals, requests).await?;
+    let opened = keke_acp::local(builder, approvals, requests).await?;
+    let (conversation, updates) = (opened.conversation, opened.updates);
     keke_tui::run(
         conversation,
         updates,

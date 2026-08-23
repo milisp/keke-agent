@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use keke_config_types::ApprovalPolicy;
+use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
@@ -71,6 +72,40 @@ pub enum Update {
     Failed(String),
 }
 
+/// A conversation that is open and ready to be prompted.
+///
+/// Carries the id keke filed the session under rather than one the surface
+/// invented: the ACP session id and the rollout log's name are the same string,
+/// so an id a client saw in `session/list` is one it can resume.
+pub struct Opened {
+    pub id: String,
+    /// The model this session is asking, and every model the surface may offer
+    /// instead. Empty when the provider could not be asked — a surface then
+    /// offers no choice rather than a wrong one.
+    pub model: String,
+    pub models: Vec<String>,
+    pub conversation: Arc<dyn Conversation>,
+    pub updates: UnboundedReceiver<Update>,
+    /// What the session was rebuilt from. Empty for a session that is new.
+    pub history: Vec<Message>,
+}
+
+/// One previous session, as `session/list` reports it.
+///
+/// Deliberately flat strings: this crosses the seam from whoever keeps the
+/// sessions to the protocol, and neither side should have to agree on a
+/// storage type to describe one.
+pub struct SessionListing {
+    pub id: String,
+    /// Where the session was started. The lister substitutes its own working
+    /// directory for a log that does not say.
+    pub cwd: std::path::PathBuf,
+    /// What the person opened with, for telling two sessions apart.
+    pub title: String,
+    /// RFC 3339, from the last thing written to the log.
+    pub updated_at: String,
+}
+
 /// Identifies one outstanding permission request.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PermissionId(pub String);
@@ -112,6 +147,14 @@ pub trait Conversation: Send + Sync {
     /// setting a person changes while the conversation runs, and `None` means
     /// "unset, let the model decide" rather than the lowest rung.
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>);
+
+    /// Change which model answers, within the provider the session was built
+    /// with. On the seam for the same reason the two settings above are: a
+    /// person switching models is talking about the next answer.
+    ///
+    /// Naming a model the provider does not serve is the provider's to refuse,
+    /// not this seam's to guess at.
+    fn set_model(&self, model: String);
 }
 
 /// A conversation that replays a prepared script.
@@ -128,6 +171,7 @@ pub struct ScriptedConversation {
     cancels: Arc<Mutex<usize>>,
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
     efforts: Arc<Mutex<Vec<Option<ReasoningEffort>>>>,
+    models: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedConversation {
@@ -144,6 +188,7 @@ impl ScriptedConversation {
                 cancels: Arc::new(Mutex::new(0)),
                 policies: Arc::new(Mutex::new(Vec::new())),
                 efforts: Arc::new(Mutex::new(Vec::new())),
+                models: Arc::new(Mutex::new(Vec::new())),
             },
             receiver,
         )
@@ -169,6 +214,15 @@ impl ScriptedConversation {
     #[must_use]
     pub fn policies(&self) -> Vec<ApprovalPolicy> {
         self.policies
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every model the surface has asked for, in order.
+    #[must_use]
+    pub fn models(&self) -> Vec<String> {
+        self.models
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -237,6 +291,12 @@ impl Conversation for ScriptedConversation {
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
         if let Ok(mut seen) = self.efforts.lock() {
             seen.push(effort);
+        }
+    }
+
+    fn set_model(&self, model: String) {
+        if let Ok(mut seen) = self.models.lock() {
+            seen.push(model);
         }
     }
 }

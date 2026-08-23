@@ -47,6 +47,12 @@ pub enum SessionEvent {
         /// written before this field existed simply has none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<ReasoningEffort>,
+        /// The model the request named. Beside `SessionStart`'s because the
+        /// model can change while the session runs, and a log that only said
+        /// what the session opened with could not say which model answered.
+        /// A log written before this field existed simply has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// The model's reply for one step.
     ModelResponse {
@@ -136,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_survives_a_round_trip_through_the_log() {
+    fn what_the_model_was_asked_survives_a_round_trip_through_the_log() {
         let envelope = SessionEventEnvelope {
             at: "2026-08-21T00:00:00Z".to_string(),
             event: SessionEvent::ModelRequest {
@@ -144,10 +150,12 @@ mod tests {
                 messages: vec![Message::user("hi")],
                 tools: Vec::new(),
                 reasoning_effort: Some(crate::ReasoningEffort::High),
+                model: Some("grok-4.6".to_string()),
             },
         };
         let json = serde_json::to_value(&envelope).expect("serialize");
         assert_eq!(json["reasoning_effort"], "high");
+        assert_eq!(json["model"], "grok-4.6");
         let back: SessionEventEnvelope = serde_json::from_value(json).expect("round trip");
         assert_eq!(back, envelope);
     }

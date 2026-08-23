@@ -332,6 +332,7 @@ mod tests {
                 messages: vec![Message::user("summary of everything before")],
                 tools: Vec::new(),
                 reasoning_effort: None,
+                model: None,
             },
         ];
         let history = history_from_log(&events);
@@ -359,6 +360,7 @@ mod tests {
                 messages: vec![Message::user("read it")],
                 tools: Vec::new(),
                 reasoning_effort: None,
+                model: None,
             },
             SessionEvent::ModelResponse {
                 turn,

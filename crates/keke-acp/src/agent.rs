@@ -13,29 +13,49 @@ use std::sync::Mutex;
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectionTo;
 use agent_client_protocol::Stdio;
-use agent_client_protocol::schema::v1::AgentCapabilities;
-use agent_client_protocol::schema::v1::CancelNotification;
-use agent_client_protocol::schema::v1::ContentBlock;
-use agent_client_protocol::schema::v1::ContentChunk;
-use agent_client_protocol::schema::v1::Implementation;
-use agent_client_protocol::schema::v1::InitializeRequest;
-use agent_client_protocol::schema::v1::InitializeResponse;
-use agent_client_protocol::schema::v1::NewSessionRequest;
-use agent_client_protocol::schema::v1::NewSessionResponse;
-use agent_client_protocol::schema::v1::PermissionOption;
-use agent_client_protocol::schema::v1::PermissionOptionKind;
-use agent_client_protocol::schema::v1::PromptRequest;
-use agent_client_protocol::schema::v1::PromptResponse;
-use agent_client_protocol::schema::v1::RequestPermissionOutcome;
-use agent_client_protocol::schema::v1::RequestPermissionRequest;
-use agent_client_protocol::schema::v1::SessionId;
-use agent_client_protocol::schema::v1::SessionNotification;
-use agent_client_protocol::schema::v1::SessionUpdate;
-use agent_client_protocol::schema::v1::StopReason as AcpStopReason;
-use agent_client_protocol::schema::v1::TextContent;
-use agent_client_protocol::schema::v1::ToolCallStatus;
-use agent_client_protocol::schema::v1::ToolCallUpdate;
-use agent_client_protocol::schema::v1::ToolCallUpdateFields;
+use agent_client_protocol::schema::v2::AbsolutePath;
+use agent_client_protocol::schema::v2::AgentCapabilities;
+use agent_client_protocol::schema::v2::AgentMessage;
+use agent_client_protocol::schema::v2::CancelSessionNotification;
+use agent_client_protocol::schema::v2::ContentBlock;
+use agent_client_protocol::schema::v2::ContentChunk;
+use agent_client_protocol::schema::v2::IdleStateUpdate;
+use agent_client_protocol::schema::v2::Implementation;
+use agent_client_protocol::schema::v2::InitializeRequest;
+use agent_client_protocol::schema::v2::InitializeResponse;
+use agent_client_protocol::schema::v2::ListSessionsRequest;
+use agent_client_protocol::schema::v2::ListSessionsResponse;
+use agent_client_protocol::schema::v2::MessageId;
+use agent_client_protocol::schema::v2::NewSessionRequest;
+use agent_client_protocol::schema::v2::NewSessionResponse;
+use agent_client_protocol::schema::v2::PermissionOption;
+use agent_client_protocol::schema::v2::PermissionOptionKind;
+use agent_client_protocol::schema::v2::PromptRequest;
+use agent_client_protocol::schema::v2::PromptResponse;
+use agent_client_protocol::schema::v2::RequestPermissionOutcome;
+use agent_client_protocol::schema::v2::RequestPermissionRequest;
+use agent_client_protocol::schema::v2::RequestPermissionSubject;
+use agent_client_protocol::schema::v2::ResumeSessionRequest;
+use agent_client_protocol::schema::v2::ResumeSessionResponse;
+use agent_client_protocol::schema::v2::RunningStateUpdate;
+use agent_client_protocol::schema::v2::SessionCapabilities;
+use agent_client_protocol::schema::v2::SessionConfigOption;
+use agent_client_protocol::schema::v2::SessionConfigOptionCategory;
+use agent_client_protocol::schema::v2::SessionConfigSelectOption;
+use agent_client_protocol::schema::v2::SessionConfigSelectOptions;
+use agent_client_protocol::schema::v2::SessionId;
+use agent_client_protocol::schema::v2::SessionInfo;
+use agent_client_protocol::schema::v2::SessionUpdate;
+use agent_client_protocol::schema::v2::SetSessionConfigOptionRequest;
+use agent_client_protocol::schema::v2::SetSessionConfigOptionResponse;
+use agent_client_protocol::schema::v2::StateUpdate;
+use agent_client_protocol::schema::v2::StopReason as AcpStopReason;
+use agent_client_protocol::schema::v2::TextContent;
+use agent_client_protocol::schema::v2::ToolCallContent;
+use agent_client_protocol::schema::v2::ToolCallStatus;
+use agent_client_protocol::schema::v2::ToolCallUpdate;
+use agent_client_protocol::schema::v2::UpdateSessionNotification;
+use agent_client_protocol::schema::v2::UserMessage;
 use keke_protocol::StopReason;
 use keke_protocol::ToolStatus;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -44,7 +64,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::Conversation;
 use crate::ConversationError;
 use crate::ConversationFuture;
+use crate::Opened;
 use crate::PermissionAnswer;
+use crate::SessionListing;
 use crate::Update;
 
 /// Makes a conversation for one ACP session.
@@ -53,13 +75,28 @@ use crate::Update;
 /// that knows how to build a session, and `keke-acp` must not learn.
 pub trait SessionFactory: Send + Sync + 'static {
     /// Open a conversation rooted at `cwd`, as the client asked.
-    fn open(
+    fn open(&self, cwd: PathBuf) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
+
+    /// Every session there is to resume, newest first.
+    ///
+    /// `cwd` filters when the client asked it to. Listing is separate from
+    /// opening because a client draws a picker before it has chosen anything,
+    /// and building a session to describe one would start a turn nobody asked
+    /// for.
+    fn list(
         &self,
+        cwd: Option<PathBuf>,
+    ) -> ConversationFuture<'_, Result<Vec<SessionListing>, ConversationError>>;
+
+    /// Reopen a previous session so it can be prompted again.
+    ///
+    /// The id is whatever the client sent back; resolving it — including
+    /// deciding that it names nothing — belongs to whoever keeps the sessions.
+    fn resume(
+        &self,
+        id: String,
         cwd: PathBuf,
-    ) -> ConversationFuture<
-        '_,
-        Result<(Arc<dyn Conversation>, UnboundedReceiver<Update>), ConversationError>,
-    >;
+    ) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
 }
 
 /// The identifiers the option ids are built from.
@@ -82,13 +119,20 @@ fn permission_options() -> Vec<PermissionOption> {
     ]
 }
 
+/// The config option id keke offers a model under. The client sends it back,
+/// so it is the wire contract for what was changed.
+const MODEL: &str = "model";
+
 /// One live ACP session.
 struct Entry {
     conversation: Arc<dyn Conversation>,
-    /// Fed by the pump when a turn ends, read by the prompt handler. The
-    /// stop reason arrives on the update stream, but the client wants it as the
-    /// response to `session/prompt`.
-    outcomes: tokio::sync::Mutex<UnboundedReceiver<AcpStopReason>>,
+    /// What the provider serves, for answering `session/set_config_option` and
+    /// for describing the choice in the first place.
+    models: Vec<String>,
+    /// Fed by the pump when a turn ends, read by the prompt handler. v2 puts
+    /// the stop reason on the update stream, so this carries the fact of the
+    /// ending and nothing else.
+    outcomes: tokio::sync::Mutex<UnboundedReceiver<()>>,
 }
 
 #[derive(Default)]
@@ -111,7 +155,6 @@ pub async fn serve_stdio(
     factory: Arc<dyn SessionFactory>,
 ) -> Result<(), agent_client_protocol::Error> {
     let sessions = Arc::new(Sessions::default());
-    let next = Arc::new(std::sync::atomic::AtomicU64::new(1));
 
     Agent
         .builder()
@@ -119,9 +162,14 @@ pub async fn serve_stdio(
         .on_receive_request(
             async move |request: InitializeRequest, responder, _cx| {
                 responder.respond(
-                    InitializeResponse::new(request.protocol_version)
-                        .agent_capabilities(AgentCapabilities::new())
-                        .agent_info(Implementation::new("keke", env!("CARGO_PKG_VERSION"))),
+                    InitializeResponse::new(
+                        request.protocol_version,
+                        Implementation::new("keke", env!("CARGO_PKG_VERSION")),
+                    )
+                    // `session` present at all is what says keke speaks the
+                    // session surface; `session/list` and `session/resume` are
+                    // part of it rather than capabilities of their own.
+                    .capabilities(AgentCapabilities::new().session(SessionCapabilities::new())),
                 )
             },
             agent_client_protocol::on_receive_request!(),
@@ -130,35 +178,13 @@ pub async fn serve_stdio(
             {
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
-                let next = Arc::clone(&next);
                 async move |request: NewSessionRequest, responder, cx: ConnectionTo<_>| {
-                    let id = SessionId::new(format!(
-                        "keke-{}",
-                        next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    ));
-                    let (conversation, updates) = factory
-                        .open(request.cwd)
+                    let opened = factory
+                        .open(request.cwd.into_inner())
                         .await
                         .map_err(agent_client_protocol::Error::into_internal_error)?;
-
-                    let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
-                    sessions.insert(
-                        &id,
-                        Arc::new(Entry {
-                            conversation: Arc::clone(&conversation),
-                            outcomes: tokio::sync::Mutex::new(outcome_rx),
-                        }),
-                    );
-                    // Spawned, so the dispatch loop is free to deliver the
-                    // permission responses the pump is about to wait on.
-                    cx.spawn(pump(
-                        id.clone(),
-                        conversation,
-                        updates,
-                        outcome_tx,
-                        cx.clone(),
-                    ))?;
-                    responder.respond(NewSessionResponse::new(id))
+                    let (id, options) = start(&sessions, opened, &cx)?;
+                    responder.respond(NewSessionResponse::new(id).config_options(options))
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -176,21 +202,100 @@ pub async fn serve_stdio(
                     // ever arriving, which is to say it would remove the only
                     // way out.
                     cx.spawn(async move {
-                        let outcome = match entry.conversation.prompt(text).await {
-                            Ok(()) => entry
-                                .outcomes
-                                .lock()
-                                .await
-                                .recv()
-                                .await
-                                .unwrap_or(AcpStopReason::EndTurn),
+                        match entry.conversation.prompt(text).await {
+                            // The turn's outcome travels as the idle state
+                            // update the pump sends; waiting for it here is
+                            // what keeps the response from arriving before the
+                            // work it stands for.
+                            Ok(()) => {
+                                let _ = entry.outcomes.lock().await.recv().await;
+                            }
                             Err(error) => {
                                 return responder.respond_with_internal_error(error.to_string());
                             }
-                        };
-                        responder.respond(PromptResponse::new(outcome))
+                        }
+                        responder.respond(PromptResponse::new())
                     })?;
                     Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let factory = Arc::clone(&factory);
+                async move |request: ListSessionsRequest, responder, _cx| {
+                    let listed = factory
+                        .list(request.cwd.map(AbsolutePath::into_inner))
+                        .await
+                        .map_err(agent_client_protocol::Error::into_internal_error)?;
+                    // Every session at once: keke lists a directory of logs, so
+                    // there is no page to fetch a second one from, and a cursor
+                    // promising otherwise would be a lie the client would act on.
+                    responder.respond(ListSessionsResponse::new(
+                        listed.into_iter().map(listed_session).collect(),
+                    ))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let sessions = Arc::clone(&sessions);
+                let factory = Arc::clone(&factory);
+                async move |request: ResumeSessionRequest, responder, cx: ConnectionTo<_>| {
+                    let opened = match factory
+                        .resume(request.session_id.to_string(), request.cwd.into_inner())
+                        .await
+                    {
+                        Ok(opened) => opened,
+                        Err(error) => {
+                            return responder.respond_with_internal_error(error.to_string());
+                        }
+                    };
+                    let history = opened.history.clone();
+                    let (id, options) = start(&sessions, opened, &cx)?;
+                    // Resuming restores the session; replaying the transcript
+                    // is the separate thing v1 spelled `session/load`, and in
+                    // v2 a client asks for it by naming where to replay from.
+                    // A surface that already holds the transcript would
+                    // otherwise draw every message twice.
+                    if request.replay_from.is_some() {
+                        replay(&cx, &id, &history)?;
+                    }
+                    responder.respond(ResumeSessionResponse::new().config_options(options))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let sessions = Arc::clone(&sessions);
+                async move |request: SetSessionConfigOptionRequest, responder, _cx| {
+                    let Some(entry) = sessions.get(&request.session_id) else {
+                        return responder.respond_with_error(unknown_session(&request.session_id));
+                    };
+                    if request.config_id.0.as_ref() != MODEL {
+                        return responder.respond_with_error(
+                            agent_client_protocol::Error::invalid_params()
+                                .data(format!("no config option `{}`", request.config_id.0)),
+                        );
+                    }
+                    let chosen = request.value.as_id().map(ToString::to_string);
+                    // Invariant 8: a model keke was not offering is an error
+                    // rather than a silent no-op, which would leave the client
+                    // showing a selection the session does not have.
+                    let Some(model) = chosen.filter(|model| entry.models.contains(model)) else {
+                        return responder.respond_with_error(
+                            agent_client_protocol::Error::invalid_params()
+                                .data("not a model this session offers".to_string()),
+                        );
+                    };
+                    entry.conversation.set_model(model.clone());
+                    responder.respond(SetSessionConfigOptionResponse::new(config_options(
+                        &model,
+                        &entry.models,
+                    )))
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -198,7 +303,7 @@ pub async fn serve_stdio(
         .on_receive_notification(
             {
                 let sessions = Arc::clone(&sessions);
-                async move |notification: CancelNotification, _cx| {
+                async move |notification: CancelSessionNotification, _cx| {
                     if let Some(entry) = sessions.get(&notification.session_id) {
                         entry.conversation.cancel();
                     }
@@ -209,6 +314,116 @@ pub async fn serve_stdio(
         )
         .connect_to(Stdio::new())
         .await
+}
+
+/// Register an opened conversation and start pumping its updates.
+///
+/// Shared by `session/new` and `session/resume` so the two cannot drift: a
+/// resumed session that skipped the pump would accept prompts and report
+/// nothing.
+fn start(
+    sessions: &Sessions,
+    opened: Opened,
+    cx: &ConnectionTo<agent_client_protocol::Client>,
+) -> Result<(SessionId, Vec<SessionConfigOption>), agent_client_protocol::Error> {
+    // The id is the one the session is logged under, not one invented here:
+    // what a client resumes must be what `session/list` showed it.
+    let id = SessionId::new(opened.id);
+    let models = opened.models.clone();
+    let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
+    sessions.insert(
+        &id,
+        Arc::new(Entry {
+            conversation: Arc::clone(&opened.conversation),
+            models: opened.models.clone(),
+            outcomes: tokio::sync::Mutex::new(outcome_rx),
+        }),
+    );
+    // Spawned, so the dispatch loop is free to deliver the permission
+    // responses the pump is about to wait on.
+    cx.spawn(pump(
+        id.clone(),
+        opened.conversation,
+        opened.updates,
+        outcome_tx,
+        cx.clone(),
+    ))?;
+    Ok((id, config_options(&opened.model, &models)))
+}
+
+/// What a client may change about a session, and what it is set to now.
+///
+/// Only the model today. An empty list is the honest answer when the provider
+/// could not be asked what it serves: offering a choice keke cannot honour
+/// would put the refusal after the click rather than before it.
+fn config_options(current: &str, models: &[String]) -> Vec<SessionConfigOption> {
+    if models.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        SessionConfigOption::select(
+            MODEL,
+            "Model",
+            current,
+            SessionConfigSelectOptions::Ungrouped(
+                models
+                    .iter()
+                    .map(|model| SessionConfigSelectOption::new(model.as_str(), model.as_str()))
+                    .collect(),
+            ),
+        )
+        // The category is what tells a client this is the model picker rather
+        // than one more setting to bury in a menu.
+        .category(SessionConfigOptionCategory::Model),
+    ]
+}
+
+/// Send a resumed session's history to the client as ordinary updates.
+///
+/// Only what a person could see is replayed: the tool traffic between two
+/// messages is in the log, but a transcript that reruns it would look like work
+/// happening now.
+fn replay(
+    cx: &ConnectionTo<agent_client_protocol::Client>,
+    id: &SessionId,
+    history: &[keke_protocol::Message],
+) -> Result<(), agent_client_protocol::Error> {
+    for (at, message) in history.iter().enumerate() {
+        if let Some(update) = replayed(at, message) {
+            notify(cx, id, update)?;
+        }
+    }
+    Ok(())
+}
+
+/// How one logged message reads on the wire, or `None` if it does not.
+///
+/// Replayed as whole messages rather than chunks: nothing is streaming, and a
+/// chunk says otherwise to a client that renders the two differently.
+fn replayed(at: usize, message: &keke_protocol::Message) -> Option<SessionUpdate> {
+    let text = message.text();
+    if text.is_empty() {
+        return None;
+    }
+    let content = vec![ContentBlock::Text(TextContent::new(text))];
+    let id = MessageId::new(format!("replay-{at}"));
+    match message.role {
+        keke_protocol::Role::User => Some(SessionUpdate::UserMessage(
+            UserMessage::new(id).content(content),
+        )),
+        keke_protocol::Role::Assistant => Some(SessionUpdate::AgentMessage(
+            AgentMessage::new(id).content(content),
+        )),
+        // System prompts and tool results are the engine talking to itself.
+        keke_protocol::Role::System | keke_protocol::Role::Tool => None,
+    }
+}
+
+/// Describe one previous session for `session/list`.
+fn listed_session(listing: SessionListing) -> SessionInfo {
+    SessionInfo::new(listing.id, AbsolutePath::new(listing.cwd))
+        .title(listing.title)
+        .updated_at(listing.updated_at)
 }
 
 fn unknown_session(id: &SessionId) -> agent_client_protocol::Error {
@@ -235,51 +450,71 @@ async fn pump(
     id: SessionId,
     conversation: Arc<dyn Conversation>,
     mut updates: UnboundedReceiver<Update>,
-    outcomes: UnboundedSender<AcpStopReason>,
+    outcomes: UnboundedSender<()>,
     cx: ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(), agent_client_protocol::Error> {
+    // v2 hangs streamed content off a message id, so the chunks of one turn's
+    // answer can be recognised as one message. A counter is enough: the ids
+    // only have to be distinct within the session.
+    let mut turn = 0_u64;
     while let Some(update) = updates.recv().await {
         match update {
-            Update::TurnStarted => {}
+            Update::TurnStarted => {
+                turn += 1;
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::StateUpdate(StateUpdate::Running(RunningStateUpdate::new())),
+                )?;
+            }
             // ACP has no place for token accounting today, and inventing a
             // message for it would be keke's dialect rather than the protocol.
             Update::TokensUsed(_) => {}
             Update::TextDelta(text) => {
-                notify(&cx, &id, SessionUpdate::AgentMessageChunk(chunk(text)))?;
-            }
-            Update::ThinkingDelta(text) => {
-                notify(&cx, &id, SessionUpdate::AgentThoughtChunk(chunk(text)))?;
-            }
-            Update::ToolCallStarted(call) => {
-                let started = agent_client_protocol::schema::v1::ToolCall::new(
-                    call.id.to_string(),
-                    call.name.clone(),
-                )
-                .status(ToolCallStatus::InProgress);
-                notify(&cx, &id, SessionUpdate::ToolCall(started))?;
-            }
-            Update::ToolCallEnded(result) => {
-                let fields = ToolCallUpdateFields::new()
-                    .status(acp_status(result.status))
-                    .content(
-                        result
-                            .content
-                            .iter()
-                            .filter_map(|block| match block {
-                                keke_protocol::ContentBlock::Text { text } => {
-                                    Some(text.clone().into())
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>(),
-                    );
                 notify(
                     &cx,
                     &id,
-                    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                        result.id.to_string(),
-                        fields,
-                    )),
+                    SessionUpdate::AgentMessageChunk(chunk(text, message_id(turn, "agent"))),
+                )?;
+            }
+            Update::ThinkingDelta(text) => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::AgentThoughtChunk(chunk(text, message_id(turn, "thought"))),
+                )?;
+            }
+            Update::ToolCallStarted(call) => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::ToolCallUpdate(
+                        ToolCallUpdate::new(call.id.to_string())
+                            .title(call.name.clone())
+                            .status(ToolCallStatus::InProgress)
+                            .raw_input(call.arguments.clone()),
+                    ),
+                )?;
+            }
+            Update::ToolCallEnded(result) => {
+                let content: Vec<ToolCallContent> = result
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        keke_protocol::ContentBlock::Text { text } => {
+                            Some(ToolCallContent::from(text.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::ToolCallUpdate(
+                        ToolCallUpdate::new(result.id.to_string())
+                            .status(acp_status(result.status))
+                            .content(content),
+                    ),
                 )?;
             }
             Update::PermissionRequested {
@@ -291,14 +526,14 @@ async fn pump(
                 // loop, which is what makes waiting for the reply safe.
                 let request = RequestPermissionRequest::new(
                     id.clone(),
-                    ToolCallUpdate::new(
-                        call.id.to_string(),
-                        ToolCallUpdateFields::new()
-                            .title(format!("{}: {reason}", call.name))
-                            .raw_input(call.arguments.clone()),
-                    ),
+                    format!("{}: {reason}", call.name),
                     permission_options(),
-                );
+                )
+                .subject(RequestPermissionSubject::from(
+                    ToolCallUpdate::new(call.id.to_string())
+                        .title(call.name.clone())
+                        .raw_input(call.arguments.clone()),
+                ));
                 let answer = match cx.send_request(request).block_task().await {
                     Ok(response) => chosen(&response.outcome),
                     // The client went away or refused; denying is the only safe
@@ -308,19 +543,47 @@ async fn pump(
                 conversation.respond_to_permission(&permission, answer);
             }
             Update::TurnEnded(reason) => {
-                let _ = outcomes.send(acp_stop_reason(&reason));
+                idle(&cx, &id, acp_stop_reason(&reason))?;
+                let _ = outcomes.send(());
             }
             Update::Failed(message) => {
                 notify(
                     &cx,
                     &id,
-                    SessionUpdate::AgentMessageChunk(chunk(format!("error: {message}"))),
+                    SessionUpdate::AgentMessageChunk(chunk(
+                        format!("error: {message}"),
+                        message_id(turn, "agent"),
+                    )),
                 )?;
-                let _ = outcomes.send(AcpStopReason::Refusal);
+                idle(&cx, &id, AcpStopReason::Refusal)?;
+                let _ = outcomes.send(());
             }
         }
     }
     Ok(())
+}
+
+/// Report the turn as finished, and why.
+///
+/// v2 dropped the stop reason from the `session/prompt` response, so this is
+/// the only place a client learns whether the turn ended or was stopped.
+fn idle(
+    cx: &ConnectionTo<agent_client_protocol::Client>,
+    id: &SessionId,
+    reason: AcpStopReason,
+) -> Result<(), agent_client_protocol::Error> {
+    notify(
+        cx,
+        id,
+        SessionUpdate::StateUpdate(StateUpdate::Idle(
+            IdleStateUpdate::new().stop_reason(reason),
+        )),
+    )
+}
+
+/// The id the chunks of one message are streamed under.
+fn message_id(turn: u64, kind: &str) -> MessageId {
+    MessageId::new(format!("{turn}-{kind}"))
 }
 
 fn notify(
@@ -328,11 +591,11 @@ fn notify(
     id: &SessionId,
     update: SessionUpdate,
 ) -> Result<(), agent_client_protocol::Error> {
-    cx.send_notification(SessionNotification::new(id.clone(), update))
+    cx.send_notification(UpdateSessionNotification::new(id.clone(), update))
 }
 
-fn chunk(text: impl Into<String>) -> ContentChunk {
-    ContentChunk::new(ContentBlock::Text(TextContent::new(text.into())))
+fn chunk(text: impl Into<String>, message: MessageId) -> ContentChunk {
+    ContentChunk::new(ContentBlock::Text(TextContent::new(text.into())), message)
 }
 
 /// An outcome the client did not select is a refusal, not a permission.
@@ -365,6 +628,8 @@ fn acp_stop_reason(reason: &StopReason) -> AcpStopReason {
 
 #[cfg(test)]
 mod tests {
+    use agent_client_protocol::schema::v2::SelectedPermissionOutcome;
+
     use super::*;
 
     #[test]
@@ -382,9 +647,7 @@ mod tests {
     fn an_unrecognised_option_is_a_denial() {
         let selected = |id: &str| {
             let id: std::sync::Arc<str> = id.into();
-            RequestPermissionOutcome::Selected(
-                agent_client_protocol::schema::v1::SelectedPermissionOutcome::new(id),
-            )
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id))
         };
         assert_eq!(chosen(&selected(ALLOW)), PermissionAnswer::Allow);
         assert_eq!(
@@ -401,11 +664,9 @@ mod tests {
     #[test]
     fn every_offered_option_maps_back_to_an_answer() {
         for option in permission_options() {
-            let outcome = RequestPermissionOutcome::Selected(
-                agent_client_protocol::schema::v1::SelectedPermissionOutcome::new(
-                    option.option_id.clone(),
-                ),
-            );
+            let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            ));
             let answer = chosen(&outcome);
             let expected = match option.kind {
                 PermissionOptionKind::AllowOnce => PermissionAnswer::Allow,
@@ -414,5 +675,53 @@ mod tests {
             };
             assert_eq!(answer, expected, "{:?}", option.option_id);
         }
+    }
+
+    /// A replayed transcript is what a person said and what the agent said
+    /// back. The system prompt and the tool traffic are in the log too, and
+    /// showing them would be keke narrating its own plumbing.
+    #[test]
+    fn only_what_a_person_could_see_is_replayed() {
+        let history = [
+            keke_protocol::Message {
+                role: keke_protocol::Role::System,
+                content: vec![keke_protocol::ContentBlock::text("you are keke")],
+            },
+            keke_protocol::Message::user("hello"),
+            keke_protocol::Message::assistant("hi"),
+            keke_protocol::Message {
+                role: keke_protocol::Role::Tool,
+                content: vec![keke_protocol::ContentBlock::text("{}")],
+            },
+        ];
+
+        let replayed: Vec<_> = history
+            .iter()
+            .enumerate()
+            .filter_map(|(at, message)| super::replayed(at, message))
+            .collect();
+
+        assert_eq!(replayed.len(), 2, "{replayed:?}");
+        assert!(matches!(replayed[0], SessionUpdate::UserMessage(_)));
+        assert!(matches!(replayed[1], SessionUpdate::AgentMessage(_)));
+    }
+
+    /// The id a client is shown is the id it can resume, so a listing carries
+    /// the session's own id rather than a position in the list.
+    #[test]
+    fn a_listing_carries_the_id_a_client_resumes_with() {
+        let info = listed_session(SessionListing {
+            id: "01930000-0000-7000-8000-000000000000".to_string(),
+            cwd: std::path::PathBuf::from("/work"),
+            title: "fix the parser".to_string(),
+            updated_at: "2026-08-23T10:00:00Z".to_string(),
+        });
+
+        assert_eq!(
+            info.session_id.0.as_ref(),
+            "01930000-0000-7000-8000-000000000000"
+        );
+        assert_eq!(info.cwd.into_inner(), std::path::PathBuf::from("/work"));
+        assert_eq!(info.title.as_deref(), Some("fix the parser"));
     }
 }

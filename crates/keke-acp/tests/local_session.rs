@@ -205,9 +205,10 @@ async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Start
         .provider(Arc::new(Scripted::new(script)))
         .extensions(extensions.build());
 
-    let (conversation, updates) = keke_acp::local(builder, approvals, requests)
+    let opened = keke_acp::local(builder, approvals, requests)
         .await
         .expect("a session");
+    let (conversation, updates) = (opened.conversation, opened.updates);
     Started {
         conversation,
         updates,

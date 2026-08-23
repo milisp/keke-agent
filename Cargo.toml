@@ -40,7 +40,10 @@ keke-tools = { path = "crates/keke-tools", version = "0.1.1" }
 keke-tui = { path = "crates/keke-tui", version = "0.1.1" }
 
 # --- third-party ---
-agent-client-protocol = "2"
+# `unstable_protocol_v2` for `session/resume`'s `replayFrom`: v2 folded v1's
+# `session/load` into resume, and the cursor is the only thing that says whether
+# the client wants the transcript replayed or just the session back.
+agent-client-protocol = { version = "2", features = ["unstable_protocol_v2"] }
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
 async-trait = "0.1"

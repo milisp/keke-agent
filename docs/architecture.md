@@ -202,6 +202,34 @@ model, no network, and no terminal (`ScriptedConversation`).
 `Conversation` on behalf of an editor. Because both surfaces drive the same
 seam, they cannot drift into offering different tools or different policy.
 
+### Which version of ACP
+
+keke serves protocol **v2** (`agent-client-protocol`'s `unstable_protocol_v2`
+draft), not v1. v2 is the version that folded v1's `session/load` into
+`session/resume` — one method that restores the session, replaying the
+transcript only when the client names a `replayFrom` cursor — moved the turn's
+stop reason off the `session/prompt` response and onto the `session/update`
+state stream, and flattened tool-call creation and update into one message.
+
+The cost is that a v1-only client cannot connect: v2's `initialize` carries
+fields v1 does not send. That is the trade keke takes rather than serving two
+dialects of the same conversation, which is the drift the seam exists to
+prevent.
+
+The model a session asks is a `session/set_config_option` under the `model`
+category — the picker every v2 client already knows how to draw — offered from
+what the provider's own model list returns. Only the model: the provider was
+chosen with the credentials the session authenticates with, so routing
+elsewhere is a session rather than a setting. It is an `Arc<ModelSwitch>` beside
+the config for the same reason the approval policy and effort level are, and
+`SessionEvent::ModelRequest` records the model each step named, since a log that
+only said what the session opened with could not say which model answered.
+
+`session/list` and `session/resume` are served straight from the rollout logs,
+so what a client can list is what `keke resume --list` lists and what it resumes
+is what `keke resume` resumes. There is no second record for the two to
+disagree about.
+
 ### Asking a person
 
 `ApprovalPolicy` decides *whether* to ask, from the tool's own declared

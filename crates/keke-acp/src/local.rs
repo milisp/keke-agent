@@ -15,6 +15,7 @@ use keke_config_types::ApprovalPolicy;
 use keke_core::ApprovalSwitch;
 use keke_core::CoreError;
 use keke_core::EffortSwitch;
+use keke_core::ModelSwitch;
 use keke_core::SessionBuilder;
 use keke_core::TurnUpdate;
 use keke_plugin_api::ApprovalDecision;
@@ -33,6 +34,7 @@ use tokio::sync::oneshot;
 use crate::Conversation;
 use crate::ConversationError;
 use crate::ConversationFuture;
+use crate::Opened;
 use crate::PermissionAnswer;
 use crate::PermissionId;
 use crate::Update;
@@ -161,6 +163,9 @@ pub struct LocalConversation {
     /// Held for the same reason as `approval`: a queued effort change would
     /// arrive after the steps it was meant to govern.
     effort: Arc<EffortSwitch>,
+    /// Held for the same reason again: a model change queued behind a running
+    /// turn would take effect an answer too late.
+    model: Arc<ModelSwitch>,
 }
 
 /// Start a session and hand back the conversation and its updates.
@@ -172,12 +177,15 @@ pub async fn local(
     builder: SessionBuilder,
     approvals: Arc<Approvals>,
     requests: ApprovalRequests,
-) -> Result<(Arc<dyn Conversation>, UnboundedReceiver<Update>), CoreError> {
+) -> Result<Opened, CoreError> {
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut session = builder.updates(turn_tx).build().await?;
+    let id = session.id().to_string();
     let cancel = session.canceller();
     let approval = session.approval_switch();
     let effort = session.effort_switch();
+    let model_switch = session.model_switch();
+    let model = session.model().to_string();
 
     let (updates, update_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(publish(turn_rx, requests, updates.clone()));
@@ -200,16 +208,25 @@ pub async fn local(
         }
     });
 
-    Ok((
-        Arc::new(LocalConversation {
+    Ok(Opened {
+        id,
+        model,
+        // The composition root knows what the provider serves; `local` only
+        // starts the session.
+        models: Vec::new(),
+        conversation: Arc::new(LocalConversation {
             commands,
             cancel: Box::new(cancel),
             approvals,
             approval,
             effort,
+            model: model_switch,
         }),
-        update_rx,
-    ))
+        updates: update_rx,
+        // Whoever rebuilt the history is the one that has it; `local` only
+        // starts what the builder was already told to continue.
+        history: Vec::new(),
+    })
 }
 
 /// Merge the engine's turn updates with the approval prompts.
@@ -282,6 +299,10 @@ impl Conversation for LocalConversation {
 
     fn set_approval_policy(&self, policy: ApprovalPolicy) {
         self.approval.set(policy);
+    }
+
+    fn set_model(&self, model: String) {
+        self.model.set(model.as_str());
     }
 
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {

@@ -107,6 +107,8 @@ pub struct Session {
     pub(crate) approval: Arc<crate::ApprovalSwitch>,
     /// The live effort level, kept beside the config for the same reason.
     pub(crate) effort: Arc<crate::EffortSwitch>,
+    /// The live model, kept beside the config for the same reason.
+    pub(crate) model: Arc<crate::ModelSwitch>,
     flag: Arc<AtomicBool>,
 }
 
@@ -189,6 +191,26 @@ impl Session {
     /// of them thought about harder, not the one after the answer.
     pub fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
         self.effort.set(effort);
+    }
+
+    /// The model this session is asking, right now.
+    #[must_use]
+    pub fn model(&self) -> Arc<str> {
+        self.model.get()
+    }
+
+    /// Change the model, taking effect on the next model request.
+    ///
+    /// Within the session's provider only: the route was chosen when the
+    /// session was built, along with the credentials it authenticates with.
+    pub fn set_model(&self, model: impl Into<Arc<str>>) {
+        self.model.set(model);
+    }
+
+    /// A handle that changes this session's model, detached from its lifetime.
+    #[must_use]
+    pub fn model_switch(&self) -> Arc<crate::ModelSwitch> {
+        Arc::clone(&self.model)
     }
 
     /// A handle that changes this session's effort level, detached from its
@@ -333,6 +355,7 @@ impl SessionBuilder {
 
         let approval = config.approval;
         let effort = config.reasoning_effort;
+        let model = Arc::new(crate::ModelSwitch::new(config.model.model.as_str()));
         let flag = Arc::new(AtomicBool::new(false));
         let cancelled = {
             let flag = Arc::clone(&flag);
@@ -355,6 +378,7 @@ impl SessionBuilder {
             approvals: Arc::new(crate::ApprovalMemory::default()),
             approval: Arc::new(crate::ApprovalSwitch::new(approval)),
             effort: Arc::new(crate::EffortSwitch::new(effort)),
+            model,
             flag,
         })
     }
