@@ -7,7 +7,7 @@
 
 ## Status
 
-`keke exec`, the ACP server, and the TUI all work end to end, with runtime plugin operations gated behind consent. Check [`docs/PROGRESS.md`](docs/PROGRESS.md) for the active roadmap.
+`keke exec`, the ACP server, and the TUI all work end to end, with runtime plugin operations gated behind consent. Check [`docs/ROADMAP.md`](docs/ROADMAP.md) for the active roadmap.
 
 ## Design in one paragraph
 
