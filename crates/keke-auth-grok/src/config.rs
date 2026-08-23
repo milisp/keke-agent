@@ -26,7 +26,24 @@ pub const DEFAULT_CLIENT_VERSION: &str = "0.1.202";
 /// another client.
 pub const CLIENT_IDENTIFIER: &str = "keke";
 
-const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access", "api:access"];
+/// What a login asks for.
+///
+/// `grok-cli:access` is what authorizes a token at the subscription proxy: the
+/// issuer grants exactly what is requested, and a token minted without it is
+/// refused there with `User does not have Grok Code CLI permission` — a message
+/// about the token's scope that reads as a statement about the person.
+const DEFAULT_SCOPES: &[&str] = &[
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "grok-cli:access",
+    "api:access",
+    "conversations:read",
+    "conversations:write",
+    "workspaces:read",
+    "workspaces:write",
+];
 
 /// Everything about the xAI auth flow a deployment might reasonably change.
 ///

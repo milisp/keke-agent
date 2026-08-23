@@ -763,6 +763,24 @@ mod tests {
         assert_eq!(token_requests(&server).await, 1);
     }
 
+    /// The issuer grants what is asked for and no more, and the subscription
+    /// proxy answers a token without this scope
+    /// `403 User does not have Grok Code CLI permission` — which sounds like a
+    /// fact about the account and is a fact about the request.
+    #[test]
+    fn a_login_asks_for_the_scope_the_subscription_proxy_requires() {
+        let config = GrokAuthConfig::default();
+        assert!(
+            config.scopes.iter().any(|scope| scope == "grok-cli:access"),
+            "{:?}",
+            config.scopes
+        );
+        assert!(
+            config.scopes.iter().any(|scope| scope == "offline_access"),
+            "without this the issuer mints no refresh token at all"
+        );
+    }
+
     #[tokio::test]
     async fn a_login_carries_the_client_version_the_subscription_proxy_gates_on() {
         let server = MockServer::start().await;
