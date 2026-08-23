@@ -46,6 +46,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     if let Some(model) = cli.model {
         config.model.model = model;
     }
+    if let Some(effort) = cli.reasoning_effort {
+        config.reasoning_effort = Some(effort);
+    }
 
     // Only the interactive surface can answer an approval request, so only it
     // installs the bridge; everything else runs with the engine's default.
@@ -117,6 +120,7 @@ async fn session_builder(
                 workspace_root: config.home.workspace_root.clone(),
             },
             max_output_tokens: config.max_output_tokens,
+            reasoning_effort: config.reasoning_effort,
             compaction: config.compaction,
             approval,
         })

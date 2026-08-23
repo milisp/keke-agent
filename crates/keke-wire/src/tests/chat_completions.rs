@@ -1,5 +1,7 @@
+use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_protocol::Usage;
+use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
 use keke_provider_api::StreamChunk;
 use keke_provider_api::WireApi;
@@ -224,4 +226,25 @@ async fn the_system_prompt_leads_the_message_array() {
     assert_eq!(body["messages"][0]["content"], json!("be terse"));
     assert_eq!(body["stream_options"]["include_usage"], json!(true));
     assert!(body.get("input").is_none());
+}
+
+/// The effort level is a top-level word on this wire, and an unknown rung is
+/// the endpoint's to refuse — translating `xhigh` down to `high` would buy less
+/// thinking than was asked for without saying so.
+#[test]
+fn effort_is_sent_as_written() {
+    let body = crate::chat_completions_body(
+        &ModelRequest {
+            reasoning_effort: Some(ReasoningEffort::XHigh),
+            ..request()
+        },
+        false,
+    );
+    assert_eq!(body["reasoning_effort"], json!("xhigh"));
+}
+
+#[test]
+fn an_unset_effort_leaves_the_field_off() {
+    let body = crate::chat_completions_body(&request(), false);
+    assert!(body.get("reasoning_effort").is_none(), "{body}");
 }

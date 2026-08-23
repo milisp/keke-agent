@@ -11,6 +11,7 @@ use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
+use keke_config_types::ReasoningEffort;
 use keke_plugin_api::ExtensionRegistry;
 use keke_protocol::Message;
 use keke_protocol::SessionEvent;
@@ -65,6 +66,10 @@ pub struct SessionConfig {
     /// wire format rejects a request that omits it, and letting each vendor
     /// choose would give the same conversation a different budget per vendor.
     pub max_output_tokens: MaxOutputTokens,
+    /// How hard the model is asked to think. `None` leaves the vendor default
+    /// in place; the engine does not pick a level of its own, because a level
+    /// keke chose would be indistinguishable in the log from one a person did.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// When and how far to summarize the history. A session that never compacts
     /// works until the provider rejects the request mid-conversation.
     pub compaction: CompactionConfig,

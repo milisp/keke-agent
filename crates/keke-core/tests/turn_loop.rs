@@ -288,6 +288,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         },
         home: home.clone(),
         max_output_tokens: MaxOutputTokens::default(),
+        reasoning_effort: None,
         compaction: CompactionConfig::default(),
         approval,
     }

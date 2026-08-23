@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::Role;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCallId;
@@ -43,16 +44,45 @@ pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// the knob is `max-output-tokens` in `keke-config-types`.
 const UNSET_MAX_OUTPUT_TOKENS: u32 = 4096;
 
+/// The smallest thinking budget this wire accepts. Below it the request is
+/// rejected outright, so a reply budget with no room for it means extended
+/// thinking is left off rather than sent in a shape that cannot be served.
+const MIN_THINKING_BUDGET: u32 = 1024;
+
+/// What each rung of the neutral ladder buys on this wire.
+///
+/// This vendor takes a token budget where the OpenAI wires take a word, so the
+/// translation has to name numbers. They live here, next to the format that
+/// needs them, for the same reason [`UNSET_MAX_OUTPUT_TOKENS`] does: they are
+/// how one wire spells a setting, not a setting of their own. The knob a
+/// deployment turns is `reasoning-effort`.
+fn thinking_budget(effort: ReasoningEffort) -> u32 {
+    match effort {
+        ReasoningEffort::Low => 4_096,
+        ReasoningEffort::Medium => 8_192,
+        ReasoningEffort::High => 16_384,
+        ReasoningEffort::XHigh => 32_768,
+        ReasoningEffort::Max => 65_536,
+    }
+}
+
 /// Build a `/messages` body.
 #[must_use]
 pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
     body.insert("stream".to_string(), json!(stream));
-    body.insert(
-        "max_tokens".to_string(),
-        json!(request.max_output_tokens.unwrap_or(UNSET_MAX_OUTPUT_TOKENS)),
-    );
+    let max_tokens = request.max_output_tokens.unwrap_or(UNSET_MAX_OUTPUT_TOKENS);
+    body.insert("max_tokens".to_string(), json!(max_tokens));
+
+    // The budget has to leave room for an answer, so it is capped below the
+    // reply budget rather than sent as the ladder names it. A reply budget too
+    // small to hold even the minimum leaves thinking off: a rejected request
+    // buys no thinking at all.
+    let thinking = request
+        .reasoning_effort
+        .map(|effort| thinking_budget(effort).min(max_tokens.saturating_sub(MIN_THINKING_BUDGET)))
+        .filter(|budget| *budget >= MIN_THINKING_BUDGET);
 
     let (system, messages) = split_system(request);
     if !system.is_empty() {
@@ -66,8 +96,22 @@ pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
             json!(request.tools.iter().map(wire_tool).collect::<Vec<_>>()),
         );
     }
-    if let Some(temperature) = request.temperature {
-        body.insert("temperature".to_string(), json!(temperature));
+    // This wire refuses a temperature alongside extended thinking, so the two
+    // cannot both be honored. Effort wins: it was asked for explicitly, and
+    // dropping it instead would leave a request that thinks less than the
+    // session was configured to.
+    match thinking {
+        Some(budget) => {
+            body.insert(
+                "thinking".to_string(),
+                json!({ "type": "enabled", "budget_tokens": budget }),
+            );
+        }
+        None => {
+            if let Some(temperature) = request.temperature {
+                body.insert("temperature".to_string(), json!(temperature));
+            }
+        }
     }
     Value::Object(body)
 }

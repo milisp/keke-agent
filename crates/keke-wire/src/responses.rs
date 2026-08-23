@@ -55,6 +55,15 @@ pub fn responses_body(request: &ModelRequest, stream: bool) -> Value {
     if let Some(temperature) = request.temperature {
         body.insert("temperature".to_string(), json!(temperature));
     }
+    // Nested under `reasoning` here rather than a top-level field, and sent as
+    // written: a level this endpoint does not know is rejected by it, not
+    // rounded down to one it does.
+    if let Some(effort) = request.reasoning_effort {
+        body.insert(
+            "reasoning".to_string(),
+            json!({ "effort": effort.as_str() }),
+        );
+    }
     Value::Object(body)
 }
 

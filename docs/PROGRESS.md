@@ -25,6 +25,11 @@ drift the way the README status line did.
   (`keke-plugin`), skills/commands/hooks/MCP servers as declared manifests
   (invariant 11), repository-sourced plugins gated behind explicit consent
   keyed to their contents, not their path (invariant 12).
+- **Reasoning effort** — one neutral ladder (`low`/`medium`/`high`/`xhigh`/
+  `max`) in `keke-protocol`, logged on `SessionEvent::ModelRequest`, set by
+  `reasoning-effort` in config or `--reasoning-effort`, translated per wire:
+  an effort word on the two OpenAI formats, a capped `thinking.budget_tokens`
+  on Anthropic's.
 - **MCP** — `keke-mcp` speaks both the old and modern MCP transport eras.
 - **`keke-skills`** — plugin-contributed `skills/*/SKILL.md` become a
   `ContextContributor` wired in `keke-cli/src/compose.rs`: only the

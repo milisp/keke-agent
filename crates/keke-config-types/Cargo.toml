@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 keke-paths = { workspace = true }
+keke-protocol = { workspace = true }
 serde = { workspace = true }
 
 [lints]

@@ -1695,6 +1695,7 @@ name = "keke-config-types"
 version = "0.1.0"
 dependencies = [
  "keke-paths",
+ "keke-protocol",
  "serde",
 ]
 

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::Message;
+use crate::ReasoningEffort;
 use crate::StopReason;
 use crate::ToolCall;
 use crate::ToolResult;
@@ -41,6 +42,11 @@ pub enum SessionEvent {
         messages: Vec<Message>,
         /// Tool names advertised for this step, in the order presented.
         tools: Vec<String>,
+        /// How hard the model was asked to think, when a level was set. It
+        /// changes the reply, so it is part of the model-visible input; a log
+        /// written before this field existed simply has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<ReasoningEffort>,
     },
     /// The model's reply for one step.
     ModelResponse {
@@ -104,6 +110,44 @@ mod tests {
         assert_eq!(json["kind"], "turn_start");
         assert_eq!(json["at"], "2026-08-21T00:00:00Z");
 
+        let back: SessionEventEnvelope = serde_json::from_value(json).expect("round trip");
+        assert_eq!(back, envelope);
+    }
+
+    /// A field added later must not make older lines undecodable: the log is
+    /// read line by line and a reader that rejected them would lose the session.
+    #[test]
+    fn a_model_request_logged_before_effort_existed_still_decodes() {
+        let line = serde_json::json!({
+            "at": "2026-08-21T00:00:00Z",
+            "kind": "model_request",
+            "turn": TurnId::new(),
+            "messages": [],
+            "tools": [],
+        });
+        let envelope: SessionEventEnvelope = serde_json::from_value(line).expect("decode");
+        assert!(matches!(
+            envelope.event,
+            SessionEvent::ModelRequest {
+                reasoning_effort: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn effort_survives_a_round_trip_through_the_log() {
+        let envelope = SessionEventEnvelope {
+            at: "2026-08-21T00:00:00Z".to_string(),
+            event: SessionEvent::ModelRequest {
+                turn: TurnId::new(),
+                messages: vec![Message::user("hi")],
+                tools: Vec::new(),
+                reasoning_effort: Some(crate::ReasoningEffort::High),
+            },
+        };
+        let json = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(json["reasoning_effort"], "high");
         let back: SessionEventEnvelope = serde_json::from_value(json).expect("round trip");
         assert_eq!(back, envelope);
     }

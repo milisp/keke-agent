@@ -27,6 +27,7 @@ use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelSelection;
 use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
+use keke_config_types::ReasoningEffort;
 use keke_config_types::SandboxMode;
 use keke_paths::AbsPath;
 use serde::Deserialize;
@@ -60,6 +61,10 @@ pub struct Config {
     pub approval_policy: ApprovalPolicy,
     pub sandbox_mode: SandboxMode,
     pub max_output_tokens: MaxOutputTokens,
+    /// How hard the model is asked to think. `None` leaves each vendor's own
+    /// default in place, which is not the same as asking for the least
+    /// thinking on offer.
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub compaction: CompactionConfig,
     /// Budgets for plugin-supplied programs.
     pub plugins: PluginTimeouts,
@@ -82,6 +87,10 @@ pub struct ConfigFile {
     pub approval_policy: Option<ApprovalPolicy>,
     pub sandbox_mode: Option<SandboxMode>,
     pub max_output_tokens: Option<u32>,
+    /// Read as a string rather than as the enum so a misspelled level names
+    /// itself in the error, instead of arriving as serde's list of variants
+    /// for a field the reader may not recognize.
+    pub reasoning_effort: Option<String>,
     pub compaction: Option<CompactionFile>,
     pub plugins: Option<PluginsFile>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
@@ -143,6 +152,11 @@ impl Config {
             merged.approval_policy = layer.file.approval_policy.or(merged.approval_policy);
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
             merged.max_output_tokens = layer.file.max_output_tokens.or(merged.max_output_tokens);
+            merged.reasoning_effort = layer
+                .file
+                .reasoning_effort
+                .clone()
+                .or(merged.reasoning_effort);
 
             if let Some(compaction) = layer.file.compaction {
                 let base = merged
@@ -239,6 +253,11 @@ impl Config {
             None => MaxOutputTokens::default(),
         };
 
+        let reasoning_effort = match merged.reasoning_effort.as_deref() {
+            Some(value) => Some(ReasoningEffort::parse(value).map_err(invalid)?),
+            None => None,
+        };
+
         Ok(Self {
             home,
             model: ModelSelection {
@@ -250,6 +269,7 @@ impl Config {
             approval_policy: merged.approval_policy.unwrap_or_default(),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
             max_output_tokens,
+            reasoning_effort,
             compaction,
             plugins,
             providers: merged
@@ -322,6 +342,35 @@ mod tests {
         assert_eq!(config.model.provider, DEFAULT_PROVIDER);
         assert_eq!(config.approval_policy, ApprovalPolicy::OnRequest);
         assert_eq!(config.sandbox_mode, SandboxMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn an_effort_is_read_and_overridden_like_any_other_field() {
+        let layers = vec![
+            layer("user", "reasoning-effort = \"low\"\n"),
+            layer("project", "reasoning-effort = \"xhigh\"\n"),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.reasoning_effort, Some(ReasoningEffort::XHigh));
+    }
+
+    /// Unset is not a level: it leaves each vendor's own default in place.
+    #[test]
+    fn no_effort_is_configured_by_default() {
+        let config = Config::from_layers(home(), &[]).expect("merges");
+        assert_eq!(config.reasoning_effort, None);
+    }
+
+    /// A misspelled level fails at load, naming what it should have been. The
+    /// alternative is a setting that silently did nothing all session.
+    #[test]
+    fn a_misspelled_effort_fails_at_load() {
+        let layers = vec![layer("user", "reasoning-effort = \"maximum\"\n")];
+        let error = Config::from_layers(home(), &layers).expect_err("rejected");
+        assert!(
+            error.to_string().contains("low, medium, high, xhigh, max"),
+            "{error}"
+        );
     }
 
     #[test]

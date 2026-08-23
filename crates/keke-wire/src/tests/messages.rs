@@ -1,5 +1,6 @@
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::Role;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
@@ -416,4 +417,82 @@ fn reasoning_replays_only_when_it_carries_its_signature() {
             .is_none_or(|blocks| blocks.is_empty()),
         "unsigned reasoning must not be replayed: {body}"
     );
+}
+
+/// This vendor buys thinking with tokens rather than a word, so each rung of
+/// the ladder has to arrive as a budget.
+#[test]
+fn effort_becomes_a_thinking_budget() {
+    let body = crate::messages_body(
+        &ModelRequest {
+            max_output_tokens: Some(64_000),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..request()
+        },
+        false,
+    );
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "enabled", "budget_tokens": 16_384})
+    );
+}
+
+/// The budget must leave room for an answer, so a reply budget smaller than the
+/// rung caps it rather than producing a request this wire rejects.
+#[test]
+fn the_budget_is_capped_below_the_reply_budget() {
+    let body = crate::messages_body(
+        &ModelRequest {
+            max_output_tokens: Some(8_192),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..request()
+        },
+        false,
+    );
+    assert_eq!(body["thinking"]["budget_tokens"], json!(7_168));
+    assert!(
+        body["thinking"]["budget_tokens"].as_u64() < body["max_tokens"].as_u64(),
+        "{body}"
+    );
+}
+
+/// A reply budget with no room for the smallest budget this wire accepts leaves
+/// thinking off: a rejected request buys no thinking at all.
+#[test]
+fn a_reply_budget_too_small_to_think_in_leaves_thinking_off() {
+    let body = crate::messages_body(
+        &ModelRequest {
+            max_output_tokens: Some(1_500),
+            reasoning_effort: Some(ReasoningEffort::Low),
+            ..request()
+        },
+        false,
+    );
+    assert!(body.get("thinking").is_none(), "{body}");
+}
+
+/// This wire refuses a temperature alongside extended thinking. Both cannot be
+/// honored, and the level asked for explicitly is the one that survives.
+#[test]
+fn thinking_displaces_a_temperature_this_wire_would_refuse_beside_it() {
+    let with_effort = crate::messages_body(
+        &ModelRequest {
+            max_output_tokens: Some(64_000),
+            temperature: Some(0.5),
+            reasoning_effort: Some(ReasoningEffort::Low),
+            ..request()
+        },
+        false,
+    );
+    assert!(with_effort.get("temperature").is_none(), "{with_effort}");
+    assert!(with_effort.get("thinking").is_some(), "{with_effort}");
+
+    let without_effort = crate::messages_body(
+        &ModelRequest {
+            temperature: Some(0.5),
+            ..request()
+        },
+        false,
+    );
+    assert_eq!(without_effort["temperature"], json!(0.5));
 }

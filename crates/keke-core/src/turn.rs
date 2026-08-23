@@ -144,6 +144,7 @@ impl Session {
                 tools: specs.clone(),
                 max_output_tokens: Some(self.config.max_output_tokens.get()),
                 temperature: None,
+                reasoning_effort: self.config.reasoning_effort,
             };
 
             // Logged before the call, so a crash mid-request still leaves the
@@ -152,6 +153,7 @@ impl Session {
                 turn,
                 messages: request.messages.clone(),
                 tools: specs.iter().map(|spec| spec.name.clone()).collect(),
+                reasoning_effort: request.reasoning_effort,
             })
             .await?;
 
@@ -264,6 +266,10 @@ impl Session {
             tools: Vec::new(),
             max_output_tokens: Some(self.config.max_output_tokens.get()),
             temperature: None,
+            // Summarizing is keke's own errand, not the user's turn, and it is
+            // extractive work: paying for extended thinking on it would change
+            // the bill without changing the summary.
+            reasoning_effort: None,
         };
 
         let summary = match self.collect_text(request).await {

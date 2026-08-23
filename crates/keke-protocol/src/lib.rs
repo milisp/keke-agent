@@ -10,6 +10,7 @@
 
 mod ids;
 mod message;
+mod reasoning;
 mod session;
 mod tool;
 
@@ -23,6 +24,7 @@ pub use message::Message;
 pub use message::Role;
 pub use message::StopReason;
 pub use message::Usage;
+pub use reasoning::ReasoningEffort;
 pub use session::SessionEvent;
 pub use session::SessionEventEnvelope;
 pub use tool::ToolCall;

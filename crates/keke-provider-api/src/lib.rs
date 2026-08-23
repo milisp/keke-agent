@@ -24,6 +24,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use keke_protocol::Message;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::ToolCallId;
 use serde_json::Value;
 
@@ -49,6 +50,11 @@ pub struct ModelRequest {
     pub tools: Vec<ToolSpec>,
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// How hard the model should think, when a level was chosen. `None` leaves
+    /// the vendor's own default in place, which is not the same as asking for
+    /// the least thinking on offer — see
+    /// [`ReasoningEffort`](keke_protocol::ReasoningEffort).
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// A vendor backend.

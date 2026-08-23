@@ -65,6 +65,12 @@ pub fn chat_completions_body(request: &ModelRequest, stream: bool) -> Value {
     if let Some(temperature) = request.temperature {
         body.insert("temperature".to_string(), json!(temperature));
     }
+    // Sent as written, including a level this endpoint may not know: a vendor
+    // rejecting `xhigh` is a visible failure, silently sending `high` instead
+    // is not.
+    if let Some(effort) = request.reasoning_effort {
+        body.insert("reasoning_effort".to_string(), json!(effort.as_str()));
+    }
     Value::Object(body)
 }
 

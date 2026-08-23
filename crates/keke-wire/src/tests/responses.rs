@@ -1,5 +1,6 @@
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::Role;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
@@ -287,4 +288,23 @@ async fn the_conversation_is_sent_as_input_items() {
     assert_eq!(input[3]["call_id"], json!("call_9"));
     assert_eq!(input[3]["output"], json!("fn main() {}"));
     assert_eq!(input.len(), 4);
+}
+
+/// This wire nests the level under `reasoning`, and takes it as written.
+#[test]
+fn effort_is_nested_under_reasoning() {
+    let body = crate::responses_body(
+        &ModelRequest {
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..request()
+        },
+        false,
+    );
+    assert_eq!(body["reasoning"], json!({"effort": "max"}));
+}
+
+#[test]
+fn an_unset_effort_leaves_the_field_off() {
+    let body = crate::responses_body(&request(), false);
+    assert!(body.get("reasoning").is_none(), "{body}");
 }

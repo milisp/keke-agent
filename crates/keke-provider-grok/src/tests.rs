@@ -405,6 +405,38 @@ async fn models_are_listed_from_the_models_endpoint() {
     assert!(models[1].supports_tools);
 }
 
+/// The provider is a route and a credential, not a translator: a request it
+/// was handed reaches the endpoint as given. Asserted through the wire rather
+/// than on the body function, because dropping the field between the two is
+/// exactly the failure this guards.
+#[tokio::test]
+async fn a_configured_effort_reaches_the_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(stream_response(sse(&[
+            &json!({"choices":[{"delta":{"content":"hi"}}]}).to_string(),
+        ])))
+        .mount(&server)
+        .await;
+    let (provider, _auth) = provider_over(&server).await;
+
+    provider
+        .stream(ModelRequest {
+            reasoning_effort: Some(keke_protocol::ReasoningEffort::XHigh),
+            ..request()
+        })
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+
+    let requests = server.received_requests().await.expect("recorded");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("a JSON request body");
+    assert_eq!(body["reasoning_effort"], json!("xhigh"));
+}
+
 #[test]
 fn provider_info_names_its_route_and_credentials() {
     let provider = GrokProvider::new(Arc::new(StubAuth::default()), None);
@@ -453,6 +485,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
         }],
         max_output_tokens: Some(256),
         temperature: Some(0.5),
+        reasoning_effort: None,
     };
 
     let body = keke_wire::chat_completions_body(&request, true);

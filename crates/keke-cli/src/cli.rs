@@ -24,6 +24,19 @@ pub(crate) struct Cli {
     /// Model to use, overriding configuration.
     #[arg(long, global = true, env = "KEKE_MODEL")]
     pub model: Option<String>,
+
+    /// How hard the model should think: `low`, `medium`, `high`, `xhigh`, or
+    /// `max`. Overrides configuration; omitted, the vendor's own default
+    /// stands, which is not the same as asking for the least on offer.
+    #[arg(long, global = true, env = "KEKE_REASONING_EFFORT", value_parser = parse_effort)]
+    pub reasoning_effort: Option<keke_config_types::ReasoningEffort>,
+}
+
+/// Parse an effort level without making the contract crate depend on clap. A
+/// level this build does not know is refused here rather than sent on, so the
+/// error names the flag instead of arriving as a vendor's rejection.
+fn parse_effort(raw: &str) -> Result<keke_config_types::ReasoningEffort, String> {
+    keke_config_types::ReasoningEffort::parse(raw)
 }
 
 #[derive(Debug, Subcommand)]

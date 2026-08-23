@@ -12,6 +12,12 @@ use keke_paths::AbsPath;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Re-exported rather than restated, unlike [`DeclaredWireApi`]: the level a
+/// deployment configures is written verbatim into the session log, so a second
+/// enum here could disagree with the one the log is defined in terms of.
+/// `keke-protocol` sits beneath every tier, so naming it costs nothing.
+pub use keke_protocol::ReasoningEffort;
+
 /// How much the harness may do without asking.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

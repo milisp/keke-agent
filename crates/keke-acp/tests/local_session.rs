@@ -198,6 +198,7 @@ async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Start
                 workspace_root: root,
             },
             max_output_tokens: MaxOutputTokens::default(),
+            reasoning_effort: None,
             compaction: CompactionConfig::default(),
             approval,
         })
