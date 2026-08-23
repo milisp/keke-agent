@@ -42,6 +42,7 @@ fn parse_effort(raw: &str) -> Result<keke_config_types::ReasoningEffort, String>
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Open the interactive interface. The default when no command is given.
+    #[command(hide = true)]
     Tui,
     /// Reopen a previous session and keep talking.
     Resume(ResumeArgs),
