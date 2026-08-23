@@ -38,6 +38,7 @@ clap = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

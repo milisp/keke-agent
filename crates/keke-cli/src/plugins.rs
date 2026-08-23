@@ -14,30 +14,49 @@ use keke_plugin::PluginSet;
 use keke_plugin::TrustStore;
 use keke_plugin::Withheld;
 
+/// Whose directory a root is, which decides what a failure in it may cost.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// A directory keke owns and put things in.
+    Keke,
+    /// A directory belonging to another harness, read for compatibility.
+    Foreign,
+}
+
 /// Where plugins are looked for, in ascending precedence.
 ///
 /// Both keke's own directories and Claude Code's are searched. A person who
 /// already has plugins installed for that ecosystem should not have to move or
 /// reinstall anything, and a plugin author should not have to publish twice.
-fn roots(home: &HomeLayout) -> Vec<(AbsPath, PluginScope)> {
+fn roots(home: &HomeLayout) -> Vec<(AbsPath, PluginScope, Origin)> {
     let mut roots = Vec::new();
-    let mut push = |path: std::path::PathBuf, scope: PluginScope| {
+    let mut push = |path: std::path::PathBuf, scope: PluginScope, origin: Origin| {
         if let Ok(abs) = AbsPath::new(path) {
-            roots.push((abs, scope));
+            roots.push((abs, scope, origin));
         }
     };
 
-    push(home.home.as_path().join("plugins"), PluginScope::User);
+    push(
+        home.home.as_path().join("plugins"),
+        PluginScope::User,
+        Origin::Keke,
+    );
     if let Some(claude) = dirs::home_dir() {
-        push(claude.join(".claude/plugins"), PluginScope::User);
+        push(
+            claude.join(".claude/plugins"),
+            PluginScope::User,
+            Origin::Foreign,
+        );
     }
     push(
         home.workspace_root.as_path().join(".keke/plugins"),
         PluginScope::Project,
+        Origin::Keke,
     );
     push(
         home.workspace_root.as_path().join(".claude/plugins"),
         PluginScope::Project,
+        Origin::Foreign,
     );
     roots
 }
@@ -50,12 +69,55 @@ fn roots(home: &HomeLayout) -> Vec<(AbsPath, PluginScope)> {
 /// contents, and the person is left debugging behavior that was never running.
 pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
     let mut plugins = Vec::new();
-    for (root, scope) in roots(home) {
-        plugins.extend(
-            keke_plugin::discover(&root, scope)
-                .with_context(|| format!("reading plugins under {root}"))?,
-        );
+    for (root, scope, origin) in roots(home) {
+        match keke_plugin::discover(&root, scope) {
+            Ok(found) => plugins.extend(found),
+            // A directory keke owns failing is keke's problem to state. Another
+            // harness's directory failing is not: keke would be refusing to
+            // start over a file it does not manage, about plugins the person
+            // may not even use here. Said out loud, then stepped over.
+            Err(error) if origin == Origin::Foreign => {
+                eprintln!("keke: skipping plugins under {root}: {error}");
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading plugins under {root}"));
+            }
+        }
     }
+
+    // Plugins the other harness installed, wherever it put them. Reading its
+    // record means a person who already installed something there does not
+    // install it again here to get the same thing twice. A record that points
+    // at something unreadable is skipped rather than fatal: it is another
+    // program's file, and keke refusing to start over it would be keke's bug to
+    // the person.
+    if let Some(claude) = dirs::home_dir() {
+        let record = claude.join(".claude/plugins/installed_plugins.json");
+        for install in keke_plugin::foreign_installs(&record, &home.workspace_root) {
+            let Ok(mut plugin) =
+                keke_plugin::load(install.install_path.as_path(), PluginScope::User)
+            else {
+                continue;
+            };
+
+            // The record's key is the plugin's real name. Its directory is
+            // often a content hash, and deriving the name from that would give
+            // two unrelated plugins the same one.
+            plugin.name = install.name;
+
+            // A foreign record that collides with something already found is
+            // dropped, not reported. Everywhere else a name claimed twice is an
+            // error, because it means two things keke was asked to install are
+            // ambiguous. This file is another program's bookkeeping about its
+            // own installs: keke refusing to start over what it finds there
+            // would make that program's mess into keke's failure.
+            if plugins.iter().any(|found| found.name == plugin.name) {
+                continue;
+            }
+            plugins.push(plugin);
+        }
+    }
+
     PluginSet::compose(plugins).context("composing the installed plugins")
 }
 
@@ -118,4 +180,52 @@ pub(crate) fn report_withheld(withheld: &[Withheld]) {
             "keke: review with `keke plugin show <name>`, allow with `keke plugin trust <name>`"
         );
     }
+}
+
+/// Where `keke plugin add` puts things.
+pub(crate) fn install_dir(home: &HomeLayout) -> std::path::PathBuf {
+    home.home.as_path().join("plugins")
+}
+
+/// Show what a plugin would run and get an answer.
+///
+/// The lines are printed before the question, never after: what is being
+/// approved is these lines, and a person cannot approve what they were not
+/// shown. A non-interactive session has nobody to ask, so it declines unless
+/// `--yes` was passed on the command that started it.
+pub(crate) fn confirm_executables(
+    plugin: &keke_plugin::ResolvedPlugin,
+    assumed_yes: bool,
+) -> Result<bool> {
+    let executables = plugin.executables();
+    if executables.is_empty() {
+        println!("`{}` runs no programs.", plugin.name);
+        return Ok(true);
+    }
+
+    println!("`{}` would run:", plugin.name);
+    for line in &executables {
+        println!("  {line}");
+    }
+
+    if assumed_yes {
+        println!("(--yes)");
+        return Ok(true);
+    }
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        println!(
+            "not a terminal, so there is nobody to ask — pass --yes, or run `keke plugin trust {}` later",
+            plugin.name
+        );
+        return Ok(false);
+    }
+
+    print!("allow these? [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout()).context("writing the prompt")?;
+    let mut answer = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)
+        .context("reading the answer")?;
+    // Anything that is not a clear yes is a no. A prompt that accepts an empty
+    // line as consent is a prompt people learn to walk past.
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }

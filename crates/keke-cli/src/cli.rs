@@ -71,6 +71,34 @@ pub(crate) enum PluginAction {
         /// The plugin's name, as `list` prints it.
         name: String,
     },
+    /// Install a plugin from a git repository or a directory.
+    Add {
+        /// A git URL, or a path to a directory on this machine.
+        source: String,
+        /// Branch, tag, or commit. A commit cannot change under you later.
+        #[arg(long)]
+        git_ref: Option<String>,
+        /// Which plugin to take, when the source is a catalog of several.
+        #[arg(long)]
+        plugin: Option<String>,
+        /// Approve what it runs without being asked to confirm.
+        ///
+        /// Scoped to this one command, naming this one source. It is not a
+        /// setting, because a setting is what a person turns on once and then
+        /// stops seeing.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Fetch installed plugins again.
+    Update {
+        /// One plugin, or every installed one if omitted.
+        name: Option<String>,
+    },
+    /// Uninstall a plugin and forget what was decided about it.
+    Remove {
+        /// The plugin's name, as `list` prints it.
+        name: String,
+    },
 }
 
 #[derive(Debug, clap::Args)]
