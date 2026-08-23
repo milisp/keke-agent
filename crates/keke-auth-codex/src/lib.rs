@@ -17,6 +17,7 @@ mod endpoint;
 mod jwt;
 mod loopback;
 mod pkce;
+mod ported;
 mod tokens;
 
 #[cfg(test)]
@@ -46,6 +47,7 @@ pub use config::CodexAuthConfig;
 pub use config::DEFAULT_API_KEY_REF;
 pub use config::DEFAULT_CLIENT_ID;
 pub use config::DEFAULT_ISSUER;
+pub use config::DEFAULT_ORIGINATOR;
 pub use config::DEFAULT_VENDOR;
 
 use crate::device::Delay;
@@ -385,7 +387,7 @@ impl AuthProvider for CodexAuth {
             let listener = if self.config.device_code_only {
                 None
             } else {
-                match loopback::bind().await {
+                match loopback::bind(self.config.callback_port).await {
                     Ok(listener) => Some(listener),
                     Err(err) => {
                         tracing::warn!(

@@ -12,7 +12,20 @@ pub const DEFAULT_VENDOR: &str = "codex";
 /// The long-lived API key alternative to a login.
 pub const DEFAULT_API_KEY_REF: &str = "OPENAI_API_KEY";
 
-const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access"];
+/// What a login asks for. The connectors scopes are part of what this client
+/// is registered for; asking for less is not a smaller request, it is a
+/// different one than the registration describes.
+const DEFAULT_SCOPES: &[&str] = &[
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "api.connectors.read",
+    "api.connectors.invoke",
+];
+
+/// How this client names itself to the authorize endpoint.
+pub const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
 
 /// Everything about the ChatGPT auth flow a deployment might reasonably change.
 ///
@@ -42,6 +55,11 @@ pub struct CodexAuthConfig {
     pub device_code_only: bool,
     /// Added to the poll interval each time the issuer answers `slow_down`.
     pub slow_down_increment: Duration,
+    /// The loopback port the redirect URI is registered at — see
+    /// [`crate::ported::codex::authorize::DEFAULT_PORT`].
+    pub callback_port: u16,
+    /// Sent as `originator` — see [`DEFAULT_ORIGINATOR`].
+    pub originator: String,
 }
 
 impl CodexAuthConfig {
@@ -64,6 +82,8 @@ impl CodexAuthConfig {
             login_timeout: Duration::from_secs(300),
             device_code_only: false,
             slow_down_increment: Duration::from_secs(5),
+            callback_port: crate::ported::codex::authorize::DEFAULT_PORT,
+            originator: DEFAULT_ORIGINATOR.to_string(),
         }
     }
 
