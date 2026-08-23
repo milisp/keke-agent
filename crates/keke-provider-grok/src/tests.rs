@@ -85,7 +85,7 @@ async fn provider_over(server: &MockServer) -> (GrokProvider, Arc<StubAuth>) {
 
 fn request() -> ModelRequest {
     ModelRequest {
-        model: "grok-4".to_string(),
+        model: "grok-4.6".to_string(),
         messages: vec![Message::user("hi")],
         ..ModelRequest::default()
     }
@@ -388,7 +388,7 @@ async fn models_are_listed_from_the_models_endpoint() {
         .and(path("/v1/models"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": [
-                {"id": "grok-4", "input_modalities": ["text", "image"]},
+                {"id": "grok-4.6", "input_modalities": ["text", "image"]},
                 {"id": "grok-3-mini"}
             ]
         })))
@@ -399,7 +399,7 @@ async fn models_are_listed_from_the_models_endpoint() {
     let models = provider.list_models().await.expect("listed");
 
     assert_eq!(models.len(), 2);
-    assert_eq!(models[0].id, "grok-4");
+    assert_eq!(models[0].id, "grok-4.6");
     assert!(models[0].supports_vision);
     assert!(!models[1].supports_vision);
     assert!(models[1].supports_tools);
@@ -422,7 +422,7 @@ fn provider_info_names_its_route_and_credentials() {
 fn a_tool_result_becomes_its_own_tool_message() {
     let call_id = ToolCallId::new("call_9");
     let request = ModelRequest {
-        model: "grok-4".to_string(),
+        model: "grok-4.6".to_string(),
         system: Some("be terse".to_string()),
         messages: vec![
             Message::user("read it"),
@@ -482,7 +482,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
 #[test]
 fn an_image_travels_as_a_data_uri() {
     let request = ModelRequest {
-        model: "grok-4".to_string(),
+        model: "grok-4.6".to_string(),
         messages: vec![Message {
             role: Role::User,
             content: vec![ContentBlock::Image(keke_protocol::ImageBlock {

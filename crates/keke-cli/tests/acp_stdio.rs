@@ -65,7 +65,7 @@ async fn an_editor_prompts_keke_and_answers_its_permission_request() {
             // Pinned rather than removed, so an ambient override in the
             // developer's shell cannot redirect the run.
             .env("KEKE_PROVIDER", "grok")
-            .env("KEKE_MODEL", "grok-4")
+            .env("KEKE_MODEL", "grok-4.6")
             .env("XAI_BASE_URL", server.base_url())
             .env("XAI_API_KEY", "test-key"),
     );

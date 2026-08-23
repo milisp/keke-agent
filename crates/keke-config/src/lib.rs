@@ -114,7 +114,7 @@ pub struct PluginsFile {
 /// These are defaults, not policy: every one of them is overridable from a
 /// config file, which is what invariant 9 in `AGENTS.md` requires.
 const DEFAULT_PROVIDER: &str = "grok";
-const DEFAULT_MODEL: &str = "grok-4";
+const DEFAULT_MODEL: &str = "grok-4.6";
 
 impl Config {
     /// Load and merge every layer for `workspace_root`.
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn later_layers_override_earlier_ones_field_by_field() {
         let layers = vec![
-            layer("user", "provider = \"grok\"\nmodel = \"grok-4\"\n"),
+            layer("user", "provider = \"grok\"\nmodel = \"grok-4.6\"\n"),
             layer("project", "model = \"grok-4-fast\"\n"),
         ];
         let config = Config::from_layers(home(), &layers).expect("merges");
