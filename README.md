@@ -7,7 +7,7 @@
 
 ## Status
 
-`keke exec`, the ACP server, and the TUI all work end to end, with runtime plugin operations gated behind consent. Check [`docs/ROADMAP.md`](docs/ROADMAP.md) for the active roadmap.
+`keke exec`, the ACP server, and the TUI all work end to end, with runtime plugin operations gated behind consent. `keke-mcp` speaks both the legacy (2025-06-18) and modern (2026-07-28) MCP protocol revisions, and the ACP server is built on Agent Client Protocol 2.0. Check [`docs/ROADMAP.md`](docs/ROADMAP.md) for the active roadmap.
 
 ## Design in one paragraph
 
