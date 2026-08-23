@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::ReasoningEffort;
 
 /// What running a command does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub enum Builtin {
     Thinking,
     /// Cycles the approval policy, or sets the one named as an argument.
     Mode,
+    /// Cycles the reasoning effort, or sets the level named as an argument.
+    Effort,
 }
 
 /// One entry in the command list.
@@ -145,6 +148,11 @@ fn builtins() -> Vec<SlashCommand> {
             "mode",
             "cycle the approval mode, or name one: on-request, on-failure, never",
         ),
+        (
+            Builtin::Effort,
+            "effort",
+            "cycle the reasoning effort, or name one: low, medium, high, xhigh, max, default",
+        ),
         (Builtin::Thinking, "thinking", "show or hide reasoning"),
         (Builtin::Quit, "quit", "leave keke"),
     ]
@@ -185,6 +193,47 @@ pub fn policy_name(policy: ApprovalPolicy) -> &'static str {
         ApprovalPolicy::OnRequest => "on-request",
         ApprovalPolicy::OnFailure => "on-failure",
         ApprovalPolicy::Never => "never",
+    }
+}
+
+/// How an effort level is written wherever a person sees or types one.
+///
+/// Unset has a name of its own — the model's own default is not the bottom
+/// rung, and a person must be able to say either.
+#[must_use]
+pub fn effort_name(effort: Option<ReasoningEffort>) -> &'static str {
+    match effort {
+        None => "default",
+        Some(level) => level.as_str(),
+    }
+}
+
+/// Read the argument to `/effort`. `Ok(None)` means "no argument, cycle".
+///
+/// A level nobody recognizes is an error rather than a fallback, for the same
+/// reason `/mode` refuses one: a typo that quietly bought less thinking is
+/// invisible until the answers are worse.
+pub fn effort(argument: &str) -> Result<Option<Option<ReasoningEffort>>, String> {
+    match argument.trim() {
+        "" => Ok(None),
+        "default" | "unset" => Ok(Some(None)),
+        other => ReasoningEffort::parse(other).map(|level| Some(Some(level))),
+    }
+}
+
+/// The next level after this one, wrapping past the top back to the default.
+///
+/// Unset enters the ladder at its bottom rung, so tapping through visits every
+/// level and returns to leaving the choice to the model.
+#[must_use]
+pub fn next_effort(effort: Option<ReasoningEffort>) -> Option<ReasoningEffort> {
+    match effort {
+        None => Some(ReasoningEffort::Low),
+        Some(ReasoningEffort::Low) => Some(ReasoningEffort::Medium),
+        Some(ReasoningEffort::Medium) => Some(ReasoningEffort::High),
+        Some(ReasoningEffort::High) => Some(ReasoningEffort::XHigh),
+        Some(ReasoningEffort::XHigh) => Some(ReasoningEffort::Max),
+        Some(ReasoningEffort::Max) => None,
     }
 }
 
@@ -263,6 +312,25 @@ mod tests {
         assert!(policy("on-reqeust").is_err());
         assert_eq!(policy(""), Ok(None));
         assert_eq!(policy("never"), Ok(Some(ApprovalPolicy::Never)));
+    }
+
+    #[test]
+    fn an_unknown_effort_is_refused_rather_than_defaulted() {
+        assert!(effort("hgih").is_err());
+        assert_eq!(effort(""), Ok(None));
+        assert_eq!(effort("xhigh"), Ok(Some(Some(ReasoningEffort::XHigh))));
+        assert_eq!(effort("default"), Ok(Some(None)));
+    }
+
+    /// Unset is a rung a person can get back to, not a state they leave once.
+    #[test]
+    fn cycling_the_effort_returns_to_the_default() {
+        let mut level = None;
+        for _ in 0..5 {
+            level = next_effort(level);
+        }
+        assert_eq!(level, Some(ReasoningEffort::Max));
+        assert_eq!(next_effort(level), None);
     }
 
     #[test]

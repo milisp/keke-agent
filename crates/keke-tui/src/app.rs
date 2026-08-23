@@ -13,6 +13,7 @@ use keke_acp::PermissionAnswer;
 use keke_acp::PermissionId;
 use keke_acp::Update;
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_protocol::Usage;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -63,6 +64,9 @@ pub struct App {
     /// back to the top of a list the person was already moving through.
     completion: usize,
     approval: ApprovalPolicy,
+    /// How hard the model is asked to think. `None` is the vendor's own
+    /// default, which is a state of its own and not the lowest rung.
+    effort: Option<ReasoningEffort>,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
     /// held because the status bar keeps showing the duration after the turn
@@ -93,6 +97,7 @@ impl App {
                 history: PromptHistory::default(),
                 completion: 0,
                 approval: ApprovalPolicy::default(),
+                effort: None,
                 turn: Turn::Idle,
                 started: None,
                 last_turn: None,
@@ -125,6 +130,14 @@ impl App {
     #[must_use]
     pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Self {
         self.approval = policy;
+        self
+    }
+
+    /// The level the session was configured with, so the bar and `/effort`
+    /// start from what is actually in force rather than from a guess.
+    #[must_use]
+    pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.effort = effort;
         self
     }
 
@@ -403,6 +416,25 @@ impl App {
         )));
     }
 
+    #[must_use]
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.effort
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffort>) {
+        self.effort = effort;
+        self.conversation.set_reasoning_effort(effort);
+    }
+
+    /// Set the level and say so, which is what a typed `/effort` does.
+    fn set_reasoning_effort_aloud(&mut self, effort: Option<ReasoningEffort>) {
+        self.set_reasoning_effort(effort);
+        self.transcript.push(Cell::Notice(format!(
+            "reasoning effort: {}",
+            crate::slash::effort_name(effort)
+        )));
+    }
+
     fn run_command(&mut self, typed: &str, name: &str, arguments: &str) {
         let Some(command) = self.commands.find(name) else {
             self.transcript.push(Cell::Error(format!(
@@ -432,6 +464,14 @@ impl App {
                 self.transcript
                     .push(Cell::Notice(format!("reasoning {state}")));
             }
+            SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {
+                Ok(Some(effort)) => self.set_reasoning_effort_aloud(effort),
+                Ok(None) => {
+                    let next = crate::slash::next_effort(self.effort);
+                    self.set_reasoning_effort_aloud(next);
+                }
+                Err(unknown) => self.transcript.push(Cell::Error(unknown)),
+            },
             SlashAction::Builtin(Builtin::Mode) => match crate::slash::policy(arguments) {
                 Ok(Some(policy)) => self.set_approval_policy_aloud(policy),
                 Ok(None) => {

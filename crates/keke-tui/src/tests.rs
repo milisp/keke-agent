@@ -12,6 +12,7 @@ use keke_acp::ScriptedConversation;
 use keke_acp::Update;
 use keke_config_types::ApprovalPolicy;
 use keke_protocol::ContentBlock;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolCallId;
@@ -629,6 +630,38 @@ async fn the_mode_command_says_which_mode_it_set() {
     app.handle_key(key(KeyCode::Enter));
 
     assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("never")));
+}
+
+/// The level the agent is asked for must follow what the surface shows, and a
+/// typo must move neither.
+#[tokio::test]
+async fn the_effort_command_names_a_level_and_refuses_a_typo() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/effort xhigh");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.reasoning_effort(), Some(ReasoningEffort::XHigh));
+    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("xhigh")));
+
+    type_text(&mut app, "/effort hgih");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.reasoning_effort(),
+        Some(ReasoningEffort::XHigh),
+        "a typo must not move the level"
+    );
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(_))));
+
+    // Unset is reachable again: the model's own default is a level too.
+    type_text(&mut app, "/effort default");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.reasoning_effort(), None);
+
+    assert_eq!(
+        scripted.efforts(),
+        vec![Some(ReasoningEffort::XHigh), None],
+        "the surface's idea of the level is worthless unless the agent has it"
+    );
 }
 
 /// `/new` is the name people reach for; it does what `/clear` does.

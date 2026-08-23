@@ -144,7 +144,7 @@ impl Session {
                 tools: specs.clone(),
                 max_output_tokens: Some(self.config.max_output_tokens.get()),
                 temperature: None,
-                reasoning_effort: self.config.reasoning_effort,
+                reasoning_effort: self.effort.get(),
             };
 
             // Logged before the call, so a crash mid-request still leaves the

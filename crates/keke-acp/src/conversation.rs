@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use keke_config_types::ApprovalPolicy;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
@@ -104,6 +105,13 @@ pub trait Conversation: Send + Sync {
     /// startup configuration: a surface that offers the switch must be able to
     /// make it whatever the agent is attached to.
     fn set_approval_policy(&self, policy: ApprovalPolicy);
+
+    /// Change how hard the model is asked to think.
+    ///
+    /// On the seam for the same reason the approval policy is: the level is a
+    /// setting a person changes while the conversation runs, and `None` means
+    /// "unset, let the model decide" rather than the lowest rung.
+    fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>);
 }
 
 /// A conversation that replays a prepared script.
@@ -119,6 +127,7 @@ pub struct ScriptedConversation {
     answers: Arc<Mutex<Vec<(PermissionId, PermissionAnswer)>>>,
     cancels: Arc<Mutex<usize>>,
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
+    efforts: Arc<Mutex<Vec<Option<ReasoningEffort>>>>,
 }
 
 impl ScriptedConversation {
@@ -134,6 +143,7 @@ impl ScriptedConversation {
                 answers: Arc::new(Mutex::new(Vec::new())),
                 cancels: Arc::new(Mutex::new(0)),
                 policies: Arc::new(Mutex::new(Vec::new())),
+                efforts: Arc::new(Mutex::new(Vec::new())),
             },
             receiver,
         )
@@ -159,6 +169,15 @@ impl ScriptedConversation {
     #[must_use]
     pub fn policies(&self) -> Vec<ApprovalPolicy> {
         self.policies
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every effort level the surface has asked for, in order.
+    #[must_use]
+    pub fn efforts(&self) -> Vec<Option<ReasoningEffort>> {
+        self.efforts
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -212,6 +231,12 @@ impl Conversation for ScriptedConversation {
     fn set_approval_policy(&self, policy: ApprovalPolicy) {
         if let Ok(mut seen) = self.policies.lock() {
             seen.push(policy);
+        }
+    }
+
+    fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
+        if let Ok(mut seen) = self.efforts.lock() {
+            seen.push(effort);
         }
     }
 }

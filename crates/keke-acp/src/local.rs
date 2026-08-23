@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use keke_config_types::ApprovalPolicy;
 use keke_core::ApprovalSwitch;
 use keke_core::CoreError;
+use keke_core::EffortSwitch;
 use keke_core::SessionBuilder;
 use keke_core::TurnUpdate;
 use keke_plugin_api::ApprovalDecision;
@@ -23,6 +24,7 @@ use keke_plugin_api::ExtFuture;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_protocol::Message;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::ToolCall;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
@@ -156,6 +158,9 @@ pub struct LocalConversation {
     /// as a turn runs, so a queued mode change would arrive after the calls it
     /// was meant to govern.
     approval: Arc<ApprovalSwitch>,
+    /// Held for the same reason as `approval`: a queued effort change would
+    /// arrive after the steps it was meant to govern.
+    effort: Arc<EffortSwitch>,
 }
 
 /// Start a session and hand back the conversation and its updates.
@@ -172,6 +177,7 @@ pub async fn local(
     let mut session = builder.updates(turn_tx).build().await?;
     let cancel = session.canceller();
     let approval = session.approval_switch();
+    let effort = session.effort_switch();
 
     let (updates, update_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(publish(turn_rx, requests, updates.clone()));
@@ -200,6 +206,7 @@ pub async fn local(
             cancel: Box::new(cancel),
             approvals,
             approval,
+            effort,
         }),
         update_rx,
     ))
@@ -275,6 +282,10 @@ impl Conversation for LocalConversation {
 
     fn set_approval_policy(&self, policy: ApprovalPolicy) {
         self.approval.set(policy);
+    }
+
+    fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
+        self.effort.set(effort);
     }
 }
 

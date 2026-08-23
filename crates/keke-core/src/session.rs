@@ -105,6 +105,8 @@ pub struct Session {
     /// The live policy. Kept beside the config rather than in it because it is
     /// the one setting a person changes without restarting the session.
     pub(crate) approval: Arc<crate::ApprovalSwitch>,
+    /// The live effort level, kept beside the config for the same reason.
+    pub(crate) effort: Arc<crate::EffortSwitch>,
     flag: Arc<AtomicBool>,
 }
 
@@ -174,6 +176,26 @@ impl Session {
     /// them, not the one after the answer they are still waiting for.
     pub fn set_approval_policy(&self, policy: ApprovalPolicy) {
         self.approval.set(policy);
+    }
+
+    /// How hard the model is being asked to think, right now.
+    #[must_use]
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.effort.get()
+    }
+
+    /// Change the effort level, taking effect on the next model request rather
+    /// than the next turn: a person raising it mid-turn wants the step in front
+    /// of them thought about harder, not the one after the answer.
+    pub fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
+        self.effort.set(effort);
+    }
+
+    /// A handle that changes this session's effort level, detached from its
+    /// lifetime — the counterpart of [`Session::approval_switch`].
+    #[must_use]
+    pub fn effort_switch(&self) -> Arc<crate::EffortSwitch> {
+        Arc::clone(&self.effort)
     }
 
     /// A handle that changes this session's policy, detached from its lifetime.
@@ -310,6 +332,7 @@ impl SessionBuilder {
             .await?;
 
         let approval = config.approval;
+        let effort = config.reasoning_effort;
         let flag = Arc::new(AtomicBool::new(false));
         let cancelled = {
             let flag = Arc::clone(&flag);
@@ -331,6 +354,7 @@ impl SessionBuilder {
             cancelled,
             approvals: Arc::new(crate::ApprovalMemory::default()),
             approval: Arc::new(crate::ApprovalSwitch::new(approval)),
+            effort: Arc::new(crate::EffortSwitch::new(effort)),
             flag,
         })
     }

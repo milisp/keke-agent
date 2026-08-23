@@ -69,13 +69,14 @@ pub struct Resumed {
 /// `updates` is the agent's stream; the app also produces its own, so both are
 /// drained here rather than merged upstream. `commands` and `approval` come
 /// from the composition root: nothing here knows what a plugin is, or what the
-/// configured policy was. `history` is what was typed in this project before,
+/// configured policy or effort level was. `history` is what was typed in this project before,
 /// which the host reads and writes because only it knows where that lives.
 pub async fn run(
     conversation: Arc<dyn Conversation>,
     updates: UnboundedReceiver<Update>,
     commands: SlashCommands,
     approval: keke_config_types::ApprovalPolicy,
+    effort: Option<keke_config_types::ReasoningEffort>,
     resumed: Resumed,
     history: PromptHistory,
 ) -> anyhow::Result<()> {
@@ -83,6 +84,7 @@ pub async fn run(
     let mut app = app
         .with_commands(commands)
         .with_approval_policy(approval)
+        .with_reasoning_effort(effort)
         .with_prompt_history(history);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {
         app = app.with_history(&resumed.history, resumed.usage);

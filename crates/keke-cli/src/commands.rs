@@ -358,6 +358,7 @@ async fn tui(
         updates,
         keke_tui::SlashCommands::new(commands),
         config.approval_policy,
+        config.reasoning_effort,
         seed,
         prompts,
     )

@@ -56,6 +56,14 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Cyan)
         },
     ));
+    // Beside the mode for the same reason: the level changes what the next
+    // answer costs, and a person who cannot see it has to guess.
+    if let Some(level) = app.reasoning_effort() {
+        spans.push(Span::styled(
+            format!("· {level} "),
+            Style::new().fg(Color::Blue),
+        ));
+    }
     // The two live numbers: how long this has been going, and what it has
     // cost. Shown while the turn runs — after it ends they answer "how long did
     // that take", which is the question a person asks once the answer is up.

@@ -14,6 +14,7 @@
 mod approval;
 mod compact;
 mod dispatch;
+mod effort;
 mod prompt;
 mod prompt_history;
 mod resume;
@@ -31,6 +32,7 @@ pub use dispatch::Dispatch;
 pub use dispatch::Dispatched;
 pub use dispatch::ToolSet;
 pub use dispatch::dispatch;
+pub use effort::EffortSwitch;
 pub use prompt::ORDER_ENVIRONMENT;
 pub use prompt::ORDER_IDENTITY;
 pub use prompt::ORDER_PROJECT;
