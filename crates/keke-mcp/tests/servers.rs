@@ -79,6 +79,11 @@ for line in sys.stdin:
         else:
             send({"jsonrpc": "2.0", "id": ident,
                   "error": {"code": -32602, "message": "no such tool"}})
+    else:
+        # What a conformant legacy server does with `server/discover`: a plain
+        # method-not-found, well outside the range the modern spec reserves.
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32601, "message": "method not found"}})
 "#;
 
 /// A server that holds two calls before answering them, newest first, so a
@@ -115,6 +120,9 @@ for line in sys.stdin:
                 send({"jsonrpc": "2.0", "id": ident, "result":
                       {"content": [{"type": "text", "text": marker}]}})
             held = []
+    else:
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32601, "message": "method not found"}})
 "#;
 
 /// A server that answers the handshake and the listing, then exits — the shape
@@ -143,7 +151,178 @@ for line in sys.stdin:
             {"name": "gone", "description": "Never answers.",
              "inputSchema": {"type": "object"}}]}})
         sys.exit(0)
+    else:
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32601, "message": "method not found"}})
 "#;
+
+/// A modern-era server: it implements `server/discover`, requires the
+/// per-request `_meta` fields, and refuses `initialize` outright. A client that
+/// still opened with a handshake would get nothing from it.
+const MODERN_SERVER: &str = r##"#!/usr/bin/env python3
+import json, os, sys
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+log = os.environ.get("KEKE_TEST_PROBE_LOG")
+
+TOOLS = [{"name": "echo", "description": "Echo text back.",
+          "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    ident = message.get("id")
+    if ident is None:
+        continue
+    method = message.get("method")
+    params = message.get("params", {})
+    meta = params.get("_meta", {})
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32601, "message": "this server is modern only"}})
+        continue
+    if meta.get("io.modelcontextprotocol/protocolVersion") != "2026-07-28" \
+            or "io.modelcontextprotocol/clientCapabilities" not in meta:
+        send({"jsonrpc": "2.0", "id": ident,
+              "error": {"code": -32602, "message": "missing required _meta"}})
+        continue
+    if method == "server/discover":
+        if log:
+            with open(log, "a") as handle:
+                handle.write("probed\n")
+        send({"jsonrpc": "2.0", "id": ident, "result": {"resultType": "complete",
+              "supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": ident,
+              "result": {"resultType": "complete", "tools": TOOLS}})
+    elif method == "tools/call":
+        text = params.get("arguments", {}).get("text", "")
+        send({"jsonrpc": "2.0", "id": ident, "result": {"resultType": "complete",
+              "content": [{"type": "text", "text": text}], "isError": False}})
+"##;
+
+/// A modern server that rejects the version keke opens with, naming what it
+/// does speak. The rejection is a negotiation step, not a failure.
+const MISMATCHED_SERVER: &str = r##"#!/usr/bin/env python3
+import json, sys
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    ident = message.get("id")
+    if ident is None:
+        continue
+    method = message.get("method")
+    if method == "server/discover":
+        send({"jsonrpc": "2.0", "id": ident, "error": {"code": -32022,
+              "message": "Unsupported protocol version",
+              "data": {"supported": ["2026-07-28", "1999-01-01"],
+                       "requested": "2026-07-28"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": ident, "result": {"resultType": "complete", "tools": [
+            {"name": "echo", "description": "Echo text back.",
+             "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}})
+    elif method == "tools/call":
+        text = message.get("params", {}).get("arguments", {}).get("text", "")
+        send({"jsonrpc": "2.0", "id": ident, "result": {"resultType": "complete",
+              "content": [{"type": "text", "text": text}]}})
+"##;
+
+/// A modern server that shares no revision with keke at all.
+const ALIEN_SERVER: &str = r##"#!/usr/bin/env python3
+import json, sys
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    ident = message.get("id")
+    if ident is None:
+        continue
+    send({"jsonrpc": "2.0", "id": ident, "error": {"code": -32022,
+          "message": "Unsupported protocol version",
+          "data": {"supported": ["1999-01-01"], "requested": "2026-07-28"}}})
+"##;
+
+/// A legacy server that answers nothing at all for a method it does not know —
+/// the case the spec allows for and the only one that costs a timeout.
+const SILENT_LEGACY_SERVER: &str = r##"#!/usr/bin/env python3
+import json, sys
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    ident = message.get("id")
+    if ident is None:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": ident, "result": {"protocolVersion": "2025-06-18",
+              "capabilities": {}, "serverInfo": {"name": "silent", "version": "1"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": ident, "result": {"tools": [
+            {"name": "echo", "description": "Echo text back.",
+             "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}})
+    elif method == "tools/call":
+        text = message.get("params", {}).get("arguments", {}).get("text", "")
+        send({"jsonrpc": "2.0", "id": ident, "result":
+              {"content": [{"type": "text", "text": text}]}})
+"##;
+
+/// A legacy server that exits when it sees a method from after its time,
+/// leaving no pipe for the handshake that should follow.
+const BRITTLE_LEGACY_SERVER: &str = r##"#!/usr/bin/env python3
+import json, sys
+
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    ident = message.get("id")
+    if ident is None:
+        continue
+    method = message.get("method")
+    if method == "server/discover":
+        sys.exit(1)
+    elif method == "initialize":
+        send({"jsonrpc": "2.0", "id": ident, "result": {"protocolVersion": "2025-06-18",
+              "capabilities": {}, "serverInfo": {"name": "brittle", "version": "1"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": ident, "result": {"tools": [
+            {"name": "echo", "description": "Echo text back.",
+             "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}})
+    elif method == "tools/call":
+        text = message.get("params", {}).get("arguments", {}).get("text", "")
+        send({"jsonrpc": "2.0", "id": ident, "result":
+              {"content": [{"type": "text", "text": text}]}})
+"##;
 
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
@@ -199,6 +378,23 @@ fn installed_tools(plugins: Vec<ResolvedPlugin>) -> Vec<ArcTool> {
     let set = PluginSet::compose(plugins).expect("compose");
     let mut builder = ExtensionRegistryBuilder::new();
     keke_mcp::install(&mut builder, &set);
+    let registry = builder.build();
+    let ctx = ExtensionContext::new(SessionId::new(), ThreadId::new());
+    registry
+        .tool_contributors()
+        .flat_map(|contributor| contributor.tools(&ctx))
+        .collect()
+}
+
+/// The same, under budgets a test chooses. Separate rather than a parameter on
+/// every call site: only the tests that exercise a timeout care.
+fn installed_tools_with(
+    plugins: Vec<ResolvedPlugin>,
+    options: keke_mcp::McpOptions,
+) -> Vec<ArcTool> {
+    let set = PluginSet::compose(plugins).expect("compose");
+    let mut builder = ExtensionRegistryBuilder::new();
+    keke_mcp::install_with(&mut builder, &set, options);
     let registry = builder.build();
     let ctx = ExtensionContext::new(SessionId::new(), ThreadId::new());
     registry
@@ -517,4 +713,154 @@ async fn a_server_is_started_once_however_many_calls_share_it() {
         1,
         "listing and every call share one process, not one each"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Protocol eras
+// ---------------------------------------------------------------------------
+
+/// Run `text` through a server's `echo` tool and return what came back.
+async fn echo_through(tool: &ArcTool, root: &Path, text: &str) -> String {
+    let out = tool
+        .call(ctx(root), json!({"text": text}))
+        .await
+        .expect("the call succeeded");
+    text_of(&out.model_output)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modern_only_server_is_usable_without_a_handshake() {
+    let dir = TempDir::new().expect("tempdir");
+    let command = script(dir.path(), "modern.py", MODERN_SERVER);
+    let tools = installed_tools(vec![plugin_with_server(
+        "acme",
+        dir.path(),
+        "api",
+        &command,
+        Vec::new(),
+    )]);
+
+    // The fixture answers `initialize` with an error, so tools existing at all
+    // proves keke never opened with one.
+    assert_eq!(ids(&tools), vec!["acme:api:echo"]);
+    let echo = find(&tools, "acme:api:echo");
+    assert_eq!(echo_through(&echo, dir.path(), "modern").await, "modern");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_legacy_server_still_works_after_being_probed() {
+    let dir = TempDir::new().expect("tempdir");
+    let command = script(dir.path(), "good.py", GOOD_SERVER);
+    let tools = installed_tools(vec![plugin_with_server(
+        "acme",
+        dir.path(),
+        "api",
+        &command,
+        Vec::new(),
+    )]);
+
+    let echo = find(&tools, "acme:api:echo");
+    assert_eq!(echo_through(&echo, dir.path(), "legacy").await, "legacy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_version_names_a_shared_one_rather_than_ending_the_conversation() {
+    let dir = TempDir::new().expect("tempdir");
+    let command = script(dir.path(), "mismatch.py", MISMATCHED_SERVER);
+    let tools = installed_tools(vec![plugin_with_server(
+        "acme",
+        dir.path(),
+        "api",
+        &command,
+        Vec::new(),
+    )]);
+
+    // The probe was refused with `UnsupportedProtocolVersionError`. That names
+    // a version keke speaks, so the server is usable rather than lost.
+    let echo = find(&tools, "acme:api:echo");
+    assert_eq!(echo_through(&echo, dir.path(), "shared").await, "shared");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_shares_no_version_contributes_no_tools() {
+    let dir = TempDir::new().expect("tempdir");
+    let alien = script(dir.path(), "alien.py", ALIEN_SERVER);
+    let good = script(dir.path(), "good.py", GOOD_SERVER);
+    let tools = installed_tools(vec![
+        plugin_with_server("alien", dir.path(), "api", &alien, Vec::new()),
+        plugin_with_server("acme", dir.path(), "api", &good, Vec::new()),
+    ]);
+
+    // No overlap means no tools from that server, and — because it is reported
+    // rather than swallowed — no effect on the servers that do work.
+    assert!(!ids(&tools).iter().any(|id| id.starts_with("alien:")));
+    assert!(ids(&tools).iter().any(|id| id.starts_with("acme:")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_legacy_server_is_reached_by_falling_back() {
+    let dir = TempDir::new().expect("tempdir");
+    let command = script(dir.path(), "silent.py", SILENT_LEGACY_SERVER);
+    // A server that ignores the probe entirely costs a timeout, so this names a
+    // smaller budget than the deployment default. Not smaller still: the first
+    // exec of a just-written script can take about a second, and a probe budget
+    // under that would time out before the server ever read its stdin — proving
+    // nothing about the fallback.
+    let tools = installed_tools_with(
+        vec![plugin_with_server(
+            "acme",
+            dir.path(),
+            "api",
+            &command,
+            Vec::new(),
+        )],
+        keke_mcp::McpOptions {
+            startup_timeout_millis: 6_000,
+            call_timeout_millis: 5_000,
+        },
+    );
+
+    let echo = find(&tools, "acme:api:echo");
+    assert_eq!(echo_through(&echo, dir.path(), "silent").await, "silent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_legacy_server_that_dies_on_the_probe_still_gets_its_handshake() {
+    let dir = TempDir::new().expect("tempdir");
+    let command = script(dir.path(), "brittle.py", BRITTLE_LEGACY_SERVER);
+    let tools = installed_tools(vec![plugin_with_server(
+        "acme",
+        dir.path(),
+        "api",
+        &command,
+        Vec::new(),
+    )]);
+
+    // The probe killed the first child. Falling back has to mean a new process,
+    // not `initialize` down a pipe nobody is reading.
+    let echo = find(&tools, "acme:api:echo");
+    assert_eq!(echo_through(&echo, dir.path(), "brittle").await, "brittle");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modern_server_is_not_probed_twice() {
+    let dir = TempDir::new().expect("tempdir");
+    let command = script(dir.path(), "modern.py", MODERN_SERVER);
+    let log = dir.path().join("probes");
+    let tools = installed_tools(vec![plugin_with_server(
+        "acme",
+        dir.path(),
+        "api",
+        &command,
+        vec![("KEKE_TEST_PROBE_LOG", log.to_str().expect("utf-8"))],
+    )]);
+
+    let echo = find(&tools, "acme:api:echo");
+    echo_through(&echo, dir.path(), "one").await;
+    echo_through(&echo, dir.path(), "two").await;
+
+    // The era is a property of the server, not of a request: listing and two
+    // calls share the one answer.
+    let probes = std::fs::read_to_string(&log).expect("the server was probed");
+    assert_eq!(probes.lines().count(), 1, "probed more than once: {probes}");
 }

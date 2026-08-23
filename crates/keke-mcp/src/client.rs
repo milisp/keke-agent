@@ -24,8 +24,17 @@ use tokio::sync::oneshot;
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RpcError {
     /// The peer answered with a JSON-RPC `error` member.
+    ///
+    /// `data` is carried rather than discarded because one error is a
+    /// negotiation step: `UnsupportedProtocolVersionError` puts the versions the
+    /// server *does* speak in `data.supported`, and dropping it would turn a
+    /// recoverable mismatch into a dead end.
     #[error("{message}")]
-    Peer { code: i64, message: String },
+    Peer {
+        code: i64,
+        message: String,
+        data: Option<Value>,
+    },
     /// The child exited, or its stdio closed, before answering.
     #[error("the server closed its connection before answering `{method}`")]
     Closed { method: String },
@@ -176,6 +185,7 @@ fn answer(message: &Value) -> Result<Value, RpcError> {
                 .and_then(Value::as_str)
                 .unwrap_or("the server reported an error with no message")
                 .to_string(),
+            data: error.get("data").cloned(),
         });
     }
     Ok(message.get("result").cloned().unwrap_or(Value::Null))
