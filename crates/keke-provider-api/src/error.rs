@@ -27,6 +27,16 @@ pub enum ProviderError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
+    /// The credential is good; the account behind it may not do this — no
+    /// credits, no subscription, a spending limit, an org policy.
+    ///
+    /// Separate from [`Self::Unauthorized`] because the engine's answer to that
+    /// one is to refresh the token, and no token refresh buys credits. Folding
+    /// the two together replaces the vendor's own account message with an
+    /// authentication error the person cannot act on.
+    #[error("account not entitled: {0}")]
+    NotEntitled(String),
+
     /// The named model is unknown to this provider.
     #[error("unknown model `{0}`")]
     UnknownModel(String),

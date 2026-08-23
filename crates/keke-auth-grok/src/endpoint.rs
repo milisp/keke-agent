@@ -1,5 +1,12 @@
+use std::time::Duration;
+
 use keke_auth_api::AuthError;
 use reqwest::Client;
+
+/// A token request runs while the credential's mutation lock is held, and that
+/// lock is broken as abandoned after a minute. A request that outlived it would
+/// be writing its answer into a file another process had taken over.
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 
 use crate::tokens::TokenError;
 use crate::tokens::TokenResponse;
@@ -22,6 +29,7 @@ pub(crate) async fn post_token(
     let response = http
         .post(url)
         .form(form)
+        .timeout(TOKEN_TIMEOUT)
         .send()
         .await
         .map_err(|err| AuthError::Other(format!("token endpoint unreachable: {err}")))?;

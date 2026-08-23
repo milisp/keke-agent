@@ -21,16 +21,22 @@ use crate::endpoint::exchange;
 use crate::pkce::Pkce;
 use crate::pkce::random_token;
 
-const CALLBACK_PATH: &str = "/callback";
+use crate::ported::codex::authorize;
+use crate::ported::codex::authorize::CALLBACK_PATH;
 /// A request line plus headers; anything larger is not a browser redirect.
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 
 const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Signed in</title>\
 <p>Signed in. You can close this tab and return to the terminal.";
 
-/// Claim a loopback port, or report why this machine cannot host the redirect.
-pub(crate) async fn bind() -> std::io::Result<TcpListener> {
-    TcpListener::bind(("127.0.0.1", 0)).await
+/// Claim the one loopback port this client's redirect URI is registered at.
+///
+/// Not port 0: see [`crate::config::DEFAULT_CALLBACK_PORT`]. A port already in
+/// use means another login is in flight, and the caller falls back to the
+/// device-code flow rather than opening a browser at an address the issuer
+/// will refuse.
+pub(crate) async fn bind(port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(("127.0.0.1", port)).await
 }
 
 pub(crate) async fn run(
@@ -43,7 +49,7 @@ pub(crate) async fn run(
         .local_addr()
         .map_err(|err| AuthError::Other(format!("loopback address unavailable: {err}")))?
         .port();
-    let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+    let redirect_uri = authorize::redirect_uri(port);
 
     let pkce = Pkce::generate();
     let state = random_token(16);
@@ -72,23 +78,26 @@ pub(crate) async fn run(
     Ok(tokens.into_tokens(None, None))
 }
 
+/// Delegates to the ported upstream builder — see
+/// [`crate::ported::codex::authorize`] for why this flow's shape is not ours
+/// to derive.
 fn authorize_url(
     config: &CodexAuthConfig,
     redirect_uri: &str,
     pkce: &Pkce,
     state: &str,
 ) -> Result<Url, AuthError> {
-    let mut url = Url::parse(&config.authorize_endpoint)
-        .map_err(|err| AuthError::Other(format!("authorize endpoint is not a URL: {err}")))?;
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &config.client_id)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scope", &config.scope_param())
-        .append_pair("state", state)
-        .append_pair("code_challenge", &pkce.challenge)
-        .append_pair("code_challenge_method", "S256");
-    Ok(url)
+    let url = authorize::build_authorize_url(
+        &config.authorize_endpoint,
+        &config.client_id,
+        redirect_uri,
+        &config.scope_param(),
+        &pkce.challenge,
+        state,
+        &config.originator,
+    );
+    Url::parse(&url)
+        .map_err(|err| AuthError::Other(format!("authorize endpoint is not a URL: {err}")))
 }
 
 /// Serve exactly one callback and return its `code`.

@@ -54,11 +54,12 @@ struct DeviceAuthorization {
 
 pub(crate) async fn run(
     http: &Client,
+    discovery: &crate::discovery::Cache,
     config: &GrokAuthConfig,
     ui: &dyn LoginUi,
     delay: &dyn Delay,
 ) -> Result<AuthTokens, AuthError> {
-    let grant = authorize(http, config).await?;
+    let grant = authorize(http, discovery, config).await?;
 
     ui.show_device_code(&grant.user_code, &grant.verification_uri);
     // The completed URI carries the code already, so the browser is worth
@@ -68,15 +69,16 @@ pub(crate) async fn run(
     }
     ui.notice("waiting for authorization");
 
-    poll(http, config, ui, delay, grant).await
+    poll(http, discovery, config, ui, delay, grant).await
 }
 
 async fn authorize(
     http: &Client,
+    discovery: &crate::discovery::Cache,
     config: &GrokAuthConfig,
 ) -> Result<DeviceAuthorization, AuthError> {
     let response = http
-        .post(&config.device_authorization_endpoint)
+        .post(&crate::discovery::device_authorization_endpoint(http, discovery, config).await)
         .form(&[
             ("client_id", config.client_id.as_str()),
             ("scope", config.scope_param().as_str()),
@@ -115,6 +117,7 @@ async fn authorize(
 
 async fn poll(
     http: &Client,
+    discovery: &crate::discovery::Cache,
     config: &GrokAuthConfig,
     ui: &dyn LoginUi,
     delay: &dyn Delay,
@@ -138,7 +141,7 @@ async fn poll(
 
         let outcome = post_token(
             http,
-            &config.token_endpoint,
+            &crate::discovery::token_endpoint(http, discovery, config).await,
             &[
                 ("grant_type", GRANT_TYPE),
                 ("device_code", grant.device_code.as_str()),

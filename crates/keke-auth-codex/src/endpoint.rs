@@ -1,5 +1,12 @@
+use std::time::Duration;
+
 use keke_auth_api::AuthError;
 use reqwest::Client;
+
+/// A token request runs while the credential's mutation lock is held, and that
+/// lock is broken as abandoned after a minute. A request that outlived it would
+/// be writing its answer into a file another process had taken over.
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 
 use crate::tokens::TokenError;
 use crate::tokens::TokenResponse;
@@ -19,9 +26,27 @@ pub(crate) async fn post_token(
     url: &str,
     form: &[(&str, &str)],
 ) -> Result<TokenOutcome, AuthError> {
-    let response = http
-        .post(url)
-        .form(form)
+    read_token_response(http.post(url).form(form)).await
+}
+
+/// The same exchange with a JSON body.
+///
+/// The refusal is not symmetric with the form encoding: OpenAI's token endpoint
+/// answers a form-encoded refresh with an error, so a refresh that renews
+/// nothing looks exactly like a revoked credential. The authorization-code
+/// exchange stays form-encoded because that is what the same endpoint wants
+/// there.
+pub(crate) async fn post_token_json(
+    http: &Client,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<TokenOutcome, AuthError> {
+    read_token_response(http.post(url).json(body)).await
+}
+
+async fn read_token_response(request: reqwest::RequestBuilder) -> Result<TokenOutcome, AuthError> {
+    let response = request
+        .timeout(TOKEN_TIMEOUT)
         .send()
         .await
         .map_err(|err| AuthError::Other(format!("token endpoint unreachable: {err}")))?;
@@ -56,7 +81,20 @@ pub(crate) async fn exchange(
     url: &str,
     form: &[(&str, &str)],
 ) -> Result<TokenResponse, AuthError> {
-    match post_token(http, url, form).await? {
+    terminal(post_token(http, url, form).await?)
+}
+
+/// [`exchange`] with a JSON body — see [`post_token_json`].
+pub(crate) async fn exchange_json(
+    http: &Client,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<TokenResponse, AuthError> {
+    terminal(post_token_json(http, url, body).await?)
+}
+
+fn terminal(outcome: TokenOutcome) -> Result<TokenResponse, AuthError> {
+    match outcome {
         TokenOutcome::Granted(tokens) => Ok(tokens),
         TokenOutcome::Refused(err) => Err(AuthError::Rejected(err.detail().to_string())),
     }

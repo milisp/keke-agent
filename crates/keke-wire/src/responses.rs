@@ -33,11 +33,16 @@ use crate::decode::WireDecoder;
 
 /// Build a `/responses` body.
 #[must_use]
-pub fn responses_body(request: &ModelRequest, stream: bool) -> Value {
+pub fn responses_body(request: &ModelRequest, stream: bool, sampling_is_fixed: bool) -> Value {
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
     body.insert("input".to_string(), json!(input_items(request)));
     body.insert("stream".to_string(), json!(stream));
+    // Never stored server-side. The engine reconstructs every request from its
+    // own `SessionEvent` log, so a copy held by the vendor would be a second
+    // history that nothing keeps in step — and the ChatGPT backend refuses the
+    // request outright without this: `{"detail": "Store must be set to false"}`.
+    body.insert("store".to_string(), json!(false));
     // The system prompt is a first-class field here, not an item, so it is not
     // subject to the truncation this API applies to input items.
     if let Some(system) = &request.system {
@@ -49,11 +54,16 @@ pub fn responses_body(request: &ModelRequest, stream: bool) -> Value {
             json!(request.tools.iter().map(wire_tool).collect::<Vec<_>>()),
         );
     }
-    if let Some(max) = request.max_output_tokens {
-        body.insert("max_output_tokens".to_string(), json!(max));
-    }
-    if let Some(temperature) = request.temperature {
-        body.insert("temperature".to_string(), json!(temperature));
+    // An endpoint that fixes its own sampling refuses to be told: naming either
+    // of these is a 400 there, so the engine's budget is left unstated rather
+    // than the turn failing over a control the backend was never going to honor.
+    if !sampling_is_fixed {
+        if let Some(max) = request.max_output_tokens {
+            body.insert("max_output_tokens".to_string(), json!(max));
+        }
+        if let Some(temperature) = request.temperature {
+            body.insert("temperature".to_string(), json!(temperature));
+        }
     }
     // Nested under `reasoning` here rather than a top-level field, and sent as
     // written: a level this endpoint does not know is rejected by it, not

@@ -180,7 +180,7 @@ async fn rate_limiting_carries_the_stated_delay_and_rejection_is_unauthorized() 
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"error": "no access"})))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"error": "invalid token"})))
         .mount(&server)
         .await;
     let (client, _auth) = client_over(&server);
@@ -197,7 +197,10 @@ async fn rate_limiting_carries_the_stated_delay_and_rejection_is_unauthorized() 
     );
 
     let rejected = client.stream(API, request()).await.err().expect("rejected");
-    assert!(matches!(rejected, ProviderError::Unauthorized(_)));
+    assert!(
+        matches!(rejected, ProviderError::Unauthorized(_)),
+        "a 403 that blames the credential is worth a refresh: {rejected:?}"
+    );
 }
 
 #[tokio::test]
@@ -290,6 +293,40 @@ async fn the_conversation_is_sent_as_input_items() {
     assert_eq!(input.len(), 4);
 }
 
+/// The ChatGPT backend refuses a request that omits this with
+/// `{"detail": "Store must be set to false"}`, and the engine has its own
+/// history either way.
+#[test]
+fn the_response_is_never_stored_server_side() {
+    assert_eq!(
+        crate::responses_body(&request(), true, false)["store"],
+        json!(false)
+    );
+    assert_eq!(
+        crate::responses_body(&request(), false, false)["store"],
+        json!(false)
+    );
+}
+
+/// A subscription backend answers `400 Unsupported parameter` to either of
+/// these, so the engine's budget goes unstated rather than failing the turn.
+#[test]
+fn an_endpoint_that_fixes_its_own_sampling_is_not_told_a_budget() {
+    let request = ModelRequest {
+        max_output_tokens: Some(4096),
+        temperature: Some(0.5),
+        ..request()
+    };
+
+    let stated = crate::responses_body(&request, true, false);
+    assert_eq!(stated["max_output_tokens"], json!(4096));
+    assert_eq!(stated["temperature"], json!(0.5));
+
+    let fixed = crate::responses_body(&request, true, true);
+    assert!(fixed.get("max_output_tokens").is_none(), "{fixed}");
+    assert!(fixed.get("temperature").is_none(), "{fixed}");
+}
+
 /// This wire nests the level under `reasoning`, and takes it as written.
 #[test]
 fn effort_is_nested_under_reasoning() {
@@ -299,12 +336,39 @@ fn effort_is_nested_under_reasoning() {
             ..request()
         },
         false,
+        false,
     );
     assert_eq!(body["reasoning"], json!({"effort": "max"}));
 }
 
 #[test]
 fn an_unset_effort_leaves_the_field_off() {
-    let body = crate::responses_body(&request(), false);
+    let body = crate::responses_body(&request(), false, false);
     assert!(body.get("reasoning").is_none(), "{body}");
+}
+
+/// An account that has run out of credits answers 403 too, and no token
+/// refresh can fix that — see `keke_wire::http`.
+#[tokio::test]
+async fn an_out_of_credits_403_is_reported_as_an_account_problem() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "code": "personal-team-blocked:spending-limit",
+            "error": "You have run out of credits or need a Grok subscription.",
+        })))
+        .mount(&server)
+        .await;
+    let (client, _auth) = client_over(&server);
+
+    let refused = client.stream(API, request()).await.err().expect("refused");
+    assert!(
+        matches!(refused, ProviderError::NotEntitled(ref detail) if detail.contains("run out of credits")),
+        "got {refused:?}"
+    );
+    assert!(
+        !refused.needs_reauth(),
+        "refreshing the token would replace the account message with an auth error"
+    );
 }

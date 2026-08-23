@@ -17,6 +17,7 @@ mod endpoint;
 mod jwt;
 mod loopback;
 mod pkce;
+mod ported;
 mod tokens;
 
 #[cfg(test)]
@@ -46,6 +47,7 @@ pub use config::CodexAuthConfig;
 pub use config::DEFAULT_API_KEY_REF;
 pub use config::DEFAULT_CLIENT_ID;
 pub use config::DEFAULT_ISSUER;
+pub use config::DEFAULT_ORIGINATOR;
 pub use config::DEFAULT_VENDOR;
 
 use crate::device::Delay;
@@ -62,7 +64,21 @@ pub const AUTH_ID: &str = "codex";
 /// else already did the work it was waiting to do.
 struct Refresh {
     generation: u64,
-    succeeded: bool,
+    /// The failure text of the last attempt, so a caller that queued behind it
+    /// is told why rather than merely that it did not work.
+    outcome: Result<(), String>,
+}
+
+/// Why a refresh was asked for.
+///
+/// A 401 is not a clock: the issuer rejected a token this process still
+/// believes is live, so the stored credential being fresh proves nothing and
+/// the exchange happens anyway. An expiry check, by contrast, is satisfied by
+/// whatever another process already wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshMode {
+    IfStale,
+    Force,
 }
 
 /// The ChatGPT [`AuthProvider`].
@@ -91,7 +107,7 @@ impl CodexAuth {
             http: reqwest::Client::new(),
             refresh: Mutex::new(Refresh {
                 generation: 0,
-                succeeded: false,
+                outcome: Ok(()),
             }),
             generation: AtomicU64::new(0),
             delay: Arc::new(TokioDelay),
@@ -177,47 +193,74 @@ impl CodexAuth {
     }
 
     /// Refresh at most once, however many callers ask at once.
-    async fn refresh_once(&self) -> bool {
+    ///
+    /// The outcome is the failure itself rather than a bool: "could not be
+    /// renewed" with the reason discarded is indistinguishable between a
+    /// blocked network and a refresh token the issuer has revoked, and those
+    /// call for opposite responses from the person reading it.
+    async fn refresh_once(&self, mode: RefreshMode) -> Result<(), AuthError> {
         let observed = self.generation.load(Ordering::Acquire);
         let mut state = self.refresh.lock().await;
         if state.generation != observed {
-            return state.succeeded;
+            return state.outcome.clone().map_err(AuthError::RefreshFailed);
         }
 
-        let succeeded = match self.perform_refresh().await {
-            Ok(()) => true,
+        let outcome = match self.perform_refresh(mode).await {
+            Ok(()) => Ok(()),
             Err(err) => {
                 tracing::warn!(auth = AUTH_ID, error = %err, "chatgpt token refresh failed");
-                false
+                Err(err.to_string())
             }
         };
 
         state.generation = state.generation.wrapping_add(1);
-        state.succeeded = succeeded;
+        state.outcome = outcome.clone();
         self.generation.store(state.generation, Ordering::Release);
-        succeeded
+        outcome.map_err(AuthError::RefreshFailed)
     }
 
-    async fn perform_refresh(&self) -> Result<(), AuthError> {
-        let tokens = self
-            .tokens()?
+    async fn perform_refresh(&self, mode: RefreshMode) -> Result<(), AuthError> {
+        // The lock is taken before the credential is read and held past the
+        // write: between an unlocked read and the exchange, another keke
+        // process can rotate the refresh token, and presenting the superseded
+        // one gets `invalid_grant` — which reads as a revoked login.
+        let mutation = self.auth_files.begin(&self.config.vendor)?;
+        let tokens = mutation
+            .load()?
+            .filter(AuthFile::has_credential)
+            .or_else(|| self.imported())
+            .and_then(|file| file.tokens)
             .ok_or_else(|| AuthError::NotConfigured(AUTH_ID.to_string()))?;
+
+        // Whoever held the lock may have been refreshing the very credential
+        // this call was queued to renew.
+        if mode == RefreshMode::IfStale && !tokens::is_stale(&tokens, self.config.refresh_leeway) {
+            return Ok(());
+        }
+
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AuthError::RefreshFailed("the stored credential has no refresh token".into())
         })?;
 
-        let response = endpoint::exchange(
+        // A JSON body, not a form: this endpoint accepts the form encoding for
+        // the authorization-code exchange and refuses it for a refresh.
+        let response = endpoint::exchange_json(
             &self.http,
             &self.config.token_endpoint,
-            &[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token.as_str()),
-                ("client_id", self.config.client_id.as_str()),
-            ],
+            &serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": self.config.client_id,
+                "scope": self.config.scope_param(),
+            }),
         )
         .await?;
 
-        self.save(response.into_tokens(Some(refresh_token), tokens.account_id))
+        mutation.save(&AuthFile::from_tokens(
+            AuthMode::Chatgpt,
+            response.into_tokens(Some(refresh_token), tokens.account_id),
+        ))?;
+        Ok(())
     }
 }
 
@@ -303,11 +346,13 @@ impl AuthProvider for CodexAuth {
                     if !tokens::is_stale(&tokens, self.config.refresh_leeway) {
                         return Ok(AuthHeaders::bearer(&tokens.access_token));
                     }
-                    if !self.refresh_once().await {
-                        return Err(AuthError::RefreshFailed(
-                            "the ChatGPT access token expired and could not be renewed".into(),
-                        ));
-                    }
+                    self.refresh_once(RefreshMode::IfStale)
+                        .await
+                        .map_err(|err| {
+                            AuthError::RefreshFailed(format!(
+                                "the ChatGPT access token expired and could not be renewed: {err}"
+                            ))
+                        })?;
                     let refreshed = self.tokens()?.ok_or_else(|| {
                         AuthError::RefreshFailed("the refreshed credential vanished".into())
                     })?;
@@ -342,7 +387,7 @@ impl AuthProvider for CodexAuth {
             let listener = if self.config.device_code_only {
                 None
             } else {
-                match loopback::bind().await {
+                match loopback::bind(self.config.callback_port).await {
                     Ok(listener) => Some(listener),
                     Err(err) => {
                         tracing::warn!(
@@ -369,7 +414,7 @@ impl AuthProvider for CodexAuth {
     }
 
     fn refresh_after_unauthorized(&self) -> AuthFuture<'_, bool> {
-        Box::pin(self.refresh_once())
+        Box::pin(async move { self.refresh_once(RefreshMode::Force).await.is_ok() })
     }
 
     /// Clears only the credential this plugin minted. An API key the deployment
@@ -396,6 +441,7 @@ mod tests {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::header;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
@@ -655,6 +701,66 @@ mod tests {
             vec![("authorization", "Bearer access-2")]
         );
         assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_is_posted_as_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(header("content-type", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "access-2",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = chatgpt(
+            &home,
+            &store,
+            CodexAuthConfig::new(server.uri(), "client-1"),
+        );
+        let expired = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() - 30));
+        store_tokens(&auth, expired, Some("refresh-1"));
+
+        assert!(
+            auth.refresh_after_unauthorized().await,
+            "this endpoint refuses a form-encoded refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_reaches_the_caller_with_the_reason_the_issuer_gave() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "refresh token revoked",
+            })))
+            .mount(&server)
+            .await;
+
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = chatgpt(
+            &home,
+            &store,
+            CodexAuthConfig::new(server.uri(), "client-1"),
+        );
+        let expired = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() - 30));
+        store_tokens(&auth, expired, Some("refresh-1"));
+
+        let Err(AuthError::RefreshFailed(detail)) = auth.headers().await else {
+            panic!("an expired credential the issuer refuses to renew must fail");
+        };
+        assert!(
+            detail.contains("refresh token revoked"),
+            "a person cannot tell a revoked credential from a blocked network without the reason: {detail}"
+        );
     }
 
     #[tokio::test]

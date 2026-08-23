@@ -13,6 +13,7 @@
 
 mod config;
 mod device;
+mod discovery;
 mod endpoint;
 mod jwt;
 mod loopback;
@@ -42,8 +43,10 @@ use sha2::Digest as _;
 use sha2::Sha256;
 use tokio::sync::Mutex;
 
+pub use config::CLIENT_IDENTIFIER;
 pub use config::DEFAULT_API_KEY_REF;
 pub use config::DEFAULT_CLIENT_ID;
+pub use config::DEFAULT_CLIENT_VERSION;
 pub use config::DEFAULT_ISSUER;
 pub use config::DEFAULT_VENDOR;
 pub use config::GrokAuthConfig;
@@ -62,7 +65,21 @@ pub const AUTH_ID: &str = "grok";
 /// else already did the work it was waiting to do.
 struct Refresh {
     generation: u64,
-    succeeded: bool,
+    /// The failure text of the last attempt, so a caller that queued behind it
+    /// is told why rather than merely that it did not work.
+    outcome: Result<(), String>,
+}
+
+/// Why a refresh was asked for.
+///
+/// A 401 is not a clock: the issuer rejected a token this process still
+/// believes is live, so the stored credential being fresh proves nothing and
+/// the exchange happens anyway. An expiry check, by contrast, is satisfied by
+/// whatever another process already wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshMode {
+    IfStale,
+    Force,
 }
 
 /// The xAI [`AuthProvider`].
@@ -75,6 +92,7 @@ pub struct GrokAuth {
     refresh: Mutex<Refresh>,
     generation: AtomicU64,
     delay: Arc<dyn Delay>,
+    discovery: discovery::Cache,
 }
 
 impl GrokAuth {
@@ -91,10 +109,11 @@ impl GrokAuth {
             http: reqwest::Client::new(),
             refresh: Mutex::new(Refresh {
                 generation: 0,
-                succeeded: false,
+                outcome: Ok(()),
             }),
             generation: AtomicU64::new(0),
             delay: Arc::new(TokioDelay),
+            discovery: discovery::Cache::default(),
         }
     }
 
@@ -167,59 +186,104 @@ impl GrokAuth {
         Ok(())
     }
 
+    /// A login's headers.
+    ///
+    /// The subscription surface — where a login and its included hours are
+    /// spent — gates on the client version and answers `426` without it. The
+    /// header belongs here rather than in the provider because it is xAI's
+    /// requirement, and `keke-wire` must not learn any vendor's.
+    fn subscription_headers(access_token: &str, client_version: &str) -> AuthHeaders {
+        AuthHeaders::bearer(access_token)
+            .with("x-grok-client-version", client_version)
+            .with("x-grok-client-identifier", config::CLIENT_IDENTIFIER)
+    }
+
     /// An API key the deployment supplied, from the layered credential store.
     fn api_key(&self) -> Result<Option<String>, AuthError> {
         Ok(self.credentials.load(&self.config.api_key_ref)?)
     }
 
     /// Refresh at most once, however many callers ask at once.
-    async fn refresh_once(&self) -> bool {
+    ///
+    /// The outcome is the failure itself rather than a bool: "could not be
+    /// renewed" with the reason discarded is indistinguishable between a
+    /// blocked network and a refresh token the issuer has revoked, and those
+    /// call for opposite responses from the person reading it.
+    async fn refresh_once(&self, mode: RefreshMode) -> Result<(), AuthError> {
         let observed = self.generation.load(Ordering::Acquire);
         let mut state = self.refresh.lock().await;
         if state.generation != observed {
-            return state.succeeded;
+            return state.outcome.clone().map_err(AuthError::RefreshFailed);
         }
 
-        let succeeded = match self.perform_refresh().await {
-            Ok(()) => true,
+        let outcome = match self.perform_refresh(mode).await {
+            Ok(()) => Ok(()),
             Err(err) => {
                 tracing::warn!(auth = AUTH_ID, error = %err, "xai token refresh failed");
-                false
+                Err(err.to_string())
             }
         };
 
         state.generation = state.generation.wrapping_add(1);
-        state.succeeded = succeeded;
+        state.outcome = outcome.clone();
         self.generation.store(state.generation, Ordering::Release);
-        succeeded
+        outcome.map_err(AuthError::RefreshFailed)
     }
 
-    async fn perform_refresh(&self) -> Result<(), AuthError> {
-        let current = self
-            .credential()?
+    async fn perform_refresh(&self, mode: RefreshMode) -> Result<(), AuthError> {
+        // The lock is taken before the credential is read and held past the
+        // write: between an unlocked read and the exchange, another keke
+        // process can rotate the refresh token, and presenting the superseded
+        // one gets `invalid_grant` — which reads as a revoked login.
+        let mutation = self.auth_files.begin(&self.config.vendor)?;
+        let current = mutation
+            .load()?
+            .filter(AuthFile::has_credential)
+            .or_else(|| self.imported())
             .ok_or_else(|| AuthError::NotConfigured(AUTH_ID.to_string()))?;
         let tokens = current
             .tokens
             .ok_or_else(|| AuthError::RefreshFailed("the credential is not refreshable".into()))?;
+
+        // Whoever held the lock may have been refreshing the very credential
+        // this call was queued to renew.
+        if mode == RefreshMode::IfStale && !tokens::is_stale(&tokens, self.config.refresh_leeway) {
+            return Ok(());
+        }
+
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AuthError::RefreshFailed("the stored credential has no refresh token".into())
         })?;
 
+        // xAI mints a token *for a principal*, and renewing one without saying
+        // which principal it belongs to is refused. The claims are the only
+        // place that survives an import from another tool's login, so they are
+        // where it is read from rather than a field of our own.
+        let claims = jwt::claims(&tokens.access_token).unwrap_or_default();
+        let mut form = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", self.config.client_id.as_str()),
+        ];
+        if let Some(principal_type) = claims.principal_type.as_deref() {
+            form.push(("principal_type", principal_type));
+        }
+        if let Some(principal_id) = claims.principal_id.as_deref() {
+            form.push(("principal_id", principal_id));
+        }
+
         let response = endpoint::exchange(
             &self.http,
-            &self.config.token_endpoint,
-            &[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token.as_str()),
-                ("client_id", self.config.client_id.as_str()),
-            ],
+            &discovery::token_endpoint(&self.http, &self.discovery, &self.config).await,
+            &form,
         )
         .await?;
 
-        self.save(
+        mutation.save(&AuthFile::from_tokens(
             current.auth_mode,
             response.into_tokens(Some(refresh_token), tokens.account_id),
-        )
+        ))?;
+        Ok(())
     }
 }
 
@@ -303,17 +367,25 @@ impl AuthProvider for GrokAuth {
             if let Some(file) = self.credential()? {
                 if let Some(tokens) = file.tokens {
                     if !tokens::is_stale(&tokens, self.config.refresh_leeway) {
-                        return Ok(AuthHeaders::bearer(&tokens.access_token));
-                    }
-                    if !self.refresh_once().await {
-                        return Err(AuthError::RefreshFailed(
-                            "the xAI access token expired and could not be renewed".into(),
+                        return Ok(Self::subscription_headers(
+                            &tokens.access_token,
+                            &self.config.client_version,
                         ));
                     }
+                    self.refresh_once(RefreshMode::IfStale)
+                        .await
+                        .map_err(|err| {
+                            AuthError::RefreshFailed(format!(
+                                "the xAI access token expired and could not be renewed: {err}"
+                            ))
+                        })?;
                     let refreshed = self.tokens()?.ok_or_else(|| {
                         AuthError::RefreshFailed("the refreshed credential vanished".into())
                     })?;
-                    return Ok(AuthHeaders::bearer(&refreshed.access_token));
+                    return Ok(Self::subscription_headers(
+                        &refreshed.access_token,
+                        &self.config.client_version,
+                    ));
                 }
                 if let Some(key) = file.api_key {
                     return Ok(AuthHeaders::bearer(&key));
@@ -363,11 +435,25 @@ impl AuthProvider for GrokAuth {
             let (mode, tokens) = match listener {
                 Some(listener) => (
                     AuthMode::Oidc,
-                    loopback::run(&self.http, &self.config, ui.as_ref(), listener).await?,
+                    loopback::run(
+                        &self.http,
+                        &self.discovery,
+                        &self.config,
+                        ui.as_ref(),
+                        listener,
+                    )
+                    .await?,
                 ),
                 None => (
                     AuthMode::DeviceCode,
-                    device::run(&self.http, &self.config, ui.as_ref(), self.delay.as_ref()).await?,
+                    device::run(
+                        &self.http,
+                        &self.discovery,
+                        &self.config,
+                        ui.as_ref(),
+                        self.delay.as_ref(),
+                    )
+                    .await?,
                 ),
             };
 
@@ -376,7 +462,7 @@ impl AuthProvider for GrokAuth {
     }
 
     fn refresh_after_unauthorized(&self) -> AuthFuture<'_, bool> {
-        Box::pin(self.refresh_once())
+        Box::pin(async move { self.refresh_once(RefreshMode::Force).await.is_ok() })
     }
 
     /// Clears only the credential this plugin minted. An API key the deployment
@@ -402,8 +488,30 @@ mod tests {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
+    use wiremock::matchers::body_string_contains;
     use wiremock::matchers::method;
     use wiremock::matchers::path;
+
+    /// What a request would carry as its bearer.
+    fn bearer(headers: &AuthHeaders) -> String {
+        headers
+            .iter()
+            .find(|(name, _)| *name == "authorization")
+            .map(|(_, value)| value.to_string())
+            .expect("an authorization header")
+    }
+
+    /// Only the token exchanges: an OIDC discovery probe is not a refresh, and
+    /// counting it would make these assertions about the wrong thing.
+    async fn token_requests(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .count()
+    }
 
     fn grok_cli_login() -> serde_json::Value {
         serde_json::json!({
@@ -569,8 +677,8 @@ mod tests {
 
         let headers = auth.headers().await.expect("headers");
         assert_eq!(
-            headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", "Bearer from-keke-login")],
+            bearer(&headers),
+            "Bearer from-keke-login",
             "the auth file keke wrote must outrank another tool's login"
         );
     }
@@ -601,7 +709,7 @@ mod tests {
         );
         assert_eq!(outcomes, (true, true, true, true));
         assert_eq!(
-            server.received_requests().await.expect("requests").len(),
+            token_requests(&server).await,
             1,
             "four concurrent 401s must renew the credential once"
         );
@@ -629,7 +737,7 @@ mod tests {
 
         assert!(auth.refresh_after_unauthorized().await);
         assert!(auth.refresh_after_unauthorized().await);
-        assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+        assert_eq!(token_requests(&server).await, 2);
     }
 
     #[tokio::test]
@@ -651,11 +759,65 @@ mod tests {
         store_tokens(&auth, expired, Some("refresh-1"), AuthMode::Oidc);
 
         let headers = auth.headers().await.expect("headers");
+        assert_eq!(bearer(&headers), "Bearer access-2");
+        assert_eq!(token_requests(&server).await, 1);
+    }
+
+    /// The issuer grants what is asked for and no more, and the subscription
+    /// proxy answers a token without this scope
+    /// `403 User does not have Grok Code CLI permission` — which sounds like a
+    /// fact about the account and is a fact about the request.
+    #[test]
+    fn a_login_asks_for_the_scope_the_subscription_proxy_requires() {
+        let config = GrokAuthConfig::default();
+        assert!(
+            config.scopes.iter().any(|scope| scope == "grok-cli:access"),
+            "{:?}",
+            config.scopes
+        );
+        assert!(
+            config.scopes.iter().any(|scope| scope == "offline_access"),
+            "without this the issuer mints no refresh token at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_login_carries_the_client_version_the_subscription_proxy_gates_on() {
+        let server = MockServer::start().await;
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+        let fresh = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() + 3600));
+        store_tokens(&auth, fresh, Some("refresh-1"), AuthMode::Oidc);
+
+        let headers = auth.headers().await.expect("headers");
+        let sent: Vec<_> = headers.iter().collect();
+        assert!(
+            sent.contains(&("x-grok-client-version", config::DEFAULT_CLIENT_VERSION)),
+            "cli-chat-proxy.grok.com answers 426 without it: {sent:?}"
+        );
+        assert!(
+            sent.contains(&("x-grok-client-identifier", "keke")),
+            "keke names itself rather than posing as another client: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_supplied_api_key_is_sent_bare() {
+        let server = MockServer::start().await;
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+        store
+            .save(&auth.config.api_key_ref, "xai-key-1")
+            .expect("save");
+
+        let headers = auth.headers().await.expect("headers");
         assert_eq!(
             headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", "Bearer access-2")]
+            vec![("authorization", "Bearer xai-key-1")],
+            "a key is spent at the public API, which gates on nothing"
         );
-        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
     }
 
     #[tokio::test]
@@ -668,17 +830,104 @@ mod tests {
         store_tokens(&auth, fresh.clone(), Some("refresh-1"), AuthMode::Oidc);
 
         let headers = auth.headers().await.expect("headers");
+        assert_eq!(bearer(&headers), format!("Bearer {fresh}"));
         assert_eq!(
-            headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", format!("Bearer {fresh}").as_str())]
-        );
-        assert!(
-            server
-                .received_requests()
-                .await
-                .expect("requests")
-                .is_empty(),
+            token_requests(&server).await,
+            0,
             "a live token must not cost a round trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_another_process_already_did_is_not_repeated() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "access-2",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+
+        // What a sibling process leaves behind: the stored credential is
+        // already live by the time this one takes the lock.
+        let live = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() + 3600));
+        store_tokens(&auth, live.clone(), Some("refresh-2"), AuthMode::Oidc);
+
+        auth.refresh_once(RefreshMode::IfStale)
+            .await
+            .expect("a live stored credential is a refresh already done");
+        assert_eq!(
+            token_requests(&server).await,
+            0,
+            "spending a refresh token the sibling has rotated away would get invalid_grant"
+        );
+        assert_eq!(stored_tokens(&auth).expect("tokens").access_token, live);
+
+        // A 401 is not a clock: the issuer rejected a token this process still
+        // believes is live, so that one is exchanged anyway.
+        assert!(auth.refresh_after_unauthorized().await);
+        assert_eq!(token_requests(&server).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_names_the_principal_the_token_was_minted_for() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth2/token"))
+            .and(body_string_contains("principal_type=User"))
+            .and(body_string_contains("principal_id=user-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "access-2",
+                "expires_in": 3600,
+            })))
+            .mount(&server)
+            .await;
+
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+        let expired = jwt::encode_unsigned(&format!(
+            r#"{{"exp":{},"principal_type":"User","principal_id":"user-1"}}"#,
+            tokens::now() - 30
+        ));
+        store_tokens(&auth, expired, Some("refresh-1"), AuthMode::Oidc);
+
+        assert!(
+            auth.refresh_after_unauthorized().await,
+            "xAI refuses a refresh that does not say which principal it renews"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_reaches_the_caller_with_the_reason_the_issuer_gave() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth2/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "refresh token revoked",
+            })))
+            .mount(&server)
+            .await;
+
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
+        let expired = jwt::encode_unsigned(&format!(r#"{{"exp":{}}}"#, tokens::now() - 30));
+        store_tokens(&auth, expired, Some("refresh-1"), AuthMode::Oidc);
+
+        let Err(AuthError::RefreshFailed(detail)) = auth.headers().await else {
+            panic!("an expired credential the issuer refuses to renew must fail");
+        };
+        assert!(
+            detail.contains("refresh token revoked"),
+            "a person cannot tell a revoked credential from a blocked network without the reason: {detail}"
         );
     }
 

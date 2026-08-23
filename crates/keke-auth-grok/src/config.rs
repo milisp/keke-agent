@@ -12,7 +12,38 @@ pub const DEFAULT_VENDOR: &str = "grok";
 /// The long-lived API key alternative to a login.
 pub const DEFAULT_API_KEY_REF: &str = "XAI_API_KEY";
 
-const DEFAULT_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access", "api:access"];
+/// The client version the subscription proxy gates on.
+///
+/// Not keke's version: `cli-chat-proxy.grok.com` refuses a request whose
+/// `x-grok-client-version` is older than the release it currently requires,
+/// with `426 Your Grok CLI version (none) is outdated`. It is the protocol
+/// generation this crate speaks, and a deployment that meets a raised gate
+/// before keke ships a new release needs to say so without forking the plugin.
+pub const DEFAULT_CLIENT_VERSION: &str = "0.1.202";
+
+/// What keke calls itself to that proxy. The gate is on the version alone —
+/// this is honest attribution, not a passport, so keke does not pose as
+/// another client.
+pub const CLIENT_IDENTIFIER: &str = "keke";
+
+/// What a login asks for.
+///
+/// `grok-cli:access` is what authorizes a token at the subscription proxy: the
+/// issuer grants exactly what is requested, and a token minted without it is
+/// refused there with `User does not have Grok Code CLI permission` — a message
+/// about the token's scope that reads as a statement about the person.
+const DEFAULT_SCOPES: &[&str] = &[
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "grok-cli:access",
+    "api:access",
+    "conversations:read",
+    "conversations:write",
+    "workspaces:read",
+    "workspaces:write",
+];
 
 /// Everything about the xAI auth flow a deployment might reasonably change.
 ///
@@ -42,6 +73,8 @@ pub struct GrokAuthConfig {
     pub device_code_only: bool,
     /// Added to the poll interval each time the issuer answers `slow_down`.
     pub slow_down_increment: Duration,
+    /// Sent as `x-grok-client-version` — see [`DEFAULT_CLIENT_VERSION`].
+    pub client_version: String,
 }
 
 impl GrokAuthConfig {
@@ -64,6 +97,7 @@ impl GrokAuthConfig {
             login_timeout: Duration::from_secs(300),
             device_code_only: false,
             slow_down_increment: Duration::from_secs(5),
+            client_version: DEFAULT_CLIENT_VERSION.to_string(),
         }
     }
 
@@ -81,6 +115,25 @@ impl GrokAuthConfig {
 
     pub(crate) fn scope_param(&self) -> String {
         self.scopes.join(" ")
+    }
+
+    fn base(&self) -> &str {
+        self.issuer.trim_end_matches('/')
+    }
+
+    /// What [`Self::new`] would have derived, which is how a caller tells an
+    /// endpoint a deployment stated from one this crate guessed — see
+    /// [`crate::discovery`].
+    pub(crate) fn derived_authorize_endpoint(&self) -> String {
+        format!("{}/oauth2/authorize", self.base())
+    }
+
+    pub(crate) fn derived_token_endpoint(&self) -> String {
+        format!("{}/oauth2/token", self.base())
+    }
+
+    pub(crate) fn derived_device_authorization_endpoint(&self) -> String {
+        format!("{}/oauth2/device/code", self.base())
     }
 }
 

@@ -56,7 +56,12 @@ keyring = { version = "3", features = ["apple-native", "linux-native", "windows-
 rand = "0.9"
 ratatui = "0.29"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# `socks` and `macos-system-configuration` are what make a proxy work: without
+# them a deployment behind a SOCKS proxy, or one whose proxy is set in macOS
+# System Settings rather than in the environment, cannot reach an issuer at all —
+# and a token endpoint that cannot be reached looks exactly like a credential
+# that cannot be renewed.
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "macos-system-configuration", "rustls-tls", "socks", "stream"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
