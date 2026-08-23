@@ -7,6 +7,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   BIN_NAME: keke
+  # Must match the channel in rust-toolchain.toml.
+  RUST_CHANNEL: "1.96.0"
 
 permissions:
   contents: write
@@ -45,8 +47,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml pins the channel, so the target has to be added to
+      # *that* toolchain -- targets installed on `stable` would be invisible here.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_CHANNEL }}
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -57,8 +62,14 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --locked -p keke-cli --target ${{ matrix.target }}
