@@ -332,6 +332,10 @@ async fn tui(
     seed: keke_tui::Resumed,
     resume: Option<(keke_protocol::SessionId, Vec<keke_protocol::Message>)>,
 ) -> Result<()> {
+    // Read before the session moves `cwd`: the typing history belongs to the
+    // directory being worked in, which for a resumed session is the one it was
+    // started in rather than wherever keke was invoked.
+    let prompts = prompt_history(&config.home.home, &cwd, resume.as_ref().map(|(id, _)| *id));
     let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
     if let Some((id, history)) = resume {
         builder = builder.resume(id, history);
@@ -355,8 +359,42 @@ async fn tui(
         keke_tui::SlashCommands::new(commands),
         config.approval_policy,
         seed,
+        prompts,
     )
     .await
+}
+
+/// This project's past prompts, plus the sink new ones are appended to.
+///
+/// A history that cannot be read is an empty one: somebody opening keke wants
+/// their session, not a startup failure over a convenience file.
+fn prompt_history(
+    home: &AbsPath,
+    cwd: &std::path::Path,
+    session: Option<keke_protocol::SessionId>,
+) -> keke_tui::PromptHistory {
+    let mut log = keke_core::PromptHistory::new(home, cwd);
+    if let Some(session) = session {
+        log = log.in_session(session);
+    }
+    let entries = log.load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "could not read the prompt history");
+        Vec::new()
+    });
+    keke_tui::PromptHistory::new(entries).with_recorder(Arc::new(PromptLog(log)))
+}
+
+/// Appends what was typed to the project's history file.
+struct PromptLog(keke_core::PromptHistory);
+
+impl keke_tui::PromptRecorder for PromptLog {
+    fn record(&self, prompt: &str) {
+        // Losing a line of history is not worth failing the turn a person just
+        // started, so this is reported and dropped.
+        if let Err(error) = self.0.record(prompt) {
+            tracing::warn!(%error, "could not record the prompt history");
+        }
+    }
 }
 
 async fn exec(

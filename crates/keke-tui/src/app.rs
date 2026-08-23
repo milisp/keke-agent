@@ -18,6 +18,7 @@ use keke_protocol::Usage;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::history::PromptHistory;
 use crate::input::InputBox;
 use crate::login::Notice;
 use crate::scroll::Scrollback;
@@ -54,6 +55,9 @@ pub struct App {
     pub input: InputBox,
     pub scroll: Scrollback,
     pub commands: SlashCommands,
+    /// What was typed in this project before, and where the arrow keys are
+    /// within it.
+    pub history: PromptHistory,
     /// Which completion the arrow keys are on. Clamped rather than reset on
     /// every keystroke, so typing one more letter does not jump the highlight
     /// back to the top of a list the person was already moving through.
@@ -86,6 +90,7 @@ impl App {
                 input: InputBox::default(),
                 scroll: Scrollback::default(),
                 commands: SlashCommands::default(),
+                history: PromptHistory::default(),
                 completion: 0,
                 approval: ApprovalPolicy::default(),
                 turn: Turn::Idle,
@@ -104,6 +109,14 @@ impl App {
     #[must_use]
     pub fn with_commands(mut self, commands: SlashCommands) -> Self {
         self.commands = commands;
+        self
+    }
+
+    /// The prompt history this project already had, and the sink new prompts
+    /// are appended to.
+    #[must_use]
+    pub fn with_prompt_history(mut self, history: PromptHistory) -> Self {
+        self.history = history;
         self
     }
 
@@ -237,6 +250,7 @@ impl App {
             return;
         }
         let text = self.input.take();
+        self.history.submit(&text);
         if let Some((name, arguments)) = crate::slash::parse(text.trim()) {
             self.run_command(&text, name, arguments);
             return;

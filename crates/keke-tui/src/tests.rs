@@ -707,3 +707,93 @@ async fn a_resumed_history_is_replayed_onto_the_screen() {
     ));
     assert!(matches!(&cells[2], Cell::Assistant(text) if text == "here it is"));
 }
+
+/// Up from the top line brings back what was typed before, oldest last first.
+#[test]
+fn the_up_arrow_recalls_the_last_prompt() {
+    let (app, _scripted, _updates, _local) = app_with(vec![vec![]]);
+    let mut app = app.with_prompt_history(crate::PromptHistory::new(vec![
+        "first".to_string(),
+        "second".to_string(),
+    ]));
+
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "second");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "first");
+    // The oldest is the end of the road, not a wrap-around to the newest.
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "first");
+}
+
+/// Walking forward again ends at the person's own unsent draft.
+#[test]
+fn the_down_arrow_gives_the_interrupted_draft_back() {
+    let (app, _scripted, _updates, _local) = app_with(vec![vec![]]);
+    let mut app = app.with_prompt_history(crate::PromptHistory::new(vec!["old".to_string()]));
+
+    type_text(&mut app, "half typed");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "old");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.input.text(), "half typed");
+}
+
+/// A multi-line prompt is edited with the arrow keys before it is left, so the
+/// history only takes over from the edge lines.
+#[test]
+fn the_arrows_move_within_a_multi_line_prompt_first() {
+    let (app, _scripted, _updates, _local) = app_with(vec![vec![]]);
+    let mut app = app.with_prompt_history(crate::PromptHistory::new(vec!["old".to_string()]));
+
+    type_text(&mut app, "one");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+    type_text(&mut app, "two");
+
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(
+        app.input.text(),
+        "one\ntwo",
+        "the first Up stays in the box"
+    );
+    assert_eq!(app.input.cursor().0, 0);
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "old");
+}
+
+/// What was just sent is at the top of the history, without a restart.
+#[tokio::test]
+async fn a_submitted_prompt_joins_the_history() {
+    let (app, _scripted, _updates, _local) = app_with(vec![vec![]]);
+    let mut app = app.with_prompt_history(crate::PromptHistory::default());
+
+    type_text(&mut app, "do the thing");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.input.is_empty());
+
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "do the thing");
+}
+
+/// The readline bindings a terminal person already has everywhere else.
+#[test]
+fn emacs_keys_move_and_delete_in_the_prompt() {
+    let (app, _scripted, _updates, _local) = app_with(vec![vec![]]);
+    let mut app = app;
+
+    type_text(&mut app, "git commit -m wip");
+    app.handle_key(control('w'));
+    assert_eq!(app.input.text(), "git commit -m ");
+
+    app.handle_key(control('a'));
+    assert_eq!(app.input.cursor().1, 0);
+    app.handle_key(control('e'));
+    assert_eq!(app.input.cursor().1, "git commit -m ".chars().count());
+
+    app.handle_key(control('b'));
+    app.handle_key(control('k'));
+    assert_eq!(app.input.text(), "git commit -m");
+
+    app.handle_key(control('u'));
+    assert!(app.input.is_empty());
+}

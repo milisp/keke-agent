@@ -45,6 +45,15 @@ impl App {
             // protocol, so Alt+Enter and Ctrl-J are equal citizens, not
             // fallbacks — one of the three works everywhere.
             KeyCode::Char('j') if control => self.input.insert_newline(),
+            // The readline bindings a terminal person has in every other
+            // prompt. Ctrl-A/E/B/F move, Ctrl-U/K/W delete.
+            KeyCode::Char('a') if control => self.input.move_home(),
+            KeyCode::Char('e') if control => self.input.move_end(),
+            KeyCode::Char('b') if control => self.input.move_left(),
+            KeyCode::Char('f') if control => self.input.move_right(),
+            KeyCode::Char('u') if control => self.input.kill_to_start(),
+            KeyCode::Char('k') if control => self.input.kill_to_end(),
+            KeyCode::Char('w') if control => self.input.delete_word_before(),
             KeyCode::Enter if shift || alt => self.input.insert_newline(),
             // Shift-Tab reaches a terminal as `BackTab`, except where it does
             // not; both spellings mean the same gesture.
@@ -63,11 +72,37 @@ impl App {
             KeyCode::Delete => self.input.delete(),
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
-            KeyCode::Up => self.input.move_up(),
-            KeyCode::Down => self.input.move_down(),
+            KeyCode::Up => self.move_up(),
+            KeyCode::Down => self.move_down(),
             KeyCode::Home => self.input.move_home(),
             KeyCode::End => self.input.move_end(),
             _ => {}
+        }
+    }
+
+    /// Up moves within a multi-line prompt first and recalls a past one only
+    /// from the top line, so the arrow keys never yank away text somebody is
+    /// still editing further down.
+    fn move_up(&mut self) {
+        if self.input.cursor().0 > 0 {
+            self.input.move_up();
+            return;
+        }
+        let current = self.input.text();
+        if let Some(prompt) = self.history.older(&current) {
+            self.input.set_text(&prompt);
+        }
+    }
+
+    /// Down is Up's mirror: it walks back toward the newest prompt and then to
+    /// whatever draft was interrupted, but only from the last line.
+    fn move_down(&mut self) {
+        if self.input.cursor().0 + 1 < self.input.rows() {
+            self.input.move_down();
+            return;
+        }
+        if let Some(prompt) = self.history.newer() {
+            self.input.set_text(&prompt);
         }
     }
 

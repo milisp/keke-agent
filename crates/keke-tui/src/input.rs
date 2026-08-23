@@ -120,11 +120,61 @@ impl InputBox {
         self.column = self.line().chars().count();
     }
 
+    /// Delete from the cursor back to the start of the line.
+    pub fn kill_to_start(&mut self) {
+        let column = self.column;
+        let line = self.line_mut();
+        let at = byte_index(line, column);
+        line.replace_range(..at, "");
+        self.column = 0;
+    }
+
+    /// Delete from the cursor to the end of the line.
+    pub fn kill_to_end(&mut self) {
+        let column = self.column;
+        let line = self.line_mut();
+        let at = byte_index(line, column);
+        line.truncate(at);
+    }
+
+    /// Delete the word before the cursor, along with the spaces leading to it.
+    ///
+    /// Whitespace first, then the word: Ctrl-W at the end of `git commit ` has
+    /// to eat `commit`, not just the trailing space.
+    pub fn delete_word_before(&mut self) {
+        while self.column > 0 && self.char_before().is_some_and(char::is_whitespace) {
+            self.backspace();
+        }
+        while self.column > 0 && self.char_before().is_some_and(|ch| !ch.is_whitespace()) {
+            self.backspace();
+        }
+    }
+
+    fn char_before(&self) -> Option<char> {
+        self.line().chars().nth(self.column.checked_sub(1)?)
+    }
+
     /// Take the text and reset, so a submitted prompt cannot be sent twice.
     pub fn take(&mut self) -> String {
         let text = self.text();
         self.clear();
         text
+    }
+
+    /// Replace the whole buffer and put the cursor at the end, where somebody
+    /// recalling a past prompt expects to carry on typing from.
+    pub fn set_text(&mut self, text: &str) {
+        self.lines = text.lines().map(str::to_string).collect();
+        if text.ends_with('\n') || self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.row = self.lines.len() - 1;
+        self.column = self.lines[self.row].chars().count();
+    }
+
+    /// How many lines the buffer holds, counting an empty buffer as one.
+    pub fn rows(&self) -> usize {
+        self.lines.len().max(1)
     }
 
     pub fn clear(&mut self) {
