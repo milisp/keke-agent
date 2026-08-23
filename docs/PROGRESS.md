@@ -26,11 +26,24 @@ drift the way the README status line did.
   (invariant 11), repository-sourced plugins gated behind explicit consent
   keyed to their contents, not their path (invariant 12).
 - **MCP** — `keke-mcp` speaks both the old and modern MCP transport eras.
+- **`keke-skills`** — plugin-contributed `skills/*/SKILL.md` become a
+  `ContextContributor` wired in `keke-cli/src/compose.rs`: only the
+  `plugin:name — description` index line is injected up front, the body is
+  read on demand by qualified name.
 
 ## In progress / next
 
-- Nothing tracked as actively in flight as of 2026-08-22 — check
-  `git log` for the latest commit before picking up work here.
+- **MCP tool-call closure, end to end** — install a real MCP plugin
+  (GitHub or filesystem server), drive it from the TUI so the agent actually
+  triggers a tool call, and confirm `ApprovalReviewContributor`/`ToolGuard`
+  intercept as expected (invariant 7) and the resulting `SessionEvent`s are
+  complete (invariant 6). The transport and tool-call plumbing exist
+  (`keke-mcp`); what's missing is a verified real-plugin run.
+- **`keke-provider-chatgpt` (or similarly named OpenAI/ChatGPT provider)** —
+  only `keke-provider-grok` and `keke-provider-nvidia` exist today. `keke-wire`
+  already implements all three wire formats, so this is a new provider plugin
+  on top of existing plumbing, validated for streaming tokens, reasoning
+  models, and error frames.
 
 ## How to use this file
 
