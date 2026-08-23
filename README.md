@@ -52,7 +52,7 @@ crates/
   keke-plugin-api
   keke-core  keke-config  keke-credentials  keke-workspace   # tier 1: engine
   keke-wire                                                  # the three wire formats
-  keke-provider-grok  keke-provider-nvidia                    # tier 2: plugins
+  keke-provider-grok                                          # tier 2: plugins
   keke-auth-grok  keke-auth-codex  keke-tools
   keke-cli                                                    # tier 3: surfaces
 ```

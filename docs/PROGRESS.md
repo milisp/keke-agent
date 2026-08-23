@@ -16,8 +16,8 @@ drift the way the README status line did.
 - **Auth** — API-key auth for config-declared endpoints, credential storage
   independent of the machine keyring in tests, `keke doctor` reports
   resolved vs. missing.
-- **Vendor plugins** — `keke-provider-grok`, `keke-provider-nvidia`,
-  `keke-auth-grok`, `keke-auth-codex`.
+- **Vendor plugins** — `keke-provider-grok`, `keke-auth-grok`,
+  `keke-auth-codex`.
 - **ACP server** — serves the Agent Client Protocol over stdio; an editor
   can drive a real session through it.
 - **TUI** — `keke-tui` built against the ACP seam, not the engine directly.
@@ -40,7 +40,7 @@ drift the way the README status line did.
   complete (invariant 6). The transport and tool-call plumbing exist
   (`keke-mcp`); what's missing is a verified real-plugin run.
 - **`keke-provider-chatgpt` (or similarly named OpenAI/ChatGPT provider)** —
-  only `keke-provider-grok` and `keke-provider-nvidia` exist today. `keke-wire`
+  only `keke-provider-grok` exists today. `keke-wire`
   already implements all three wire formats, so this is a new provider plugin
   on top of existing plumbing, validated for streaming tokens, reasoning
   models, and error frames.

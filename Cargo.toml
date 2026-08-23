@@ -35,7 +35,6 @@ keke-skills = { path = "crates/keke-skills", version = "0.1.0" }
 keke-auth-grok = { path = "crates/keke-auth-grok", version = "0.1.0" }
 keke-plugin = { path = "crates/keke-plugin", version = "0.1.0" }
 keke-provider-grok = { path = "crates/keke-provider-grok", version = "0.1.0" }
-keke-provider-nvidia = { path = "crates/keke-provider-nvidia", version = "0.1.0" }
 keke-test-support = { path = "crates/keke-test-support", version = "0.1.0" }
 keke-tools = { path = "crates/keke-tools", version = "0.1.0" }
 keke-tui = { path = "crates/keke-tui", version = "0.1.0" }
