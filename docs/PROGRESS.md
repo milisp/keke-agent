@@ -40,9 +40,10 @@ drift the way the README status line did.
   `plugin:name — description` index line is injected up front, the body is
   read on demand by qualified name.
 
-- **Resume** — `keke resume [id]` (`--list` to see what there is) rebuilds a
-  session's history from its rollout log alone and appends to that same log,
-  seeding the TUI transcript from the same messages the model gets.
+- **Resume** — `keke resume [id]` (`--list` to see what there is, any id prefix
+  accepted) rebuilds a session's history from its rollout log alone and appends
+  to that same log, seeding the TUI transcript from the same messages the model
+  gets. Empty logs are never listed or resumed.
 - **Live turn clock and token count** in the TUI status bar, ticking while a
   turn runs.
 

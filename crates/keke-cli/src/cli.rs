@@ -118,12 +118,17 @@ pub(crate) enum PluginAction {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ResumeArgs {
-    /// Which session, as `--list` prints it. The most recent one if omitted.
+    /// Which session — the short id `--list` prints, or any prefix of the full
+    /// one. The most recent conversation if omitted.
     pub session: Option<String>,
 
     /// List what can be resumed instead of resuming anything.
     #[arg(long)]
     pub list: bool,
+
+    /// Include sessions nobody said anything in.
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Debug, clap::Args)]

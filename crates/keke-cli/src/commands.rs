@@ -230,37 +230,58 @@ async fn resume(
     requests: keke_acp::ApprovalRequests,
 ) -> Result<()> {
     let home = &config.home.home;
+    let sessions = keke_core::list_sessions(home)?;
+    // A log with no turns is an interface someone opened and closed; listing
+    // them buries the conversations under the empty files.
+    let conversations: Vec<_> = sessions
+        .iter()
+        .filter(|session| args.all || session.turns > 0)
+        .collect();
+
     if args.list {
-        let sessions = keke_core::list_sessions(home)?;
-        if sessions.is_empty() {
+        if conversations.is_empty() {
             println!(
                 "no sessions under {}",
                 keke_core::sessions_dir(home).display()
             );
             return Ok(());
         }
-        for session in sessions {
+        println!(
+            "{:<10} {:<20} {:>5}  STARTED WITH",
+            "ID", "UPDATED", "TURNS"
+        );
+        for session in conversations {
             println!(
-                "{}  {}  {} turn(s)  {}",
-                session.id,
-                if session.updated_at.is_empty() {
-                    "-"
-                } else {
-                    &session.updated_at
-                },
+                "{:<10} {:<20} {:>5}  {}",
+                session.short_id(),
+                session.updated_at.get(..19).unwrap_or("-"),
                 session.turns,
                 session.summary
             );
         }
+        println!("\nresume one with `keke resume <id>`, or the last one with `keke resume`");
         return Ok(());
     }
 
     let id = match &args.session {
-        Some(named) => uuid::Uuid::parse_str(named)
-            .map(keke_protocol::SessionId::from)
-            .map_err(|_| {
-                anyhow::anyhow!("`{named}` is not a session id; try `keke resume --list`")
-            })?,
+        // Any prefix of an id, because nobody retypes a UUID: `--list` prints
+        // the short form and this takes it back.
+        Some(typed) => match keke_core::find_session(home, typed)? {
+            keke_core::SessionMatch::One(session) => session.id,
+            // Invariant 8: two claimants and no way to choose is an error, not
+            // a pick — continuing the wrong conversation is silent and costly.
+            keke_core::SessionMatch::Ambiguous(candidates) => {
+                let named = candidates
+                    .iter()
+                    .map(|session| format!("  {}  {}", session.short_id(), session.summary))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                bail!("`{typed}` matches {} sessions:\n{named}", candidates.len());
+            }
+            keke_core::SessionMatch::None => {
+                bail!("no session starts with `{typed}`; `keke resume --list` shows what there is");
+            }
+        },
         None => {
             keke_core::latest_session(home)?
                 .ok_or_else(|| {

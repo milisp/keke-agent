@@ -45,6 +45,16 @@ pub struct SessionSummary {
     pub turns: usize,
 }
 
+impl SessionSummary {
+    /// The leading part of the id, which is what `--list` prints and what a
+    /// person types back. Long enough to be unique in practice, short enough to
+    /// copy by eye.
+    #[must_use]
+    pub fn short_id(&self) -> String {
+        self.id.to_string().chars().take(8).collect()
+    }
+}
+
 /// Everything needed to continue a session.
 #[derive(Clone, Debug)]
 pub struct ResumedSession {
@@ -55,6 +65,58 @@ pub struct ResumedSession {
     /// What the session has spent so far, summed over its turns.
     pub usage: Usage,
     pub cwd: Option<String>,
+}
+
+/// What a name a person typed matched.
+///
+/// A prefix that could mean two sessions is reported as ambiguous rather than
+/// resolved to the newest: invariant 8 — ambiguity fails loud — and the one
+/// place it could bite is the one where keke would silently continue the wrong
+/// conversation.
+#[derive(Clone, Debug)]
+pub enum SessionMatch {
+    One(Box<SessionSummary>),
+    /// Several sessions start with what was typed.
+    Ambiguous(Vec<SessionSummary>),
+    None,
+}
+
+/// Resolve what a person typed to one session.
+///
+/// A full id works, and so does any prefix of one — a UUID is not something
+/// anyone retypes correctly, and `--list` prints the short form for exactly
+/// this. Matching is case-insensitive and ignores dashes, so a prefix copied
+/// with or without them behaves the same.
+pub fn find_session(home: &AbsPath, typed: &str) -> Result<SessionMatch, RolloutError> {
+    let needle = normalize(typed);
+    if needle.is_empty() {
+        return Ok(SessionMatch::None);
+    }
+    let matched: Vec<SessionSummary> = list_sessions(home)?
+        .into_iter()
+        // A log with no turns holds no conversation, so it is not a candidate
+        // for continuing one — and counting it would make a prefix ambiguous
+        // against something nobody could have meant.
+        .filter(|session| session.turns > 0)
+        .filter(|session| normalize(&session.id.to_string()).starts_with(&needle))
+        .collect();
+
+    let mut found = matched;
+    Ok(match found.len() {
+        0 => SessionMatch::None,
+        1 => match found.pop() {
+            Some(session) => SessionMatch::One(Box::new(session)),
+            None => SessionMatch::None,
+        },
+        _ => SessionMatch::Ambiguous(found),
+    })
+}
+
+fn normalize(id: &str) -> String {
+    id.chars()
+        .filter(|ch| *ch != '-')
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
 }
 
 /// Every session under `home`, newest first.
@@ -88,9 +150,16 @@ pub fn list_sessions(home: &AbsPath) -> Result<Vec<SessionSummary>, RolloutError
     Ok(sessions)
 }
 
-/// The most recent session, or `None` when there is nothing to resume.
+/// The most recent session that actually holds a conversation.
+///
+/// Sessions with no turns are skipped. Opening the interface writes a log
+/// whether or not anybody says anything, so the newest file on disk is
+/// routinely an empty one — resuming that instead would look exactly like keke
+/// having lost the conversation the person meant.
 pub fn latest_session(home: &AbsPath) -> Result<Option<SessionSummary>, RolloutError> {
-    Ok(list_sessions(home)?.into_iter().next())
+    Ok(list_sessions(home)?
+        .into_iter()
+        .find(|session| session.turns > 0))
 }
 
 /// Read one session's log and rebuild what a session needs to continue it.
@@ -345,6 +414,79 @@ mod tests {
             },
         ];
         assert_eq!(history_from_log(&events), vec![Message::user("hello")]);
+    }
+
+    /// Write a log holding `turns` turns, and return its home.
+    fn home_with(sessions: &[(SessionId, usize)]) -> (tempfile::TempDir, AbsPath) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let home = AbsPath::new(root).expect("absolute");
+        std::fs::create_dir_all(sessions_dir(&home)).expect("sessions dir");
+
+        for (id, turns) in sessions {
+            let mut log = String::new();
+            for _ in 0..*turns {
+                let envelope = keke_protocol::SessionEventEnvelope {
+                    at: "2026-08-23T00:00:00Z".to_string(),
+                    event: SessionEvent::TurnStart {
+                        turn: TurnId::new(),
+                        input: Message::user("hi"),
+                    },
+                };
+                log.push_str(&serde_json::to_string(&envelope).expect("serialize"));
+                log.push('\n');
+            }
+            std::fs::write(sessions_dir(&home).join(format!("{id}.jsonl")), log).expect("write");
+        }
+        (dir, home)
+    }
+
+    /// Nobody retypes a UUID, so any prefix of one resolves.
+    #[test]
+    fn a_prefix_resolves_to_the_one_session_it_names() {
+        let id = SessionId::new();
+        let (_dir, home) = home_with(&[(id, 1)]);
+        let typed: String = id.to_string().chars().take(8).collect();
+        assert!(matches!(
+            find_session(&home, &typed).expect("reads"),
+            SessionMatch::One(session) if session.id == id
+        ));
+    }
+
+    /// Invariant 8: a prefix that could mean either is an error, not a pick.
+    #[test]
+    fn a_prefix_matching_two_sessions_is_ambiguous() {
+        let (_dir, home) = home_with(&[(SessionId::new(), 1), (SessionId::new(), 1)]);
+        // Every id here is a UUIDv7 minted in the same millisecond range, so
+        // the first character is shared; that is enough to be ambiguous.
+        let shared = "0";
+        assert!(matches!(
+            find_session(&home, shared).expect("reads"),
+            SessionMatch::Ambiguous(candidates) if candidates.len() == 2
+        ));
+    }
+
+    /// Opening the interface writes a log whether or not anybody speaks.
+    /// Resuming that instead of the last real conversation looks exactly like
+    /// keke having lost it.
+    #[test]
+    fn an_empty_session_is_never_what_gets_resumed() {
+        let spoken = SessionId::new();
+        let empty = SessionId::new();
+        let (_dir, home) = home_with(&[(spoken, 2), (empty, 0)]);
+        assert!(empty > spoken, "the empty log has to be the newer one");
+
+        let latest = latest_session(&home).expect("reads").expect("a session");
+        assert_eq!(latest.id, spoken);
+        assert!(matches!(
+            find_session(&home, &empty.to_string()).expect("reads"),
+            SessionMatch::None
+        ));
+    }
+
+    #[test]
+    fn a_prefix_ignores_dashes_and_case() {
+        assert_eq!(normalize("01A0-2D66"), "01a02d66");
     }
 
     #[test]
