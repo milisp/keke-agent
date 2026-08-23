@@ -1,78 +1,89 @@
 # keke
 
-> **keke** is an unbundled, BYOK, provider-agnostic AI coding harness built in Rust. 
-> Inspired by OpenAI codex, xAI grok-build, and deepseek-harness — 
-> featuring strict CI-enforced layering where vendor-specific behavior lives in 
-> replaceable plugins rather than a monolith.
+[![CI](https://github.com/milisp/keke/actions/workflows/ci.yml/badge.svg)](https://github.com/milisp/keke/actions)
 
-## Status
+[中文文档](README.zh-CN.md)
 
-`keke exec`, the ACP server, and the TUI all work end to end, with runtime plugin operations gated behind consent. `keke-mcp` speaks both the legacy (2025-06-18) and modern (2026-07-28) MCP protocol revisions, and the ACP server is built on Agent Client Protocol 2.0. Check [`docs/ROADMAP.md`](docs/ROADMAP.md) for the active roadmap.
+keke is a coding agent that runs locally in your terminal and works with any
+model — a subscription you already have, an API key, or a model on your own
+machine.
 
-## Design in one paragraph
+If you want keke in your editor, it serves the Agent Client Protocol over
+stdio. If you want it in a script or in CI, use `keke exec`. If you want a
+model it does not know about, declare it in `config.toml` — there is no
+vendor-specific code in the engine to change.
 
-Adding a vendor should mean adding two small crates (a model provider and an auth
-provider) plus one line in the composition root, with no change to the engine.
-Three seams make that possible — model providers, authentication, and tools —
-each defined by a dependency-light contract crate that vendors implement and the
-engine consumes. A layering check in CI keeps the engine from learning that any
-particular vendor exists.
+## Install
 
-See [`docs/architecture.md`](docs/architecture.md) for the reasoning, and
-[`AGENTS.md`](AGENTS.md) for the invariants contributors must hold.
+Download a prebuilt binary from the
+[latest release](https://github.com/milisp/keke/releases/latest), or build
+from source with `cargo build --release`.
 
 ## Try it
 
-Works out of the box with your existing API keys, local models, or CLI logins:
-
 ```sh
-# 1. Quick start with environment variables
-export ANTHROPIC_API_KEY=sk-ant-...  # or OPENAI_API_KEY, XAI_API_KEY
-keke exec "what does this project do?"
-
-# 2. Interactive logins
+# Sign in with a subscription you already pay for
 keke login codex
 keke login grok
 
-# 3. Resume & inspect sessions
-keke resume                          # pick up the last conversation
-keke doctor                          # inspect resolved providers & credentials
+# ...or bring a key
+export XAI_API_KEY=xai-...
 
+keke exec "what does this project do?"   # one-shot, for scripts and CI
+keke                                     # interactive TUI
+keke resume                              # pick the last conversation back up
+keke doctor                              # which providers and logins resolve
+```
 
-Point it at any endpoint without touching the code — declare
-it in `$KEKE_HOME/config.toml`:
+## What you can point it at
+
+| Provider | How you authenticate | Notes |
+| --- | --- | --- |
+| OpenAI / ChatGPT | `keke login codex`, or `OPENAI_API_KEY` | OAuth flow ported from codex |
+| xAI Grok | `keke login grok`, or `XAI_API_KEY` | Built in; the default provider |
+| Anthropic | `env-key` in `config.toml` | Declare with `wire = "messages"` |
+| Local (Ollama, vLLM, …) | none | Your code never leaves the machine |
+| Any OpenAI-compatible gateway | `env-key` in `config.toml` | Company proxies, NVIDIA NIM, routers |
+
+Anything not built in is a few lines of `$KEKE_HOME/config.toml`, not a code
+change:
 
 ```toml
 [providers.ollama]
 base-url = "http://localhost:11434/v1"
 default-model = "gpt-oss:20b"
+
+[providers.anthropic]
+base-url = "https://api.anthropic.com"
+env-key = "ANTHROPIC_API_KEY"
+wire = "messages"
 ```
 
-`wire = "chat-completions" | "responses" | "messages"` picks the format; the
-default is chat completions.
+`wire` picks the request format — `chat-completions` (the default),
+`responses`, or `messages` — so a new endpoint is a config entry rather than a release.
 
-## Layout
+## Status
 
-```
-crates/
-  keke-paths  keke-protocol  keke-tool                 # tier 0: contracts
-  keke-config-types  keke-provider-api  keke-auth-api
-  keke-plugin-api
-  keke-core  keke-config  keke-credentials  keke-workspace   # tier 1: engine
-  keke-wire                                                  # the three wire formats
-  keke-provider-grok                                          # tier 2: plugins
-  keke-auth-grok  keke-auth-codex  keke-tools
-  keke-cli                                                    # tier 3: surfaces
-```
+Usable day to day. `keke exec`, the TUI, and the ACP server all run real
+sessions end to end; runtime plugins (skills, commands, hooks, MCP servers)
+install in the Claude Code format, and repository-provided ones stay inert
+until you approve them. Switching models inside a running session is not
+implemented yet — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-## Development
+## Where it comes from
 
-```sh
-cargo fmt --all --check
-RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets
-cargo test --workspace
-python3 scripts/check-layering.py
-```
+keke is built on what three open agents already proved out: the OAuth login
+flows of OpenAI's **codex** (ported, and attributed in the crate that carries
+them), the model and wire coverage of xAI's **grok-build**, and the
+seam-first architecture that **deepseek-harness** argues for.
+
+What keke does differently is refuse to let vendor knowledge into the middle.
+codex's own contributor guide says *"resist adding code to codex-core"*, and
+`codex-core` still depends on 68 internal crates today — prose did not hold
+that line. In keke, `scripts/check-layering.py` holds it and fails CI instead,
+which is why adding a vendor stays a plugin plus one line in the composition
+root. See [`docs/architecture.md`](docs/architecture.md) for the reasoning and
+[`AGENTS.md`](AGENTS.md) for the invariants.
 
 ## License
 
