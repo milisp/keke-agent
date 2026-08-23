@@ -97,22 +97,20 @@ fn permission_lines(prompt: &PermissionCell, width: usize) -> Vec<Line<'static>>
         Style::new().fg(THINKING),
         width,
     );
-    lines.push(match prompt.answer {
-        None => Line::styled(
+    // Only while it is a question, plus the one answer the marker cannot
+    // spell: ✓ and ⊘ already say allowed and denied, and a key list under a
+    // prompt nobody can still answer is an instruction that does nothing.
+    match prompt.answer {
+        None => lines.push(Line::styled(
             "    [y] allow  [a] always allow  [n] deny".to_string(),
             style,
-        ),
-        Some(answer) => Line::styled(format!("    answered: {}", label(answer)), style),
-    });
-    lines
-}
-
-fn label(answer: PermissionAnswer) -> &'static str {
-    match answer {
-        PermissionAnswer::Allow => "allowed",
-        PermissionAnswer::AllowAlways => "always allowed",
-        PermissionAnswer::Deny => "denied",
+        )),
+        Some(PermissionAnswer::AllowAlways) => {
+            lines.push(Line::styled("    always allowed".to_string(), style));
+        }
+        Some(_) => {}
     }
+    lines
 }
 
 /// Wrap `text` to `width`, prefixing the first line and indenting the rest so

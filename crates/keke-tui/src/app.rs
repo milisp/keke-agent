@@ -78,6 +78,24 @@ pub struct App {
     /// accounted for.
     usage: Usage,
     show_thinking: bool,
+    /// Whether keke is asking the terminal for mouse events. On, because the
+    /// wheel and the jump-to-bottom button need them. The terminal's own
+    /// drag-select is then behind that terminal's bypass modifier — shift in
+    /// most, option or fn on macOS — so `/mouse` exists for the terminals
+    /// where there is none.
+    mouse_capture: bool,
+    /// Where the jump-to-bottom button was drawn, as `(x, y, width)`. A click
+    /// arrives as a screen position and nothing else, so the only thing that
+    /// can say what was clicked is the frame that drew it.
+    follow_button: Option<(u16, u16, u16)>,
+    /// A word about something keke just did for the person at the keyboard —
+    /// copied, resumed. It goes in the status bar and expires, never into
+    /// the transcript: the transcript is the conversation, and a line in it
+    /// reads as something the agent said.
+    flash: Option<(String, Instant)>,
+    /// Text waiting to go to the clipboard. Held rather than written here so
+    /// the state tests never touch a terminal.
+    pending_copy: Option<String>,
     should_quit: bool,
 }
 
@@ -103,6 +121,10 @@ impl App {
                 last_turn: None,
                 usage: Usage::default(),
                 show_thinking: true,
+                mouse_capture: true,
+                follow_button: None,
+                flash: None,
+                pending_copy: None,
                 should_quit: false,
             },
             local_updates,
@@ -178,8 +200,27 @@ impl App {
 
     /// Whether a turn is on the clock, so the caller redraws on a timer rather
     /// than only when something arrives.
+    /// Whether anything on screen changes on its own. A flash counts only
+    /// while it is live: an expired one must not keep an idle interface
+    /// redrawing forever.
     pub fn is_timing(&self) -> bool {
-        self.started.is_some()
+        self.started.is_some() || self.flash().is_some()
+    }
+
+    /// How long a flash stays up. Long enough to read, short enough that it is
+    /// gone before it can be mistaken for state.
+    const FLASH: Duration = Duration::from_secs(5);
+
+    /// The current flash, if it has not expired.
+    pub fn flash(&self) -> Option<&str> {
+        self.flash
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < Self::FLASH)
+            .map(|(text, _)| text.as_str())
+    }
+
+    fn set_flash(&mut self, text: impl Into<String>) {
+        self.flash = Some((text.into(), Instant::now()));
     }
 
     pub fn show_thinking(&self) -> bool {
@@ -192,6 +233,70 @@ impl App {
 
     pub fn toggle_thinking(&mut self) {
         self.show_thinking = !self.show_thinking;
+    }
+
+    pub fn mouse_capture(&self) -> bool {
+        self.mouse_capture
+    }
+
+    /// Give the mouse back to the terminal, or take it again.
+    ///
+    /// For the terminal that has no bypass modifier for drag-select. Nothing
+    /// on screen advertises this; a person who needs it is a person who has
+    /// already gone looking for it in `/help`.
+    pub fn toggle_mouse_capture(&mut self) {
+        self.mouse_capture = !self.mouse_capture;
+        self.set_flash(if self.mouse_capture {
+            "mouse captured — the wheel scrolls keke"
+        } else {
+            "mouse released to the terminal — the wheel and the buttons stop"
+        });
+    }
+
+    /// Told by `draw` where the jump-to-bottom button ended up, or that it was
+    /// not drawn at all.
+    pub(crate) fn set_follow_button(&mut self, area: Option<(u16, u16, u16)>) {
+        self.follow_button = area;
+    }
+
+    /// Whether a click at these coordinates hit the jump-to-bottom button.
+    pub fn hit_follow_button(&self, column: u16, row: u16) -> bool {
+        self.follow_button.is_some_and(|(x, y, width)| {
+            row == y && column >= x && column < x.saturating_add(width)
+        })
+    }
+
+    ///
+    /// The transcript has no cursor, so there is nothing else it could mean:
+    /// what a person reaches for after reading an answer is that answer.
+    pub fn copy_last_reply(&mut self) {
+        let reply = self
+            .transcript
+            .cells()
+            .iter()
+            .rev()
+            .find_map(|cell| match cell {
+                Cell::Assistant(text) => Some(text.clone()),
+                _ => None,
+            });
+        match reply {
+            Some(text) if !text.trim().is_empty() => {
+                self.copy(text);
+            }
+            _ => self.set_flash("nothing to copy yet"),
+        }
+    }
+
+    /// Put `text` on the clipboard and say so.
+    fn copy(&mut self, text: String) {
+        let lines = text.lines().count();
+        self.set_flash(format!("copied {lines} lines"));
+        self.pending_copy = Some(text);
+    }
+
+    /// Taken by the event loop, which owns the terminal this has to reach.
+    pub fn take_pending_copy(&mut self) -> Option<String> {
+        self.pending_copy.take()
     }
 
     pub fn quit(&mut self) {
@@ -250,8 +355,18 @@ impl App {
     }
 
     /// Show something the host wants said without printing over the interface.
+    ///
+    /// These go in the transcript because a login URL or a device code has to
+    /// stay put long enough to be read off the screen and typed elsewhere.
     pub fn apply_notice(&mut self, notice: Notice) {
         self.transcript.push(Cell::Notice(notice.to_string()));
+    }
+
+    /// Say something about the session itself — that it was resumed, and from
+    /// where. Not a transcript cell: nobody said it, and a line sitting above
+    /// the first reply reads as if the agent opened the conversation with it.
+    pub fn announce(&mut self, text: impl Into<String>) {
+        self.set_flash(text);
     }
 
     /// Send whatever is in the input box, if anything.
@@ -454,6 +569,8 @@ impl App {
                 self.scroll.follow();
             }
             SlashAction::Builtin(Builtin::Quit) => self.should_quit = true,
+            SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
+            SlashAction::Builtin(Builtin::Mouse) => self.toggle_mouse_capture(),
             SlashAction::Builtin(Builtin::Thinking) => {
                 self.toggle_thinking();
                 let state = if self.show_thinking {

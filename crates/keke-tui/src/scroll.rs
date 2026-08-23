@@ -36,6 +36,12 @@ impl Scrollback {
         self.top.is_none()
     }
 
+    /// How many lines sit below the viewport. Zero while following.
+    pub fn below(&self) -> usize {
+        self.total
+            .saturating_sub(self.offset().saturating_add(self.height))
+    }
+
     /// The pinned line, for tests asserting that output did not move the view.
     pub fn pinned_top(&self) -> Option<usize> {
         self.top

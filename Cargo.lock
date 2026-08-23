@@ -1905,6 +1905,7 @@ name = "keke-tui"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "base64",
  "crossterm 0.29.0",
  "futures",
  "keke-acp",

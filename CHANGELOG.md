@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- `^Y` / `/copy` puts the last reply on the clipboard, via OSC 52 so it works
+  over ssh and inside a multiplexer.
+- A prompt taller than the composer scrolls inside it instead of hiding the
+  cursor.
+- A count of what is below, centred under the transcript while the reader has
+  scrolled back, and clickable to get back to the tail.
+- `/mouse` gives the mouse back to the terminal, for terminals with no bypass
+  modifier for drag-select.
+- A status-bar flash for what keke just did — copied, resumed — which expires
+  instead of accumulating in the transcript.
+
+### Changed
+- The wheel scrolls the conversation, by mouse capture where the terminal
+  takes it and by alternate scroll mode where it does not — an empty composer
+  gives the arrow keys to the transcript.
+- Prompt history moved to Ctrl-P / Ctrl-N. The arrows could not be relied on
+  for it once the wheel started arriving as arrow keys.
+- Resuming a session says so in the status bar instead of opening the
+  transcript with a line that reads as something the agent said.
+- An answered approval no longer keeps its key list on screen, and only
+  "always allowed" is spelled out — the ✓ and ⊘ markers already say the rest.
+
+### Removed
+- The status bar no longer captions its own key bindings.
+
 ## [0.1.1] - 2026-08-23
 
 ### Fixed

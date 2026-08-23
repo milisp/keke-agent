@@ -7,11 +7,15 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use keke_acp::PermissionAnswer;
 
 use crate::app::App;
+
+/// How many transcript lines one wheel notch moves.
+const WHEEL_LINES: usize = 3;
 
 /// The keys the completion menu takes over while it is open.
 fn menu_key(code: KeyCode) -> bool {
@@ -20,9 +24,6 @@ fn menu_key(code: KeyCode) -> bool {
         KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::Enter | KeyCode::Esc
     )
 }
-
-/// How many transcript lines one wheel notch moves.
-const WHEEL_LINES: usize = 3;
 
 impl App {
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -39,6 +40,7 @@ impl App {
             KeyCode::Char('d') if control => self.quit(),
             KeyCode::Char('t') if control => self.toggle_thinking(),
             KeyCode::Char('l') if control => self.scroll.follow(),
+            KeyCode::Char('y') if control => self.copy_last_reply(),
             KeyCode::PageUp => self.scroll.page_up(),
             KeyCode::PageDown => self.scroll.page_down(),
             // Shift+Enter is invisible to a terminal without the Kitty keyboard
@@ -54,6 +56,10 @@ impl App {
             KeyCode::Char('u') if control => self.input.kill_to_start(),
             KeyCode::Char('k') if control => self.input.kill_to_end(),
             KeyCode::Char('w') if control => self.input.delete_word_before(),
+            // History, always, whatever the composer holds — the arrows cannot
+            // be relied on for it now that the wheel arrives as arrow keys.
+            KeyCode::Char('p') if control => self.recall_older(),
+            KeyCode::Char('n') if control => self.recall_newer(),
             KeyCode::Enter if shift || alt => self.input.insert_newline(),
             // Shift-Tab reaches a terminal as `BackTab`, except where it does
             // not; both spellings mean the same gesture.
@@ -83,26 +89,64 @@ impl App {
     /// Up moves within a multi-line prompt first and recalls a past one only
     /// from the top line, so the arrow keys never yank away text somebody is
     /// still editing further down.
+    ///
+    /// With nothing typed the arrows belong to the transcript instead. That is
+    /// not a preference: a terminal in the alternate screen turns the wheel
+    /// into arrow keys, so an empty composer that answered them with history
+    /// recall meant scrolling the conversation moved the prompt box. Recall is
+    /// on Ctrl-P and Ctrl-N, where a terminal person already expects it.
     fn move_up(&mut self) {
+        if self.input.is_empty() {
+            self.scroll.scroll_up(1);
+            return;
+        }
         if self.input.cursor().0 > 0 {
             self.input.move_up();
             return;
         }
+        self.recall_older();
+    }
+
+    /// Down is Up's mirror: it walks back toward the newest prompt and then to
+    /// whatever draft was interrupted, but only from the last line.
+    fn move_down(&mut self) {
+        if self.input.is_empty() {
+            self.scroll.scroll_down(1);
+            return;
+        }
+        if self.input.cursor().0 + 1 < self.input.rows() {
+            self.input.move_down();
+            return;
+        }
+        self.recall_newer();
+    }
+
+    fn recall_older(&mut self) {
         let current = self.input.text();
         if let Some(prompt) = self.history.older(&current) {
             self.input.set_text(&prompt);
         }
     }
 
-    /// Down is Up's mirror: it walks back toward the newest prompt and then to
-    /// whatever draft was interrupted, but only from the last line.
-    fn move_down(&mut self) {
-        if self.input.cursor().0 + 1 < self.input.rows() {
-            self.input.move_down();
-            return;
-        }
+    fn recall_newer(&mut self) {
         if let Some(prompt) = self.history.newer() {
             self.input.set_text(&prompt);
+        }
+    }
+
+    /// The wheel scrolls the transcript, and the count of what is below it is
+    /// a button back to the bottom: the pointer is already there when a reader
+    /// decides they are done looking back.
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll.scroll_up(WHEEL_LINES),
+            MouseEventKind::ScrollDown => self.scroll.scroll_down(WHEEL_LINES),
+            MouseEventKind::Down(MouseButton::Left)
+                if self.hit_follow_button(mouse.column, mouse.row) =>
+            {
+                self.scroll.follow();
+            }
+            _ => {}
         }
     }
 
@@ -136,22 +180,5 @@ impl App {
             }
             _ => {}
         }
-    }
-
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) {
-        match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll.scroll_up(WHEEL_LINES),
-            MouseEventKind::ScrollDown => self.scroll.scroll_down(WHEEL_LINES),
-            _ => {}
-        }
-    }
-}
-
-/// The one-line binding reminder in the status bar.
-pub(crate) fn hints(awaiting_permission: bool) -> &'static str {
-    if awaiting_permission {
-        "y allow · a always · n deny · ^C cancel"
-    } else {
-        "shift-tab mode · ^T thinking"
     }
 }

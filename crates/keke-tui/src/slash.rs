@@ -33,6 +33,10 @@ pub enum Builtin {
     Mode,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
+    /// Puts the last reply on the system clipboard.
+    Copy,
+    /// Gives the mouse back to the terminal, or takes it again.
+    Mouse,
 }
 
 /// One entry in the command list.
@@ -154,6 +158,11 @@ fn builtins() -> Vec<SlashCommand> {
             "cycle the reasoning effort, or name one: low, medium, high, xhigh, max, default",
         ),
         (Builtin::Thinking, "thinking", "show or hide reasoning"),
+        (
+            Builtin::Copy,
+            "copy",
+            "copy the last reply to the clipboard",
+        ),
         (Builtin::Quit, "quit", "leave keke"),
     ]
     .into_iter()

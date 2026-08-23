@@ -7,6 +7,7 @@
 //! terminal.
 
 mod app;
+mod clipboard;
 pub(crate) mod draw;
 mod history;
 mod input;
@@ -17,6 +18,7 @@ pub mod slash;
 mod transcript;
 
 use std::io;
+use std::io::Write;
 use std::sync::Arc;
 
 use crossterm::event::DisableMouseCapture;
@@ -60,7 +62,9 @@ pub use transcript::Transcript;
 pub struct Resumed {
     pub history: Vec<keke_protocol::Message>,
     pub usage: keke_protocol::Usage,
-    /// Shown once at the top, e.g. `resumed session … (12 messages)`.
+    /// Said once in the status bar, e.g. `resumed session … (12 messages)`.
+    /// The restored conversation is already on screen; this is only about
+    /// where it came from, so it expires rather than joining it.
     pub notice: Option<String>,
 }
 
@@ -90,7 +94,7 @@ pub async fn run(
         app = app.with_history(&resumed.history, resumed.usage);
     }
     if let Some(notice) = resumed.notice {
-        app.apply_notice(Notice::Message(notice));
+        app.announce(notice);
     }
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no
@@ -102,15 +106,27 @@ pub async fn run(
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
+/// Alternate scroll mode, for the terminal where mouse capture does not take:
+/// the wheel then arrives as arrow keys, which an empty composer gives to the
+/// transcript. Harmless where capture does take — capture wins — and it is
+/// also what keeps the wheel working after `/mouse`.
+const ALTERNATE_SCROLL_ON: &str = "\x1b[?1007h";
+const ALTERNATE_SCROLL_OFF: &str = "\x1b[?1007l";
+
 fn enter() -> anyhow::Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    stdout.write_all(ALTERNATE_SCROLL_ON.as_bytes())?;
+    stdout.flush()?;
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
 }
 
 fn leave(terminal: &mut Tui) -> anyhow::Result<()> {
     disable_raw_mode()?;
+    let mut stdout = io::stdout();
+    stdout.write_all(ALTERNATE_SCROLL_OFF.as_bytes())?;
+    stdout.flush()?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
@@ -134,6 +150,7 @@ async fn event_loop(
     mut local: UnboundedReceiver<Update>,
 ) -> anyhow::Result<()> {
     let mut input = EventStream::new();
+    let mut capturing = true;
     terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
     while !app.should_quit() {
@@ -160,6 +177,20 @@ async fn event_loop(
                 None => break,
             },
             else => break,
+        }
+        // The one thing the app cannot do for itself: the clipboard is the
+        // terminal's, and the terminal is the event loop's.
+        if let Some(text) = app.take_pending_copy() {
+            clipboard::copy(&text);
+        }
+        if app.mouse_capture() != capturing {
+            capturing = app.mouse_capture();
+            let mut stdout = io::stdout();
+            if capturing {
+                execute!(stdout, EnableMouseCapture)?;
+            } else {
+                execute!(stdout, DisableMouseCapture)?;
+            }
         }
         terminal.draw(|frame| draw::draw(frame, &mut app))?;
     }

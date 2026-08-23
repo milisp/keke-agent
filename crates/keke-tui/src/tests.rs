@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
 use keke_acp::PermissionAnswer;
 use keke_acp::PermissionId;
 use keke_acp::ScriptedConversation;
@@ -50,6 +51,32 @@ fn app_with(
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn mouse(kind: crossterm::event::MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn click(column: u16, row: u16) -> MouseEvent {
+    mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column,
+        row,
+    )
+}
+
+fn wheel(up: bool) -> MouseEvent {
+    let kind = if up {
+        crossterm::event::MouseEventKind::ScrollUp
+    } else {
+        crossterm::event::MouseEventKind::ScrollDown
+    };
+    mouse(kind, 0, 0)
 }
 
 fn control(ch: char) -> KeyEvent {
@@ -264,6 +291,123 @@ fn hiding_thinking_is_a_filter_not_a_deletion() {
             .iter()
             .any(|cell| matches!(cell, Cell::Thinking(_)))
     );
+}
+
+#[test]
+fn copying_takes_the_last_reply_and_hands_it_over_once() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::TextDelta("first answer".to_string()));
+    app.apply(Update::TurnEnded(StopReason::EndTurn));
+    app.apply(Update::TextDelta("second answer".to_string()));
+
+    app.handle_key(control('y'));
+    assert_eq!(app.take_pending_copy().as_deref(), Some("second answer"));
+    // Taken once: a copy that repeated itself every frame would fight the
+    // terminal for the clipboard.
+    assert_eq!(app.take_pending_copy(), None);
+}
+
+/// A login notice has to stay readable; where the session came from does not.
+#[test]
+fn resuming_is_said_in_the_status_bar_and_not_in_the_conversation() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    let before = app.transcript.len();
+    app.announce("resumed session abc — 12 message(s)");
+
+    assert_eq!(app.flash(), Some("resumed session abc — 12 message(s)"));
+    assert_eq!(app.transcript.len(), before);
+}
+
+#[test]
+fn copying_says_so_in_the_status_bar_and_not_in_the_conversation() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::TextDelta("an answer".to_string()));
+    let before = app.transcript.len();
+
+    app.handle_key(control('y'));
+    assert!(app.flash().is_some());
+    // A line in the transcript reads as something the agent said.
+    assert_eq!(app.transcript.len(), before);
+}
+
+#[test]
+fn copying_nothing_flashes_rather_than_copying_an_empty_clipboard() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.handle_key(control('y'));
+    assert_eq!(app.take_pending_copy(), None);
+    assert_eq!(app.flash(), Some("nothing to copy yet"));
+}
+
+/// A prompt taller than the box scrolls inside it rather than hiding the
+/// cursor, and the count under the transcript is how a reader who scrolled
+/// away learns output is still arriving.
+#[test]
+fn a_long_prompt_keeps_its_cursor_on_screen() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    for at in 0..20 {
+        app.input
+            .set_text(&format!("{}line {at}", app.input.text() + "\n"));
+    }
+    let rows = crate::draw::input::rows(&app);
+    // Bounded: the transcript keeps the screen no matter how long the prompt.
+    assert_eq!(rows, crate::draw::input::MAX_ROWS + 2);
+
+    let (row, _) = app.input.cursor();
+    let visible = usize::from(rows - 2);
+    assert!(row >= visible, "the cursor is past the bottom of the box");
+}
+
+/// The wheel reaches keke as arrow keys — that is what alternate scroll mode
+/// does — so an empty composer has to give them to the transcript.
+#[test]
+fn the_arrows_scroll_the_conversation_when_nothing_is_typed() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.scroll.measure(100, 10);
+
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.scroll.pinned_top(), Some(89));
+    assert!(app.input.is_empty(), "the prompt box was left alone");
+    app.handle_key(key(KeyCode::Down));
+    assert!(app.scroll.is_following());
+}
+
+/// The count of what is below is a button: clicking it goes back to the tail.
+#[test]
+fn clicking_the_count_below_follows_the_conversation_again() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.scroll.measure(100, 10);
+    app.scroll.scroll_up(20);
+    app.set_follow_button(Some((10, 9, 16)));
+
+    // A click beside it is not a click on it.
+    app.handle_mouse(click(2, 9));
+    assert!(!app.scroll.is_following());
+
+    app.handle_mouse(click(12, 9));
+    assert!(app.scroll.is_following());
+}
+
+#[test]
+fn the_wheel_scrolls_the_conversation() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.scroll.measure(100, 10);
+    app.handle_mouse(wheel(true));
+    assert_eq!(app.scroll.pinned_top(), Some(87));
+    // Back at the bottom is following again, not a pin that happens to equal it.
+    app.handle_mouse(wheel(false));
+    assert!(app.scroll.is_following());
+}
+
+#[test]
+fn scrolling_back_counts_what_is_below_and_following_does_not() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.scroll.measure(50, 10);
+    assert_eq!(app.scroll.below(), 0);
+
+    app.scroll.scroll_up(5);
+    assert_eq!(app.scroll.below(), 5);
+    app.handle_key(control('l'));
+    assert_eq!(app.scroll.below(), 0);
 }
 
 #[test]
@@ -741,21 +885,21 @@ async fn a_resumed_history_is_replayed_onto_the_screen() {
     assert!(matches!(&cells[2], Cell::Assistant(text) if text == "here it is"));
 }
 
-/// Up from the top line brings back what was typed before, oldest last first.
+/// Ctrl-P brings back what was typed before, newest first.
 #[test]
-fn the_up_arrow_recalls_the_last_prompt() {
+fn ctrl_p_recalls_the_last_prompt() {
     let (app, _scripted, _updates, _local) = app_with(vec![vec![]]);
     let mut app = app.with_prompt_history(crate::PromptHistory::new(vec![
         "first".to_string(),
         "second".to_string(),
     ]));
 
-    app.handle_key(key(KeyCode::Up));
+    app.handle_key(control('p'));
     assert_eq!(app.input.text(), "second");
-    app.handle_key(key(KeyCode::Up));
+    app.handle_key(control('p'));
     assert_eq!(app.input.text(), "first");
     // The oldest is the end of the road, not a wrap-around to the newest.
-    app.handle_key(key(KeyCode::Up));
+    app.handle_key(control('p'));
     assert_eq!(app.input.text(), "first");
 }
 
@@ -804,7 +948,7 @@ async fn a_submitted_prompt_joins_the_history() {
     app.handle_key(key(KeyCode::Enter));
     assert!(app.input.is_empty());
 
-    app.handle_key(key(KeyCode::Up));
+    app.handle_key(control('p'));
     assert_eq!(app.input.text(), "do the thing");
 }
 

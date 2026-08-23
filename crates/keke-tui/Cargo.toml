@@ -13,6 +13,7 @@ keke-auth-api = { workspace = true }
 keke-config-types = { workspace = true }
 keke-protocol = { workspace = true }
 anyhow = { workspace = true }
+base64 = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 futures = { workspace = true }
 ratatui = { workspace = true }

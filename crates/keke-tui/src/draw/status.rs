@@ -11,7 +11,6 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::app::Turn;
-use crate::keys;
 
 /// `12s`, `1m20s`, `1h02m`. Seconds until a minute, then minutes, because past
 /// an hour the seconds are noise and the column would keep changing width.
@@ -91,19 +90,14 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::DarkGray),
         ));
     }
-    // Say so out loud: a reader who has scrolled up and stopped seeing new
-    // output needs to know the output is still arriving.
-    if !app.scroll.is_following() {
+    // Whatever keke just did on this person's behalf, briefly. Last, because
+    // it is the only thing here that is news rather than state.
+    if let Some(flash) = app.flash() {
         spans.push(Span::styled(
-            "· scrolled back (^L to follow) ",
-            Style::new().fg(Color::Yellow),
+            format!("· {flash} "),
+            Style::new().fg(Color::Green),
         ));
     }
-    spans.push(Span::styled(
-        keys::hints(app.turn() == Turn::AwaitingPermission),
-        Style::new().fg(Color::DarkGray),
-    ));
-
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

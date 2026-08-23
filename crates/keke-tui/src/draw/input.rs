@@ -38,15 +38,27 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         .title(title);
     let inner = block.inner(area);
 
-    let lines: Vec<Line> = app.input.lines().iter().map(Line::raw).collect();
+    // A prompt longer than the box scrolls inside it, anchored so the cursor
+    // is always on screen: text that has been typed but cannot be seen is
+    // worse than a box that grew.
+    let (row, column) = app.input.cursor();
+    let visible = usize::from(rows(app).saturating_sub(2));
+    let first = row.saturating_sub(visible.saturating_sub(1));
+    let lines: Vec<Line> = app
+        .input
+        .lines()
+        .iter()
+        .skip(first)
+        .take(visible)
+        .map(Line::raw)
+        .collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
 
     // No cursor while blocked: the keyboard is answering the prompt, and a
     // blinking caret in a box that ignores letters is a lie.
     if !blocked {
-        let (row, column) = app.input.cursor();
         let x = inner.x + u16::try_from(column).unwrap_or(0);
-        let y = inner.y + u16::try_from(row).unwrap_or(0);
+        let y = inner.y + u16::try_from(row - first).unwrap_or(0);
         if x < inner.right() && y < inner.bottom() {
             frame.set_cursor_position((x, y));
         }
