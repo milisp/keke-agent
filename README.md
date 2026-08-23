@@ -1,6 +1,6 @@
 # keke
 
-[![CI](https://github.com/milisp/keke/actions/workflows/ci.yml/badge.svg)](https://github.com/milisp/keke/actions)
+[![CI](https://github.com/milisp/keke-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/milisp/keke-agent/actions)
 
 [中文文档](README.zh-CN.md)
 
@@ -16,7 +16,7 @@ vendor-specific code in the engine to change.
 ## Install
 
 Download a prebuilt binary from the
-[latest release](https://github.com/milisp/keke/releases/latest), or build
+[latest release](https://github.com/milisp/keke-agent/releases/latest), or build
 from source with `cargo build --release`.
 
 ## Try it

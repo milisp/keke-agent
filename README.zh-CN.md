@@ -1,6 +1,6 @@
 # keke
 
-[![CI](https://github.com/milisp/keke/actions/workflows/ci.yml/badge.svg)](https://github.com/milisp/keke/actions)
+[![CI](https://github.com/milisp/keke-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/milisp/keke-agent/actions)
 
 [English](README.md)
 
@@ -13,7 +13,7 @@ keke 是一个运行在本地终端的编码 agent，可以搭配任意模型使
 
 ## 安装
 
-从 [latest release](https://github.com/milisp/keke/releases/latest) 下载
+从 [latest release](https://github.com/milisp/keke-agent/releases/latest) 下载
 预编译二进制文件，或者用 `cargo build --release` 从源码构建。
 
 ## 试一试

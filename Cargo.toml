@@ -7,7 +7,7 @@ version = "0.1.1"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
-repository = "https://github.com/milisp/keke"
+repository = "https://github.com/milisp/keke-agent"
 
 [workspace.dependencies]
 # --- tier 0: contract crates (keep these dependency-light) ---

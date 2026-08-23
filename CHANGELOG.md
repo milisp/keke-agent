@@ -73,4 +73,4 @@ Foundational engine, TUI, provider wiring, and plugin system:
 - History summarization to keep long sessions inside the context window.
 - `docs/PROGRESS.md` / `docs/ROADMAP.md` tracking crate status and next steps.
 
-[0.1.1]: https://github.com/milisp/keke/releases/tag/v0.1.1
+[0.1.1]: https://github.com/milisp/keke-agent/releases/tag/v0.1.1
