@@ -3,8 +3,9 @@
 A multi-vendor terminal coding agent, built so that vendor-specific behavior
 lives in replaceable plugins rather than in a monolith.
 
-> Status: `keke exec` works end to end — a turn runs, tools execute, and the
-> session is recorded in a replayable log. The ACP server and the TUI are next.
+> Status: `keke exec`, the ACP server, and the TUI all work end to end, with
+> runtime plugin install/update/remove gated behind consent. See
+> [`docs/PROGRESS.md`](docs/PROGRESS.md) for what's done and what's next.
 
 ## Design in one paragraph
 
