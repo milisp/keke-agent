@@ -82,6 +82,25 @@ impl GrokAuthConfig {
     pub(crate) fn scope_param(&self) -> String {
         self.scopes.join(" ")
     }
+
+    fn base(&self) -> &str {
+        self.issuer.trim_end_matches('/')
+    }
+
+    /// What [`Self::new`] would have derived, which is how a caller tells an
+    /// endpoint a deployment stated from one this crate guessed — see
+    /// [`crate::discovery`].
+    pub(crate) fn derived_authorize_endpoint(&self) -> String {
+        format!("{}/oauth2/authorize", self.base())
+    }
+
+    pub(crate) fn derived_token_endpoint(&self) -> String {
+        format!("{}/oauth2/token", self.base())
+    }
+
+    pub(crate) fn derived_device_authorization_endpoint(&self) -> String {
+        format!("{}/oauth2/device/code", self.base())
+    }
 }
 
 impl Default for GrokAuthConfig {

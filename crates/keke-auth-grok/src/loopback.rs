@@ -35,6 +35,7 @@ pub(crate) async fn bind() -> std::io::Result<TcpListener> {
 
 pub(crate) async fn run(
     http: &Client,
+    discovery: &crate::discovery::Cache,
     config: &GrokAuthConfig,
     ui: &dyn LoginUi,
     listener: TcpListener,
@@ -47,7 +48,13 @@ pub(crate) async fn run(
 
     let pkce = Pkce::generate();
     let state = random_token(16);
-    let url = authorize_url(config, &redirect_uri, &pkce, &state)?;
+    let url = authorize_url(
+        &crate::discovery::authorize_endpoint(http, discovery, config).await,
+        config,
+        &redirect_uri,
+        &pkce,
+        &state,
+    )?;
 
     ui.open_browser(url.as_str());
     ui.notice("waiting for the browser to complete sign-in");
@@ -58,7 +65,7 @@ pub(crate) async fn run(
 
     let tokens = exchange(
         http,
-        &config.token_endpoint,
+        &crate::discovery::token_endpoint(http, discovery, config).await,
         &[
             ("grant_type", "authorization_code"),
             ("code", code.as_str()),
@@ -73,12 +80,13 @@ pub(crate) async fn run(
 }
 
 fn authorize_url(
+    authorize_endpoint: &str,
     config: &GrokAuthConfig,
     redirect_uri: &str,
     pkce: &Pkce,
     state: &str,
 ) -> Result<Url, AuthError> {
-    let mut url = Url::parse(&config.authorize_endpoint)
+    let mut url = Url::parse(authorize_endpoint)
         .map_err(|err| AuthError::Other(format!("authorize endpoint is not a URL: {err}")))?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -225,7 +233,14 @@ mod tests {
     fn the_authorize_url_carries_the_s256_challenge() {
         let config = GrokAuthConfig::new("https://issuer.test", "client-1");
         let pkce = Pkce::generate();
-        let url = authorize_url(&config, "http://127.0.0.1:1234/callback", &pkce, "st").unwrap();
+        let url = authorize_url(
+            &config.authorize_endpoint,
+            &config,
+            "http://127.0.0.1:1234/callback",
+            &pkce,
+            "st",
+        )
+        .unwrap();
         let params: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
         assert_eq!(params["response_type"], "code");
         assert_eq!(params["code_challenge_method"], "S256");
