@@ -2,7 +2,10 @@
 //!
 //! Lines are held as a `Vec<String>` with a `(row, column)` cursor measured in
 //! characters. Bytes would put the cursor inside a codepoint the first time
-//! someone pastes a path with an accent in it.
+//! someone pastes a path with an accent in it. The terminal is told where the
+//! cursor is in cells instead: see [`InputBox::cursor_display`].
+
+use unicode_width::UnicodeWidthStr as _;
 
 /// A multi-line text buffer with a cursor.
 #[derive(Debug, Default)]
@@ -24,6 +27,49 @@ impl InputBox {
     /// Cursor as `(row, column)` in characters.
     pub fn cursor(&self) -> (usize, usize) {
         (self.row, self.column)
+    }
+
+    /// Cursor as `(row, column)` in terminal cells.
+    ///
+    /// A cell is not a character: a CJK character is one character and two
+    /// cells wide, so a cursor placed by character index lands inside the text
+    /// rather than after it. The terminal draws in cells, so the position
+    /// handed to it is measured in cells.
+    pub fn cursor_display(&self) -> (usize, usize) {
+        let line = self.line();
+        let at = byte_index(line, self.column);
+        (self.row, line[..at].width())
+    }
+
+    /// Insert pasted text, honouring the newlines in it.
+    ///
+    /// A paste is one edit, not a key per character: "\r\n" and a lone "\r"
+    /// both mean a line break here, never a submit.
+    pub fn insert_str(&mut self, text: &str) {
+        let mut rest = text;
+        while let Some(at) = rest.find(['\n', '\r']) {
+            self.insert_text(&rest[..at]);
+            self.insert_newline();
+            let skipped = if rest[at..].starts_with("\r\n") {
+                at + 2
+            } else {
+                at + 1
+            };
+            rest = &rest[skipped..];
+        }
+        self.insert_text(rest);
+    }
+
+    /// Insert a run with no line breaks in it at the cursor.
+    fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let column = self.column;
+        let line = self.line_mut();
+        let at = byte_index(line, column);
+        line.insert_str(at, text);
+        self.column += text.chars().count();
     }
 
     pub fn text(&self) -> String {

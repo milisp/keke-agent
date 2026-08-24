@@ -1192,3 +1192,40 @@ fn a_press_and_release_in_one_place_is_a_click_not_a_selection() {
     assert_eq!(app.take_pending_copy(), None);
     assert!(app.expanded().contains(&7), "the click must reach the row");
 }
+
+/// A wide character occupies two cells, and the cursor sits after both.
+#[test]
+fn the_cursor_is_measured_in_cells_not_characters() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+
+    type_text(&mut app, "你好a");
+    assert_eq!(app.input.cursor().1, 3);
+    assert_eq!(app.input.cursor_display().1, 5);
+
+    app.handle_key(key(KeyCode::Left));
+    assert_eq!(app.input.cursor_display().1, 4);
+    app.handle_key(key(KeyCode::Left));
+    assert_eq!(app.input.cursor_display().1, 2);
+}
+
+/// A paste is one edit: its newlines make lines, not submits.
+#[test]
+fn a_pasted_block_keeps_its_line_breaks_instead_of_submitting() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+
+    app.handle_paste("你好\r\n世界\rthere");
+    assert_eq!(app.input.text(), "你好\n世界\nthere");
+    assert_eq!(app.input.cursor(), (2, 5));
+}
+
+/// A paste lands at the cursor, not at the end of the buffer.
+#[test]
+fn a_paste_lands_where_the_cursor_is() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+
+    type_text(&mut app, "ab");
+    app.handle_key(key(KeyCode::Left));
+    app.handle_paste("中");
+    assert_eq!(app.input.text(), "a中b");
+    assert_eq!(app.input.cursor_display().1, 3);
+}

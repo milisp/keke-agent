@@ -41,7 +41,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     // A prompt longer than the box scrolls inside it, anchored so the cursor
     // is always on screen: text that has been typed but cannot be seen is
     // worse than a box that grew.
-    let (row, column) = app.input.cursor();
+    let (row, column) = app.input.cursor_display();
     let visible = usize::from(rows(app).saturating_sub(2));
     let first = row.saturating_sub(visible.saturating_sub(1));
     let lines: Vec<Line> = app

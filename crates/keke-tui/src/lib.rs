@@ -22,7 +22,9 @@ use std::io;
 use std::io::Write;
 use std::sync::Arc;
 
+use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableBracketedPaste;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
@@ -131,7 +133,7 @@ fn set_mouse_capture(stdout: &mut io::Stdout, capture: bool) -> io::Result<()> {
 fn enter() -> anyhow::Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     // keke answers the drag itself, so capturing the mouse costs the reader
     // nothing: see `crate::selection`.
     set_mouse_capture(&mut stdout, true)?;
@@ -145,7 +147,11 @@ fn leave(terminal: &mut Tui) -> anyhow::Result<()> {
     let mut stdout = io::stdout();
     stdout.write_all(ALTERNATE_SCROLL_OFF.as_bytes())?;
     set_mouse_capture(&mut stdout, false)?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -185,6 +191,7 @@ async fn event_loop(
             event = input.next() => match event {
                 Some(Ok(Event::Key(key))) => app.handle_key(key),
                 Some(Ok(Event::Mouse(mouse))) => app.handle_mouse(mouse),
+                Some(Ok(Event::Paste(text))) => app.handle_paste(&text),
                 Some(Ok(_)) => {}
                 // The terminal went away; there is nothing left to draw on.
                 Some(Err(error)) => return Err(error.into()),

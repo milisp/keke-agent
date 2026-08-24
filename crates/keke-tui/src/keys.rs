@@ -26,6 +26,19 @@ fn menu_key(code: KeyCode) -> bool {
 }
 
 impl App {
+    /// A bracketed paste arrives as one event, so pasted text lands as text.
+    ///
+    /// Without this a terminal delivers a paste as a key per character: the
+    /// newlines in it submit the prompt half-typed, and an input method's
+    /// characters race the redraw. Ignored while a permission prompt owns the
+    /// keyboard, where the composer is not taking input anyway.
+    pub fn handle_paste(&mut self, text: &str) {
+        if self.open_permission_id().is_some() {
+            return;
+        }
+        self.input.insert_str(text);
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         // Windows reports press and release; acting on both double-types.
         if key.kind == KeyEventKind::Release {
