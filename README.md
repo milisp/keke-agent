@@ -1,21 +1,29 @@
 # keke
 
-[![CI](https://github.com/milisp/keke-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/milisp/keke-agent/actions)
+[中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Roadmap](docs/ROADMAP.md)
 
-[中文文档](README.zh-CN.md)
+keke is a local terminal coding agent built for zero-vendor lock-in. 
+Works with subscriptions you already have, standard API keys, or self-hosted local models.
 
-keke is a coding agent that runs locally in your terminal and works with any
-model — a subscription you already have, an API key, or a model on your own
-machine.
+## Why keke?
 
-If you want keke in your editor, it serves the Agent Client Protocol over
-stdio. If you want it in a script or in CI, use `keke exec`. If you want a
-model it does not know about, declare it in `config.toml` — there is no
-vendor-specific code in the engine to change.
+- **Protocol: ACP for every client**
+  Speaks the open Agent Client Protocol for both external client integrations and its internal TUI/agent seam.
+- **Script & CI First (`keke exec`)**
+  Supports one-shot execution out of the box for non-interactive scripting and automated CI pipelines.
+- **Vendor-Isolated Engine**
+  No vendor-specific logic inside `keke-core`. Adding standard model endpoints requires zero engine code changes — just a quick entry in `config.toml`.
 
 ## Install
 
-Download a prebuilt binary from the
+```sh
+curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/install.sh | sh
+```
+
+This downloads the latest prebuilt binary for your platform into
+`~/.local/bin` (override with `KEKE_INSTALL_DIR`).
+
+You can also grab a binary directly from the
 [latest release](https://github.com/milisp/keke-agent/releases/latest), or build
 from source with `cargo build --release`.
 
@@ -27,7 +35,7 @@ keke login codex
 keke login grok
 
 # ...or bring a key
-export XAI_API_KEY=xai-...
+export OPENAI_API_KEY=sk-...
 
 keke exec "what does this project do?"   # one-shot, for scripts and CI
 keke                                     # interactive TUI
@@ -72,18 +80,16 @@ implemented yet — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Where it comes from
 
-keke is built on what three open agents already proved out: the OAuth login
-flows of OpenAI's **codex** (ported, and attributed in the crate that carries
-them), the model and wire coverage of xAI's **grok-build**, and the
-seam-first architecture that **deepseek-harness** argues for.
-
-What keke does differently is refuse to let vendor knowledge into the middle.
-codex's own contributor guide says *"resist adding code to codex-core"*, and
-`codex-core` still depends on 68 internal crates today — prose did not hold
-that line. In keke, `scripts/check-layering.py` holds it and fails CI instead,
-which is why adding a vendor stays a plugin plus one line in the composition
-root. See [`docs/architecture.md`](docs/architecture.md) for the reasoning and
-[`AGENTS.md`](AGENTS.md) for the invariants.
+keke is a fresh implementation built by studying three open agent repos:
+OpenAI's **codex**, xAI's **grok-build**, and **deepseek-harness** — whose
+seam-first architecture (a hard boundary between engine and vendor, not a
+convention) is the idea keke leans on hardest. Some pieces are ported
+outright and attributed in the crate that carries them (codex's OAuth login
+flow, for instance); most of it is keke's own code, shaped by what worked and
+what didn't in those three. What keke does differently — and why that
+matters enough to enforce in CI — is in
+[`docs/architecture.md`](docs/architecture.md); the invariants themselves are
+in [`AGENTS.md`](AGENTS.md).
 
 ## License
 

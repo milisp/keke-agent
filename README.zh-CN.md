@@ -7,14 +7,22 @@
 keke 是一个运行在本地终端的编码 agent，可以搭配任意模型使用——你已经订阅的
 服务、一个 API key，或者你自己机器上跑的模型。
 
-如果你想在编辑器里用 keke，它通过 stdio 提供 Agent Client Protocol。如果想
-在脚本或 CI 里用，用 `keke exec`。如果想用一个它还不认识的模型，在
-`config.toml` 里声明即可——引擎里不需要改任何厂商相关的代码。
+keke 通过 stdio 提供开放的 Agent Client Protocol，所以任何支持 ACP 的
+GUI（编辑器、Zed 之类）都能像终端一样驱动它。如果想在脚本或 CI 里用，用
+`keke exec`。如果想用一个它还不认识的模型，在 `config.toml` 里声明即
+可——引擎里不需要改任何厂商相关的代码。
 
 ## 安装
 
-从 [latest release](https://github.com/milisp/keke-agent/releases/latest) 下载
-预编译二进制文件，或者用 `cargo build --release` 从源码构建。
+```sh
+curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/install.sh | sh
+```
+
+该脚本会为你的平台下载最新的预编译二进制文件到 `~/.local/bin`
+（可通过 `KEKE_INSTALL_DIR` 覆盖）。
+
+你也可以直接从 [latest release](https://github.com/milisp/keke-agent/releases/latest)
+下载预编译二进制文件，或者用 `cargo build --release` 从源码构建。
 
 ## 试一试
 
@@ -67,17 +75,15 @@ wire = "messages"
 
 ## 灵感来源
 
-keke 建立在三个已经验证过的开源 agent 之上：OpenAI **codex** 的 OAuth
-登录流程（已移植，并在承载它的 crate 中注明来源）、xAI **grok-build** 的
-模型与 wire 覆盖范围，以及 **deepseek-harness** 所倡导的 seam-first 架构。
-
-keke 的不同之处在于，坚决不让厂商相关的知识渗入引擎中间层。codex 自己的
-贡献者指南写着 *"resist adding code to codex-core"*，而 `codex-core` 如今
-仍然依赖 68 个内部 crate——光靠文字约束没能守住这条线。在 keke 里，
-`scripts/check-layering.py` 会在 CI 里强制执行这条规则，所以接入一个新厂商
-始终只是一个插件加组合根里的一行代码。详见
-[`docs/architecture.md`](docs/architecture.md) 了解设计理由，以及
-[`AGENTS.md`](AGENTS.md) 了解不变量。
+keke 是通过研究三个开源 agent 项目——OpenAI 的 **codex**、xAI 的
+**grok-build**，以及 **deepseek-harness**——写出来的全新实现，其中
+deepseek-harness 提倡的 seam-first 架构（引擎和厂商之间是硬边界，而不是
+约定）是 keke 最依赖的一个想法。少数部分是直接移植过来的，并在承载它的
+crate 中注明来源（比如 codex 的 OAuth 登录流程）；其余大部分都是 keke
+自己的代码，只是被这三者的经验（包括踩过的坑）塑造出来的。keke 的不同
+之处、以及为什么值得在 CI 里强制执行，详见
+[`docs/architecture.md`](docs/architecture.md)；不变量本身在
+[`AGENTS.md`](AGENTS.md)。
 
 ## 许可证
 
