@@ -748,17 +748,6 @@ impl App {
             }
             SlashAction::Builtin(Builtin::Quit) => self.should_quit = true,
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
-            SlashAction::Builtin(Builtin::Mouse) => self.toggle_mouse_capture(),
-            SlashAction::Builtin(Builtin::Thinking) => {
-                self.toggle_thinking();
-                let state = if self.show_thinking {
-                    "shown"
-                } else {
-                    "hidden"
-                };
-                self.transcript
-                    .push(Cell::Notice(format!("reasoning {state}")));
-            }
             SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {
                 Ok(Some(effort)) => self.set_reasoning_effort_aloud(effort),
                 Ok(None) => {

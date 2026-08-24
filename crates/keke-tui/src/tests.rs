@@ -1108,22 +1108,6 @@ fn a_finished_thought_collapses_while_the_one_still_arriving_stays_open() {
     );
 }
 
-/// keke holds the mouse so a click can expand a tool call, and `/mouse` hands
-/// it back for anyone who wants the terminal's own selection instead.
-#[tokio::test]
-async fn the_mouse_command_hands_the_mouse_back_and_takes_it_again() {
-    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    assert!(app.mouse_capture());
-
-    type_text(&mut app, "/mouse");
-    app.handle_key(key(KeyCode::Enter));
-    assert!(!app.mouse_capture());
-
-    type_text(&mut app, "/mouse");
-    app.handle_key(key(KeyCode::Enter));
-    assert!(app.mouse_capture());
-}
-
 /// A drag over the transcript is a selection, and letting go copies it —
 /// which is what a captured mouse owes the person it took drag-select from.
 #[test]

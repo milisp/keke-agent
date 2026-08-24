@@ -28,7 +28,6 @@ pub enum Builtin {
     Help,
     Clear,
     Quit,
-    Thinking,
     /// Cycles the approval policy, or sets the one named as an argument.
     Mode,
     /// Cycles the reasoning effort, or sets the level named as an argument.
@@ -38,8 +37,6 @@ pub enum Builtin {
     Model,
     /// Puts the last reply on the system clipboard.
     Copy,
-    /// Gives the mouse back to the terminal, or takes it again.
-    Mouse,
 }
 
 /// One entry in the command list.
@@ -165,16 +162,10 @@ fn builtins() -> Vec<SlashCommand> {
             "model",
             "list the models this provider serves, or name one to switch to it",
         ),
-        (Builtin::Thinking, "thinking", "show or hide reasoning"),
         (
             Builtin::Copy,
             "copy",
             "copy the last reply to the clipboard",
-        ),
-        (
-            Builtin::Mouse,
-            "mouse",
-            "capture the mouse for clicking, or release it back for selecting text",
         ),
         (Builtin::Quit, "quit", "leave keke"),
     ]
