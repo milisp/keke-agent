@@ -777,15 +777,17 @@ async fn clear_empties_the_screen_and_quit_leaves() {
     assert!(app.should_quit());
 }
 
-/// The gesture says nothing; the typed command answers where it was asked.
+/// Neither the gesture nor the typed command narrates the switch in the
+/// transcript — the input box already shows what was typed.
 #[tokio::test]
-async fn the_mode_command_says_which_mode_it_set() {
+async fn the_mode_command_sets_the_mode_silently() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
 
     type_text(&mut app, "/mode never");
     app.handle_key(key(KeyCode::Enter));
 
-    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("never")));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
+    assert!(app.transcript.is_empty());
 }
 
 /// The level the agent is asked for must follow what the surface shows, and a
@@ -797,7 +799,7 @@ async fn the_effort_command_names_a_level_and_refuses_a_typo() {
     type_text(&mut app, "/effort xhigh");
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.reasoning_effort(), Some(ReasoningEffort::XHigh));
-    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("xhigh")));
+    assert!(app.transcript.is_empty(), "a clean switch says nothing");
 
     type_text(&mut app, "/effort hgih");
     app.handle_key(key(KeyCode::Enter));
@@ -1296,7 +1298,7 @@ async fn the_model_command_switches_and_tells_the_agent() {
 
     assert_eq!(app.model(), "gpt-5.2");
     assert_eq!(scripted.models(), vec!["gpt-5.2".to_string()]);
-    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("gpt-5.2")));
+    assert!(app.transcript.is_empty());
 }
 
 /// Invariant 8: a model the provider does not serve is refused here, where the

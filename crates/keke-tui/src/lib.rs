@@ -80,10 +80,21 @@ pub struct Resumed {
     pub usage: keke_protocol::Usage,
 }
 
+/// The values the session was configured with, plus where to write them back
+/// to when a person switches one from the keyboard. Grouped because they are
+/// only ever handed to `run` together.
+pub struct SessionDefaults {
+    pub approval: keke_config_types::ApprovalPolicy,
+    pub effort: Option<keke_config_types::ReasoningEffort>,
+    /// `$KEKE_HOME`, so `/model`, `/mode`, and `/effort` persist past this
+    /// process.
+    pub config_home: keke_paths::AbsPath,
+}
+
 /// Run the interface until the person quits.
 ///
 /// `updates` is the agent's stream; the app also produces its own, so both are
-/// drained here rather than merged upstream. `commands`, `approval` and
+/// drained here rather than merged upstream. `commands`, `defaults` and
 /// `models` come from the composition root: nothing here knows what a plugin
 /// is, what the configured policy or effort level was, or how to ask a provider
 /// what it serves. `history` is what was typed in this project before, which
@@ -92,8 +103,7 @@ pub async fn run(
     conversation: Arc<dyn Conversation>,
     updates: UnboundedReceiver<Update>,
     commands: SlashCommands,
-    approval: keke_config_types::ApprovalPolicy,
-    effort: Option<keke_config_types::ReasoningEffort>,
+    defaults: SessionDefaults,
     models: Models,
     resumed: Resumed,
     history: PromptHistory,
@@ -101,10 +111,11 @@ pub async fn run(
     let (app, local) = App::new(conversation);
     let mut app = app
         .with_commands(commands)
-        .with_approval_policy(approval)
-        .with_reasoning_effort(effort)
+        .with_approval_policy(defaults.approval)
+        .with_reasoning_effort(defaults.effort)
         .with_models(models.current, models.available)
-        .with_prompt_history(history);
+        .with_prompt_history(history)
+        .with_config_home(defaults.config_home);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {
         app = app.with_history(&resumed.history, resumed.usage);
     }

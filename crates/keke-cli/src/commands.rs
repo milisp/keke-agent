@@ -550,8 +550,11 @@ async fn tui(
         conversation,
         updates,
         keke_tui::SlashCommands::new(commands),
-        config.approval_policy,
-        config.reasoning_effort,
+        keke_tui::SessionDefaults {
+            approval: config.approval_policy,
+            effort: config.reasoning_effort,
+            config_home: config.home.home.clone(),
+        },
         keke_tui::Models {
             current: opened.model,
             available: models,

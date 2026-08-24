@@ -301,6 +301,48 @@ impl Config {
     }
 }
 
+/// Update one field of `$KEKE_HOME/config.toml`, so a switch a person makes at
+/// the keyboard (`/model`, `/mode`, `/effort`) survives past this process
+/// without them hand-editing the file.
+///
+/// Reads the existing user layer first so an unrelated field — a declared
+/// provider, plugin timeouts — is carried forward rather than dropped; a
+/// missing file is treated as an empty one, since the first switch a fresh
+/// install makes is exactly what should create it.
+pub fn persist_user_override(
+    home: &AbsPath,
+    patch: impl FnOnce(&mut ConfigFile),
+) -> Result<(), ConfigError> {
+    let path = home.as_path().join("config.toml");
+    let mut file = match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text).map_err(|error| ConfigError::Parse {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ConfigFile::default(),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    patch(&mut file);
+    let text = toml::to_string(&file).map_err(|error| ConfigError::Invalid {
+        path: path.display().to_string(),
+        message: format!("rendering config: {error}"),
+    })?;
+    std::fs::create_dir_all(home.as_path()).map_err(|source| ConfigError::Read {
+        path: home.as_str().to_string(),
+        source,
+    })?;
+    std::fs::write(&path, text).map_err(|source| ConfigError::Read {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use keke_config_types::DeclaredWireApi;
@@ -484,5 +526,45 @@ mod tests {
         let layers = vec![layer("user", "[plugins]\nhook-timeout-millis = 30\n")];
         let error = Config::from_layers(home(), &layers).expect_err("too short");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    /// A switch made at the keyboard must survive a restart, and must not
+    /// clobber an unrelated field already on disk.
+    #[test]
+    fn persisting_an_override_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = AbsPath::new(dir.path()).expect("absolute");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "provider = \"anthropic\"\nmodel = \"claude-opus-5\"\n",
+        )
+        .expect("seed file");
+
+        persist_user_override(&home, |file| {
+            file.reasoning_effort = Some("high".to_string());
+        })
+        .expect("persists");
+
+        let written = std::fs::read_to_string(dir.path().join("config.toml")).expect("read back");
+        let file: ConfigFile = toml::from_str(&written).expect("parses");
+        assert_eq!(file.provider.as_deref(), Some("anthropic"));
+        assert_eq!(file.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(file.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    /// The first switch on a fresh install has no file to read yet.
+    #[test]
+    fn persisting_an_override_creates_a_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = AbsPath::new(dir.path()).expect("absolute");
+
+        persist_user_override(&home, |file| {
+            file.model = Some("gpt-5.2".to_string());
+        })
+        .expect("persists");
+
+        let written = std::fs::read_to_string(dir.path().join("config.toml")).expect("read back");
+        let file: ConfigFile = toml::from_str(&written).expect("parses");
+        assert_eq!(file.model.as_deref(), Some("gpt-5.2"));
     }
 }

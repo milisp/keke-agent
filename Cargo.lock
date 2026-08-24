@@ -1724,6 +1724,7 @@ dependencies = [
  "keke-config-types",
  "keke-paths",
  "serde",
+ "tempfile",
  "thiserror",
  "toml",
 ]
@@ -1969,7 +1970,9 @@ dependencies = [
  "futures",
  "keke-acp",
  "keke-auth-api",
+ "keke-config",
  "keke-config-types",
+ "keke-paths",
  "keke-protocol",
  "keke-provider-api",
  "ratatui",

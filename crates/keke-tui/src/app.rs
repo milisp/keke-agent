@@ -112,6 +112,10 @@ pub struct App {
     /// terminal can no longer select with.
     pub(crate) selection: crate::selection::Selection,
     should_quit: bool,
+    /// Where `$KEKE_HOME/config.toml` lives, so `/model`, `/mode`, and
+    /// `/effort` can write the switch back to disk. `None` in tests, where
+    /// there is no home to write into and persistence is not under test.
+    config_home: Option<keke_paths::AbsPath>,
 }
 
 impl App {
@@ -146,6 +150,7 @@ impl App {
                 pending_copy: None,
                 selection: crate::selection::Selection::default(),
                 should_quit: false,
+                config_home: None,
             },
             local_updates,
         )
@@ -164,6 +169,14 @@ impl App {
     #[must_use]
     pub fn with_prompt_history(mut self, history: PromptHistory) -> Self {
         self.history = history;
+        self
+    }
+
+    /// Where `$KEKE_HOME` is, so a typed `/model`, `/mode`, or `/effort`
+    /// writes the new value back to `config.toml` and outlives this process.
+    #[must_use]
+    pub fn with_config_home(mut self, home: keke_paths::AbsPath) -> Self {
+        self.config_home = Some(home);
         self
     }
 
@@ -596,6 +609,24 @@ impl App {
             ApprovalPolicy::Never => ApprovalPolicy::OnRequest,
         };
         self.set_approval_policy(next);
+        self.persist_override(|file| {
+            file.approval_policy = Some(next);
+        });
+    }
+
+    /// Write one field of `$KEKE_HOME/config.toml`, so the switch a person
+    /// just made outlives this process instead of reverting on the next
+    /// launch. Best-effort: a write that fails (read-only home, no disk) is
+    /// logged rather than surfaced, since the switch already took effect for
+    /// this session and a transcript error over a convenience write would be
+    /// out of proportion.
+    fn persist_override(&self, patch: impl FnOnce(&mut keke_config::ConfigFile)) {
+        let Some(home) = &self.config_home else {
+            return;
+        };
+        if let Err(error) = keke_config::persist_user_override(home, patch) {
+            tracing::warn!(%error, "could not persist the switch to config.toml");
+        }
     }
 
     pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) {
@@ -603,14 +634,15 @@ impl App {
         self.conversation.set_approval_policy(policy);
     }
 
-    /// Set the mode and say so, which is what a typed `/mode` does: the person
-    /// asked in the transcript, so the answer belongs there too.
+    /// Set the mode, which is what a typed `/mode` does. Nothing goes to the
+    /// transcript: the person can already see what they typed and what it
+    /// changed to in the input box, and a line saying so would read as the
+    /// agent narrating a switch it did not make.
     fn set_approval_policy_aloud(&mut self, policy: ApprovalPolicy) {
         self.set_approval_policy(policy);
-        self.transcript.push(Cell::Notice(format!(
-            "approval mode: {}",
-            crate::slash::policy_name(policy)
-        )));
+        self.persist_override(|file| {
+            file.approval_policy = Some(policy);
+        });
     }
 
     #[must_use]
@@ -623,13 +655,14 @@ impl App {
         self.conversation.set_reasoning_effort(effort);
     }
 
-    /// Set the level and say so, which is what a typed `/effort` does.
+    /// Set the level, which is what a typed `/effort` does. Silent in the
+    /// transcript for the same reason `/mode` is: the input box already shows
+    /// what was typed.
     fn set_reasoning_effort_aloud(&mut self, effort: Option<ReasoningEffort>) {
         self.set_reasoning_effort(effort);
-        self.transcript.push(Cell::Notice(format!(
-            "reasoning effort: {}",
-            crate::slash::effort_name(effort)
-        )));
+        self.persist_override(|file| {
+            file.reasoning_effort = effort.map(|level| level.as_str().to_string());
+        });
     }
 
     /// Which model is answering, for the status bar.
@@ -672,8 +705,9 @@ impl App {
         }
         self.model = wanted.to_string();
         self.conversation.set_model(wanted.to_string());
-        self.transcript
-            .push(Cell::Notice(format!("model: {wanted}")));
+        self.persist_override(|file| {
+            file.model = Some(wanted.to_string());
+        });
 
         // A level the new model does not take would be sent anyway and
         // rejected, so it is dropped here where the cause is still on screen.
