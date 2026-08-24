@@ -452,8 +452,39 @@ async fn an_editor_switches_the_model_and_the_next_request_uses_it() {
 /// built for, so a test written against it passes whichever version keke
 /// serves — which is how keke shipped a v1 endpoint with v2 handlers. A pipe
 /// has nobody to do the rewriting.
+///
+/// Both versions, because the point of the router is that a client picks: a
+/// regression that drops either one is a client that cannot connect at all.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_endpoint_on_the_wire_speaks_v2() {
+async fn the_endpoint_on_the_wire_answers_whichever_version_was_asked_for() {
+    let v1 = initialize_over_a_pipe(
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}
+"#,
+    );
+    assert_eq!(v1["result"]["protocolVersion"], 1, "{v1}");
+    assert_eq!(
+        v1["result"]["agentCapabilities"]["sessionCapabilities"]["list"],
+        serde_json::json!({}),
+        "a v1 client learns about `session/list` from its own capability flag: {v1}"
+    );
+    assert_eq!(
+        v1["result"]["agentCapabilities"]["loadSession"], true,
+        "and about replay from `loadSession`: {v1}"
+    );
+
+    let v2 = initialize_over_a_pipe(
+        br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2,"info":{"name":"web-ui","version":"0.1"},"capabilities":{}}}
+"#,
+    );
+    assert_eq!(v2["result"]["protocolVersion"], 2, "{v2}");
+    assert!(
+        v2["result"]["capabilities"]["session"].is_object(),
+        "v2 says the same thing with one `session` object: {v2}"
+    );
+}
+
+/// Send one raw request to `keke agent stdio` and read the one raw response.
+fn initialize_over_a_pipe(request: &[u8]) -> serde_json::Value {
     let home = tempfile::tempdir().expect("tempdir");
     let mut keke = std::process::Command::new(env!("CARGO_BIN_EXE_keke"))
         .args(["agent", "stdio"])
@@ -473,23 +504,111 @@ async fn the_endpoint_on_the_wire_speaks_v2() {
     keke.stdin
         .take()
         .expect("stdin")
-        .write_all(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2,"info":{"name":"web-ui","version":"0.1"},"capabilities":{}}}
-"#,
-        )
+        .write_all(request)
         .expect("the request is written");
 
     let output = keke.wait_with_output().expect("keke exits with the pipe");
     let line = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value =
-        serde_json::from_str(line.lines().next().unwrap_or_default()).expect("one JSON response");
+    serde_json::from_str(line.lines().next().unwrap_or_default()).expect("one JSON response")
+}
 
-    assert_eq!(
-        response["result"]["protocolVersion"], 2,
-        "a client asking for v2 must be answered in v2: {response}"
-    );
+/// The v1 path, end to end with a v1 client: the stop reason comes back on the
+/// `session/prompt` response, and `session/load` replays the transcript that
+/// `session/resume` deliberately does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_v1_client_prompts_and_loads_back_the_transcript() {
+    use agent_client_protocol::schema::v1;
+
+    let home = tempfile::tempdir().expect("tempdir");
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let server = MockInferenceServer::start().await;
+    server.script(Endpoint::ChatCompletions, Reply::text("the first answer"));
+
+    let agent = || {
+        AcpAgent::new(
+            AcpAgentConfig::new(env!("CARGO_BIN_EXE_keke"))
+                .args(["agent", "stdio"])
+                .env("KEKE_HOME", home.path().display().to_string())
+                .env("KEKE_CREDENTIAL_STORE", "file")
+                .env("KEKE_IMPORT", "off")
+                .env("KEKE_PROVIDER", "grok")
+                .env("KEKE_MODEL", "grok-4.6")
+                .env("XAI_BASE_URL", server.base_url())
+                .env("XAI_API_KEY", "test-key"),
+        )
+    };
+    let cwd = workspace.path().to_path_buf();
+
+    let started = agent_client_protocol::Client
+        .builder()
+        .connect_with(agent(), {
+            let cwd = cwd.clone();
+            |connection: ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(v1::NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?
+                    .session_id;
+                let reply = connection
+                    .send_request(v1::PromptRequest::new(
+                        session.clone(),
+                        vec![v1::ContentBlock::Text(v1::TextContent::new(
+                            "remember this",
+                        ))],
+                    ))
+                    .block_task()
+                    .await?;
+                // The v1-shaped answer: v2 moved this onto the update stream.
+                assert_eq!(reply.stop_reason, v1::StopReason::EndTurn);
+                Ok(session)
+            }
+        })
+        .await
+        .expect("the v1 session runs to completion");
+
+    let replayed = Arc::new(Mutex::new(Vec::<String>::new()));
+    agent_client_protocol::Client
+        .builder()
+        .on_receive_notification(
+            {
+                let replayed = Arc::clone(&replayed);
+                async move |notification: v1::SessionNotification, _cx| {
+                    if let v1::SessionUpdate::UserMessageChunk(chunk)
+                    | v1::SessionUpdate::AgentMessageChunk(chunk) = notification.update
+                        && let v1::ContentBlock::Text(text) = chunk.content
+                    {
+                        replayed.lock().expect("lock").push(text.text);
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(agent(), {
+            let cwd = cwd.clone();
+            |connection: ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                connection
+                    .send_request(v1::LoadSessionRequest::new(started, cwd))
+                    .block_task()
+                    .await?;
+                Ok(())
+            }
+        })
+        .await
+        .expect("the v1 load runs to completion");
+
+    let replayed = replayed.lock().expect("lock");
     assert!(
-        response["result"]["capabilities"]["session"].is_object(),
-        "the session surface must be advertised: {response}"
+        replayed.contains(&"remember this".to_string())
+            && replayed.contains(&"the first answer".to_string()),
+        "`session/load` replays both sides of the conversation: {replayed:?}"
     );
 }

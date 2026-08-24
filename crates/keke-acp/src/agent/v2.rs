@@ -1,18 +1,16 @@
-//! keke as an ACP agent, spoken over stdio.
+//! The ACP protocol v2 surface.
 //!
-//! The editor is the client and keke is the agent: it receives prompts and
-//! emits session notifications. Nothing here reaches into the engine — it
-//! drives a [`Conversation`], the same thing the terminal interface drives, so
-//! the two surfaces cannot drift into different behaviour.
+//! v2 folded v1's `session/load` into `session/resume` — one method that
+//! restores the session and replays the transcript only when the client names a
+//! `replayFrom` cursor — moved the turn's stop reason off the `session/prompt`
+//! response onto the `session/update` state stream, flattened tool-call
+//! creation and update into one message, and hung streamed content off a
+//! message id.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectionTo;
-use agent_client_protocol::Stdio;
 use agent_client_protocol::schema::v2::AbsolutePath;
 use agent_client_protocol::schema::v2::AgentCapabilities;
 use agent_client_protocol::schema::v2::AgentMessage;
@@ -61,103 +59,40 @@ use keke_protocol::ToolStatus;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::Entry;
+use super::MODEL;
+use super::SessionFactory;
+use super::Sessions;
+use super::answer_for;
+use super::chosen_model;
 use crate::Conversation;
-use crate::ConversationError;
-use crate::ConversationFuture;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::SessionListing;
 use crate::Update;
 
-/// Makes a conversation for one ACP session.
-///
-/// A trait rather than a closure because the composition root is the only place
-/// that knows how to build a session, and `keke-acp` must not learn.
-pub trait SessionFactory: Send + Sync + 'static {
-    /// Open a conversation rooted at `cwd`, as the client asked.
-    fn open(&self, cwd: PathBuf) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
-
-    /// Every session there is to resume, newest first.
-    ///
-    /// `cwd` filters when the client asked it to. Listing is separate from
-    /// opening because a client draws a picker before it has chosen anything,
-    /// and building a session to describe one would start a turn nobody asked
-    /// for.
-    fn list(
-        &self,
-        cwd: Option<PathBuf>,
-    ) -> ConversationFuture<'_, Result<Vec<SessionListing>, ConversationError>>;
-
-    /// Reopen a previous session so it can be prompted again.
-    ///
-    /// The id is whatever the client sent back; resolving it — including
-    /// deciding that it names nothing — belongs to whoever keeps the sessions.
-    fn resume(
-        &self,
-        id: String,
-        cwd: PathBuf,
-    ) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
-}
-
-/// The identifiers the option ids are built from.
-///
-/// The ACP client sends back an option id, so these strings are the wire
-/// contract for what a person chose.
-const ALLOW: &str = "allow";
-const ALLOW_ALWAYS: &str = "allow-always";
-const DENY: &str = "deny";
-
 fn permission_options() -> Vec<PermissionOption> {
     vec![
-        PermissionOption::new(ALLOW, "Allow once", PermissionOptionKind::AllowOnce),
+        PermissionOption::new(super::ALLOW, "Allow once", PermissionOptionKind::AllowOnce),
         PermissionOption::new(
-            ALLOW_ALWAYS,
+            super::ALLOW_ALWAYS,
             "Allow for the rest of this session",
             PermissionOptionKind::AllowAlways,
         ),
-        PermissionOption::new(DENY, "Deny", PermissionOptionKind::RejectOnce),
+        PermissionOption::new(super::DENY, "Deny", PermissionOptionKind::RejectOnce),
     ]
 }
 
-/// The config option id keke offers a model under. The client sends it back,
-/// so it is the wire contract for what was changed.
-const MODEL: &str = "model";
-
-/// One live ACP session.
-struct Entry {
-    conversation: Arc<dyn Conversation>,
-    /// What the provider serves, for answering `session/set_config_option` and
-    /// for describing the choice in the first place.
-    models: Vec<String>,
-    /// Fed by the pump when a turn ends, read by the prompt handler. v2 puts
-    /// the stop reason on the update stream, so this carries the fact of the
-    /// ending and nothing else.
-    outcomes: tokio::sync::Mutex<UnboundedReceiver<()>>,
-}
-
-#[derive(Default)]
-struct Sessions(Mutex<HashMap<String, Arc<Entry>>>);
-
-impl Sessions {
-    fn get(&self, id: &SessionId) -> Option<Arc<Entry>> {
-        self.0.lock().ok()?.get(id.0.as_ref()).cloned()
-    }
-
-    fn insert(&self, id: &SessionId, entry: Arc<Entry>) {
-        if let Ok(mut sessions) = self.0.lock() {
-            sessions.insert(id.to_string(), entry);
-        }
-    }
-}
-
-/// Serve the ACP protocol on stdin and stdout until the client disconnects.
-pub async fn serve_stdio(
+/// The v2 implementation, for the router to hand a v2 client to.
+///
+/// `Agent.v2()` rather than `builder()`: the latter declares a *v1* endpoint
+/// whatever types the handlers are written against, which is a mistake nothing
+/// but the wire can catch.
+pub(super) fn agent(
     factory: Arc<dyn SessionFactory>,
-) -> Result<(), agent_client_protocol::Error> {
+) -> impl agent_client_protocol::ConnectTo<agent_client_protocol::Client> {
     let sessions = Arc::new(Sessions::default());
 
-    // `builder()` would declare a v1 endpoint and reject a client asking for
-    // v2, whatever types the handlers are written against.
     Agent
         .v2()
         .name("keke")
@@ -195,7 +130,7 @@ pub async fn serve_stdio(
             {
                 let sessions = Arc::clone(&sessions);
                 async move |request: PromptRequest, responder, cx: ConnectionTo<_>| {
-                    let Some(entry) = sessions.get(&request.session_id) else {
+                    let Some(entry) = sessions.get(request.session_id.0.as_ref()) else {
                         return responder.respond_with_error(unknown_session(&request.session_id));
                     };
                     let text = prompt_text(&request.prompt);
@@ -274,7 +209,7 @@ pub async fn serve_stdio(
             {
                 let sessions = Arc::clone(&sessions);
                 async move |request: SetSessionConfigOptionRequest, responder, _cx| {
-                    let Some(entry) = sessions.get(&request.session_id) else {
+                    let Some(entry) = sessions.get(request.session_id.0.as_ref()) else {
                         return responder.respond_with_error(unknown_session(&request.session_id));
                     };
                     if request.config_id.0.as_ref() != MODEL {
@@ -283,11 +218,11 @@ pub async fn serve_stdio(
                                 .data(format!("no config option `{}`", request.config_id.0)),
                         );
                     }
-                    let chosen = request.value.as_id().map(ToString::to_string);
                     // Invariant 8: a model keke was not offering is an error
                     // rather than a silent no-op, which would leave the client
                     // showing a selection the session does not have.
-                    let Some(model) = chosen.filter(|model| entry.models.contains(model)) else {
+                    let chosen = request.value.as_id().map(ToString::to_string);
+                    let Some(model) = chosen_model(&entry, chosen) else {
                         return responder.respond_with_error(
                             agent_client_protocol::Error::invalid_params()
                                 .data("not a model this session offers".to_string()),
@@ -306,7 +241,7 @@ pub async fn serve_stdio(
             {
                 let sessions = Arc::clone(&sessions);
                 async move |notification: CancelSessionNotification, _cx| {
-                    if let Some(entry) = sessions.get(&notification.session_id) {
+                    if let Some(entry) = sessions.get(notification.session_id.0.as_ref()) {
                         entry.conversation.cancel();
                     }
                     Ok(())
@@ -314,8 +249,6 @@ pub async fn serve_stdio(
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_to(Stdio::new())
-        .await
 }
 
 /// Register an opened conversation and start pumping its updates.
@@ -334,7 +267,7 @@ fn start(
     let models = opened.models.clone();
     let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
     sessions.insert(
-        &id,
+        id.0.as_ref(),
         Arc::new(Entry {
             conversation: Arc::clone(&opened.conversation),
             models: opened.models.clone(),
@@ -452,7 +385,7 @@ async fn pump(
     id: SessionId,
     conversation: Arc<dyn Conversation>,
     mut updates: UnboundedReceiver<Update>,
-    outcomes: UnboundedSender<()>,
+    outcomes: UnboundedSender<StopReason>,
     cx: ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(), agent_client_protocol::Error> {
     // v2 hangs streamed content off a message id, so the chunks of one turn's
@@ -546,7 +479,7 @@ async fn pump(
             }
             Update::TurnEnded(reason) => {
                 idle(&cx, &id, acp_stop_reason(&reason))?;
-                let _ = outcomes.send(());
+                let _ = outcomes.send(reason);
             }
             Update::Failed(message) => {
                 notify(
@@ -558,7 +491,9 @@ async fn pump(
                     )),
                 )?;
                 idle(&cx, &id, AcpStopReason::Refusal)?;
-                let _ = outcomes.send(());
+                let _ = outcomes.send(StopReason::Refusal {
+                    message: message.clone(),
+                });
             }
         }
     }
@@ -603,11 +538,7 @@ fn chunk(text: impl Into<String>, message: MessageId) -> ContentChunk {
 /// An outcome the client did not select is a refusal, not a permission.
 fn chosen(outcome: &RequestPermissionOutcome) -> PermissionAnswer {
     match outcome {
-        RequestPermissionOutcome::Selected(selected) => match selected.option_id.0.as_ref() {
-            ALLOW => PermissionAnswer::Allow,
-            ALLOW_ALWAYS => PermissionAnswer::AllowAlways,
-            _ => PermissionAnswer::Deny,
-        },
+        RequestPermissionOutcome::Selected(selected) => answer_for(selected.option_id.0.as_ref()),
         _ => PermissionAnswer::Deny,
     }
 }
@@ -651,9 +582,12 @@ mod tests {
             let id: std::sync::Arc<str> = id.into();
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id))
         };
-        assert_eq!(chosen(&selected(ALLOW)), PermissionAnswer::Allow);
         assert_eq!(
-            chosen(&selected(ALLOW_ALWAYS)),
+            chosen(&selected(super::super::ALLOW)),
+            PermissionAnswer::Allow
+        );
+        assert_eq!(
+            chosen(&selected(super::super::ALLOW_ALWAYS)),
             PermissionAnswer::AllowAlways
         );
         assert_eq!(chosen(&selected("something-else")), PermissionAnswer::Deny);

@@ -204,17 +204,26 @@ seam, they cannot drift into offering different tools or different policy.
 
 ### Which version of ACP
 
-keke serves protocol **v2** (`agent-client-protocol`'s `unstable_protocol_v2`
-draft), not v1. v2 is the version that folded v1's `session/load` into
-`session/resume` — one method that restores the session, replaying the
-transcript only when the client names a `replayFrom` cursor — moved the turn's
-stop reason off the `session/prompt` response and onto the `session/update`
-state stream, and flattened tool-call creation and update into one message.
+Both. v1 is what every released client speaks today; v2 is the draft that
+folded v1's `session/load` into `session/resume` — one method that restores the
+session, replaying the transcript only when the client names a `replayFrom`
+cursor — moved the turn's stop reason off the `session/prompt` response onto
+the `session/update` state stream, and flattened tool-call creation and update
+into one message.
 
-The cost is that a v1-only client cannot connect: v2's `initialize` carries
-fields v1 does not send. That is the trade keke takes rather than serving two
-dialects of the same conversation, which is the drift the seam exists to
-prevent.
+Serving only v2 would refuse every client that exists; serving only v1 would
+make keke the reason a client cannot use what it has already implemented. So
+`Agent::protocol_router` reads `initialize`, the client picks, and the
+connection goes to that implementation — `agent/v1.rs` or `agent/v2.rs`. No
+traffic is translated afterwards, which is why they are two handler sets rather
+than one with branches. Both drive the same `SessionFactory`, so the versions
+cannot drift into offering different sessions.
+
+`Agent.builder()` declares a *v1* endpoint whatever types the handlers are
+written against, and `Agent.v2()` a v2 one. Nothing but the wire catches
+getting that wrong — the SDK's own client rewrites `protocolVersion` to
+whichever version it was built for — so the endpoint is tested by piping bytes
+at the binary.
 
 The model a session asks is a `session/set_config_option` under the `model`
 category — the picker every v2 client already knows how to draw — offered from
