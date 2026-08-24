@@ -163,6 +163,11 @@ fn builtins() -> Vec<SlashCommand> {
             "copy",
             "copy the last reply to the clipboard",
         ),
+        (
+            Builtin::Mouse,
+            "mouse",
+            "capture the mouse for clicking, or release it back for selecting text",
+        ),
         (Builtin::Quit, "quit", "leave keke"),
     ]
     .into_iter()

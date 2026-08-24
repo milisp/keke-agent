@@ -102,6 +102,9 @@ pub struct App {
     /// Text waiting to go to the clipboard. Held rather than written here so
     /// the state tests never touch a terminal.
     pending_copy: Option<String>,
+    /// Drag-select over the transcript, since a captured mouse is one the
+    /// terminal can no longer select with.
+    pub(crate) selection: crate::selection::Selection,
     should_quit: bool,
 }
 
@@ -133,6 +136,7 @@ impl App {
                 toggles: Vec::new(),
                 flash: None,
                 pending_copy: None,
+                selection: crate::selection::Selection::default(),
                 should_quit: false,
             },
             local_updates,
@@ -249,15 +253,16 @@ impl App {
 
     /// Give the mouse back to the terminal, or take it again.
     ///
-    /// For the terminal that has no bypass modifier for drag-select. Nothing
-    /// on screen advertises this; a person who needs it is a person who has
-    /// already gone looking for it in `/help`.
+    /// keke holds it by default and answers the drag itself, so clicking a tool
+    /// call open and selecting text both work. The escape hatch is for the
+    /// terminal whose own selection does something keke's cannot — a
+    /// rectangular block, a click-through URL.
     pub fn toggle_mouse_capture(&mut self) {
         self.mouse_capture = !self.mouse_capture;
         self.set_flash(if self.mouse_capture {
-            "mouse captured — the wheel scrolls keke"
+            "mouse captured — drag selects, click expands a tool call"
         } else {
-            "mouse released to the terminal — the wheel and the buttons stop"
+            "mouse released to the terminal — keke stops answering it"
         });
     }
 
@@ -343,6 +348,17 @@ impl App {
     }
 
     /// Taken by the event loop, which owns the terminal this has to reach.
+    /// Put a dragged selection on the clipboard.
+    pub(crate) fn copy_selection(&mut self, text: String) {
+        let lines = text.lines().count();
+        self.pending_copy = Some(text);
+        self.set_flash(if lines == 1 {
+            "copied the selection".to_string()
+        } else {
+            format!("copied {lines} lines")
+        });
+    }
+
     pub fn take_pending_copy(&mut self) -> Option<String> {
         self.pending_copy.take()
     }
@@ -661,7 +677,8 @@ impl App {
     fn help_text(&self) -> String {
         let mut text = String::from(
             "keys:\n  ctrl-o — expand or collapse the newest thought or run of calls\n  \
-             ctrl-t — show or hide reasoning\n  ctrl-y — copy the last reply\n\ncommands:",
+             ctrl-t — show or hide reasoning\n  \
+             drag to select and copy; click a tool call to expand it\n\ncommands:",
         );
         for entry in self.commands.entries() {
             text.push_str(&format!("\n  /{} — {}", entry.name, entry.description));

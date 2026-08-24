@@ -93,6 +93,20 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         .skip(offset)
         .take(usize::from(body.height))
         .collect();
+    // The drag is answered against what was drawn, so the frame hands the
+    // selection its own rows before asking it to mark them.
+    app.selection
+        .set_rows(body.y, visible.iter().map(ToString::to_string).collect());
+    let visible: Vec<_> = visible
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let row = u16::try_from(row)
+                .unwrap_or(u16::MAX)
+                .saturating_add(body.y);
+            app.selection.highlight(row, line)
+        })
+        .collect();
     frame.render_widget(ratatui::widgets::Paragraph::new(visible), body);
     below(frame, body, app);
 

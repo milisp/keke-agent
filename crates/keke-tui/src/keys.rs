@@ -41,7 +41,6 @@ impl App {
             KeyCode::Char('t') if control => self.toggle_thinking(),
             KeyCode::Char('l') if control => self.scroll.follow(),
             KeyCode::Char('o') if control => self.toggle_last_expandable(),
-            KeyCode::Char('y') if control => self.copy_last_reply(),
             KeyCode::PageUp => self.scroll.page_up(),
             KeyCode::PageDown => self.scroll.page_down(),
             // Shift+Enter is invisible to a terminal without the Kitty keyboard
@@ -140,15 +139,37 @@ impl App {
     /// decides they are done looking back.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll.scroll_up(WHEEL_LINES),
-            MouseEventKind::ScrollDown => self.scroll.scroll_down(WHEEL_LINES),
+            // Scrolling moves what the rows hold out from under a selection
+            // pinned to them, so it drops it rather than keeping a highlight
+            // that now marks the wrong text.
+            MouseEventKind::ScrollUp => {
+                self.selection.clear();
+                self.scroll.scroll_up(WHEEL_LINES);
+            }
+            MouseEventKind::ScrollDown => {
+                self.selection.clear();
+                self.scroll.scroll_down(WHEEL_LINES);
+            }
             MouseEventKind::Down(MouseButton::Left)
                 if self.hit_follow_button(mouse.column, mouse.row) =>
             {
                 self.scroll.follow();
             }
+            // A press is not yet a click: what it becomes is decided on
+            // release, so the same gesture can open a tool call or select the
+            // line it is drawn on.
             MouseEventKind::Down(MouseButton::Left) => {
-                self.toggle_at(mouse.row);
+                self.selection.press((mouse.row, mouse.column));
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                self.selection.drag_to((mouse.row, mouse.column));
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(text) = self.selection.release() {
+                    self.copy_selection(text);
+                } else {
+                    self.toggle_at(mouse.row);
+                }
             }
             _ => {}
         }

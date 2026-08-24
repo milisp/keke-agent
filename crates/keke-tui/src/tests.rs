@@ -83,6 +83,13 @@ fn control(ch: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
 }
 
+/// Copying is a command now, not a key: Ctrl-Y is gone so that the terminal
+/// keeps its own selection.
+fn copy_command(app: &mut App) {
+    type_text(app, "/copy");
+    app.handle_key(key(KeyCode::Enter));
+}
+
 fn type_text(app: &mut App, text: &str) {
     for ch in text.chars() {
         app.handle_key(key(KeyCode::Char(ch)));
@@ -294,36 +301,36 @@ fn hiding_thinking_is_a_filter_not_a_deletion() {
     );
 }
 
-#[test]
-fn copying_takes_the_last_reply_and_hands_it_over_once() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+#[tokio::test]
+async fn copying_takes_the_last_reply_and_hands_it_over_once() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(Update::TextDelta("first answer".to_string()));
     app.apply(Update::TurnEnded(StopReason::EndTurn));
     app.apply(Update::TextDelta("second answer".to_string()));
 
-    app.handle_key(control('y'));
+    copy_command(&mut app);
     assert_eq!(app.take_pending_copy().as_deref(), Some("second answer"));
     // Taken once: a copy that repeated itself every frame would fight the
     // terminal for the clipboard.
     assert_eq!(app.take_pending_copy(), None);
 }
 
-#[test]
-fn copying_says_so_in_the_status_bar_and_not_in_the_conversation() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+#[tokio::test]
+async fn copying_says_so_in_the_status_bar_and_not_in_the_conversation() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(Update::TextDelta("an answer".to_string()));
     let before = app.transcript.len();
 
-    app.handle_key(control('y'));
+    copy_command(&mut app);
     assert!(app.flash().is_some());
     // A line in the transcript reads as something the agent said.
     assert_eq!(app.transcript.len(), before);
 }
 
-#[test]
-fn copying_nothing_flashes_rather_than_copying_an_empty_clipboard() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    app.handle_key(control('y'));
+#[tokio::test]
+async fn copying_nothing_flashes_rather_than_copying_an_empty_clipboard() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    copy_command(&mut app);
     assert_eq!(app.take_pending_copy(), None);
     assert_eq!(app.flash(), Some("nothing to copy yet"));
 }
@@ -1084,4 +1091,104 @@ fn a_finished_thought_collapses_while_the_one_still_arriving_stays_open() {
         lines.iter().any(|line| line.contains("Thought")),
         "{lines:?}"
     );
+}
+
+/// keke holds the mouse so a click can expand a tool call, and `/mouse` hands
+/// it back for anyone who wants the terminal's own selection instead.
+#[tokio::test]
+async fn the_mouse_command_hands_the_mouse_back_and_takes_it_again() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    assert!(app.mouse_capture());
+
+    type_text(&mut app, "/mouse");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(!app.mouse_capture());
+
+    type_text(&mut app, "/mouse");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.mouse_capture());
+}
+
+/// A drag over the transcript is a selection, and letting go copies it —
+/// which is what a captured mouse owes the person it took drag-select from.
+#[test]
+fn dragging_across_a_line_copies_what_was_dragged_over() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.selection.set_rows(0, vec!["hello world".to_string()]);
+
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        0,
+        0,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        4,
+        0,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+        4,
+        0,
+    ));
+
+    assert_eq!(app.take_pending_copy().as_deref(), Some("hello"));
+}
+
+/// A drag down the screen takes the rows between its ends whole.
+#[test]
+fn dragging_over_several_rows_copies_them_in_reading_order() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.selection.set_rows(
+        0,
+        vec![
+            "first line".to_string(),
+            "second line".to_string(),
+            "third line".to_string(),
+        ],
+    );
+
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        6,
+        0,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        4,
+        2,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+        4,
+        2,
+    ));
+
+    assert_eq!(
+        app.take_pending_copy().as_deref(),
+        Some("line\nsecond line\nthird")
+    );
+}
+
+/// The same gesture without the drag is still a click, so a captured mouse
+/// keeps expanding tool calls.
+#[test]
+fn a_press_and_release_in_one_place_is_a_click_not_a_selection() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.selection.set_rows(0, vec!["hello world".to_string()]);
+    app.set_toggles(vec![(0, 7)]);
+
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        3,
+        0,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+        3,
+        0,
+    ));
+
+    assert_eq!(app.take_pending_copy(), None);
+    assert!(app.expanded().contains(&7), "the click must reach the row");
 }

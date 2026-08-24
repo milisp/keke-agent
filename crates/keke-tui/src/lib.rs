@@ -14,6 +14,7 @@ mod input;
 mod keys;
 mod login;
 mod scroll;
+mod selection;
 pub mod slash;
 mod transcript;
 
@@ -99,17 +100,41 @@ pub async fn run(
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
-/// Alternate scroll mode, for the terminal where mouse capture does not take:
-/// the wheel then arrives as arrow keys, which an empty composer gives to the
-/// transcript. Harmless where capture does take — capture wins — and it is
-/// also what keeps the wheel working after `/mouse`.
+/// Alternate scroll mode: the wheel arrives as arrow keys, which an empty
+/// composer gives to the transcript. This is what makes scrolling work without
+/// capturing the mouse, and it is harmless where capture is later switched on
+/// by `/mouse` — capture wins.
 const ALTERNATE_SCROLL_ON: &str = "\x1b[?1007h";
 const ALTERNATE_SCROLL_OFF: &str = "\x1b[?1007l";
+
+/// Every mouse-reporting mode, off.
+///
+/// `DisableMouseCapture` is not enough to get drag-select back. It is
+/// winapi-only on Windows and emits no escape at all there, and a terminal left
+/// reporting by an earlier run — a crash, a killed process, an embedded
+/// terminal that missed the teardown — keeps eating the selection until it
+/// receives these bytes. So the state is asserted, never assumed: keke writes
+/// this whenever the mouse is meant to belong to the terminal.
+const MOUSE_TRACKING_OFF: &str = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l";
+
+/// Put the mouse where it belongs and make sure the terminal has heard.
+fn set_mouse_capture(stdout: &mut io::Stdout, capture: bool) -> io::Result<()> {
+    if capture {
+        execute!(stdout, EnableMouseCapture)?;
+    } else {
+        execute!(stdout, DisableMouseCapture)?;
+        stdout.write_all(MOUSE_TRACKING_OFF.as_bytes())?;
+    }
+    stdout.flush()
+}
 
 fn enter() -> anyhow::Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
+    // keke answers the drag itself, so capturing the mouse costs the reader
+    // nothing: see `crate::selection`.
+    set_mouse_capture(&mut stdout, true)?;
     stdout.write_all(ALTERNATE_SCROLL_ON.as_bytes())?;
     stdout.flush()?;
     Ok(Terminal::new(CrosstermBackend::new(stdout))?)
@@ -119,12 +144,8 @@ fn leave(terminal: &mut Tui) -> anyhow::Result<()> {
     disable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.write_all(ALTERNATE_SCROLL_OFF.as_bytes())?;
-    stdout.flush()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    set_mouse_capture(&mut stdout, false)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -143,7 +164,7 @@ async fn event_loop(
     mut local: UnboundedReceiver<Update>,
 ) -> anyhow::Result<()> {
     let mut input = EventStream::new();
-    let mut capturing = true;
+    let mut capturing = app.mouse_capture();
     terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
     while !app.should_quit() {
@@ -178,12 +199,7 @@ async fn event_loop(
         }
         if app.mouse_capture() != capturing {
             capturing = app.mouse_capture();
-            let mut stdout = io::stdout();
-            if capturing {
-                execute!(stdout, EnableMouseCapture)?;
-            } else {
-                execute!(stdout, DisableMouseCapture)?;
-            }
+            set_mouse_capture(&mut io::stdout(), capturing)?;
         }
         terminal.draw(|frame| draw::draw(frame, &mut app))?;
     }
