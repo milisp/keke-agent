@@ -30,6 +30,10 @@ RANK = {
     # tier 0.5 - shared wire implementation, above the contracts and below the
     # vendor plugins that configure it
     "keke-wire": 5,
+    # the model catalog and its on-disk cache: above the contracts because it
+    # speaks in `ModelInfo`, below the vendor plugins because each of them
+    # caches what it serves through it
+    "keke-catalog": 6,
     # tier 1 - engine
     "keke-config": 10,
     "keke-credentials": 10,

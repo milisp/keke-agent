@@ -27,6 +27,7 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+use super::Endpoint;
 use super::GrokProvider;
 
 /// Counts calls so the per-request header rule can be asserted directly.
@@ -79,7 +80,16 @@ fn stream_response(body: String) -> ResponseTemplate {
 
 async fn provider_over(server: &MockServer) -> (GrokProvider, Arc<StubAuth>) {
     let auth = Arc::new(StubAuth::default());
-    let provider = GrokProvider::new(auth.clone(), Some(format!("{}/v1", server.uri())));
+    let provider = GrokProvider::new(
+        auth.clone(),
+        Endpoint {
+            base_url: format!("{}/v1", server.uri()),
+            ..Endpoint::default()
+        },
+        // No cache: these assert what the endpoint said, and a cache would
+        // make the second test in a run assert the first one's answer.
+        None,
+    );
     (provider, auth)
 }
 
@@ -348,9 +358,10 @@ async fn a_malformed_request_is_not_retried_but_a_server_fault_is() {
     assert!(matches!(invalid, ProviderError::InvalidRequest(_)));
     assert!(!invalid.is_retryable());
 
-    let transient = provider.list_models().await.expect_err("transient");
-    assert!(matches!(transient, ProviderError::Transient(_)));
-    assert!(transient.is_retryable());
+    // Listing does not fail: an endpoint that is down leaves the person with
+    // the compiled-in catalog rather than with no picker at all.
+    let listed = provider.list_models().await.expect("a catalog either way");
+    assert!(listed.iter().any(|model| model.id == "grok-4.6"));
 }
 
 #[tokio::test]
@@ -439,7 +450,7 @@ async fn a_configured_effort_reaches_the_endpoint() {
 
 #[test]
 fn provider_info_names_its_route_and_credentials() {
-    let provider = GrokProvider::new(Arc::new(StubAuth::default()), None);
+    let provider = GrokProvider::new(Arc::new(StubAuth::default()), Endpoint::default(), None);
     let info = provider.info();
 
     assert_eq!(info.route, "grok");
@@ -534,4 +545,141 @@ fn an_image_travels_as_a_data_uri() {
     );
     assert_eq!(body["stream"], json!(false));
     assert!(body.get("stream_options").is_none());
+}
+
+/// The subscription proxy's listing is the one worth having: it carries the
+/// ladder, and dropping it at this seam is what would leave a picker showing
+/// bare ids.
+#[tokio::test]
+async fn the_subscription_listing_reaches_the_caller_with_its_levels() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "id": "grok-4.6",
+                "name": "Grok 4.6",
+                "context_window": 500_000,
+                "reasoning_effort": "high",
+                "reasoning_efforts": [
+                    {"value": "xhigh"},
+                    {"value": "high", "default": true},
+                    {"value": "low"}
+                ]
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let (provider, _auth) = provider_over(&server).await;
+    let models = provider.list_models().await.expect("listed");
+
+    assert_eq!(models[0].display_name, "Grok 4.6");
+    assert_eq!(
+        models[0].reasoning_efforts,
+        vec![
+            keke_protocol::ReasoningEffort::Low,
+            keke_protocol::ReasoningEffort::High,
+            keke_protocol::ReasoningEffort::XHigh,
+        ]
+    );
+    assert_eq!(
+        models[0].starting_effort(),
+        Some(keke_protocol::ReasoningEffort::High)
+    );
+}
+
+fn cached_provider(server: &MockServer, home: &tempfile::TempDir) -> GrokProvider {
+    let path = keke_paths::AbsPath::new(home.path()).expect("absolute");
+    GrokProvider::new(
+        Arc::new(StubAuth::default()),
+        Endpoint {
+            base_url: format!("{}/v1", server.uri()),
+            ..Endpoint::default()
+        },
+        Some(keke_catalog::CatalogCache::new(
+            &path,
+            std::time::Duration::from_secs(3600),
+        )),
+    )
+}
+
+/// The point of the cache: opening the interface twice costs one request.
+#[tokio::test]
+async fn a_cached_catalog_is_answered_without_asking_the_vendor_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "grok-4.6", "name": "Grok 4.6"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().expect("temp dir");
+
+    let first = cached_provider(&server, &home)
+        .list_models()
+        .await
+        .expect("listed");
+    let second = cached_provider(&server, &home)
+        .list_models()
+        .await
+        .expect("listed");
+
+    assert_eq!(first, second);
+    assert_eq!(first[0].display_name, "Grok 4.6");
+    // `expect(1)` above is the assertion: a second request would fail the mock.
+}
+
+/// A vendor that has gone away must not empty a picker that was working a
+/// minute ago.
+#[tokio::test]
+async fn an_endpoint_that_fails_falls_back_to_what_it_last_said() {
+    let good = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "grok-4.6-preview", "name": "Grok 4.6 Preview"}]
+        })))
+        .mount(&good)
+        .await;
+    let home = tempfile::tempdir().expect("temp dir");
+    cached_provider(&good, &home)
+        .list_models()
+        .await
+        .expect("listed");
+
+    let broken = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("gone"))
+        .mount(&broken)
+        .await;
+
+    let models = cached_provider(&broken, &home)
+        .list_models()
+        .await
+        .expect("a catalog either way");
+    assert_eq!(models[0].id, "grok-4.6-preview");
+}
+
+/// And with nothing cached, the compiled-in catalog — never an empty list,
+/// which is what would make the surface offer no choice at all.
+#[tokio::test]
+async fn an_endpoint_that_fails_with_nothing_cached_falls_back_to_the_bundled_catalog() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("not signed in"))
+        .mount(&server)
+        .await;
+    let home = tempfile::tempdir().expect("temp dir");
+
+    let models = cached_provider(&server, &home)
+        .list_models()
+        .await
+        .expect("a catalog either way");
+    assert!(models.iter().any(|model| model.id == "grok-4.6"));
+    assert!(models[0].supports_reasoning());
 }

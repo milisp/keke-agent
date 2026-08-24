@@ -62,6 +62,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         &config.home,
         &config.providers,
         config.plugins,
+        config.model_catalog_ttl,
         interactive.then(|| Arc::clone(&approvals)),
     )?;
 
@@ -86,6 +87,24 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Command::Models(args) => models(args, composed).await,
         Command::Doctor => doctor(config, composed),
         Command::Plugin { action } => plugin(action, config),
+    }
+}
+
+/// What `route` serves, or nothing when it could not be asked.
+///
+/// A compiled-in vendor answers from its own catalog when the network does
+/// not, so "nothing" here means the route does not exist or genuinely
+/// publishes no list — not that a request failed.
+async fn models_for(composed: &Composed, route: &str) -> Vec<keke_provider_api::ModelInfo> {
+    let Ok(provider) = provider_for(composed, route) else {
+        return Vec::new();
+    };
+    match provider.list_models().await {
+        Ok(models) => models,
+        Err(error) => {
+            tracing::warn!(%route, %error, "could not list this provider's models");
+            Vec::new()
+        }
     }
 }
 
@@ -193,18 +212,8 @@ impl EditorSessions {
     /// A provider that cannot be asked leaves the list empty rather than
     /// failing the session: not being able to switch models is a smaller loss
     /// than not being able to open the conversation at all.
-    async fn models(&self, composed: &Composed) -> Vec<String> {
-        let route = &self.config.model.provider;
-        let Ok(provider) = provider_for(composed, route) else {
-            return Vec::new();
-        };
-        match provider.list_models().await {
-            Ok(models) => models.into_iter().map(|model| model.id).collect(),
-            Err(error) => {
-                tracing::warn!(%route, %error, "could not list models for the editor");
-                Vec::new()
-            }
-        }
+    async fn models(&self, composed: &Composed) -> Vec<keke_provider_api::ModelInfo> {
+        models_for(composed, &self.config.model.provider).await
     }
 
     /// Build one session, new or continuing, and start it.
@@ -218,6 +227,7 @@ impl EditorSessions {
             &self.config.home,
             &self.config.providers,
             self.config.plugins,
+            self.config.model_catalog_ttl,
             Some(Arc::clone(&approvals)),
         )?;
         let mut builder =
@@ -454,6 +464,10 @@ async fn tui(
             )
         })
         .collect();
+    // Asked before the interface opens so `/model` can answer without a round
+    // trip mid-conversation. It costs at most one request, and usually none:
+    // the compiled-in vendors cache what they serve between runs.
+    let models = models_for(&composed, &config.model.provider).await;
     let opened = keke_acp::local(builder, approvals, requests).await?;
     let (conversation, updates) = (opened.conversation, opened.updates);
     keke_tui::run(
@@ -462,6 +476,10 @@ async fn tui(
         keke_tui::SlashCommands::new(commands),
         config.approval_policy,
         config.reasoning_effort,
+        keke_tui::Models {
+            current: opened.model,
+            available: models,
+        },
         seed,
         prompts,
     )
@@ -635,11 +653,29 @@ async fn models(args: VendorArgs, composed: Composed) -> Result<()> {
         return Ok(());
     }
     for model in models {
-        let context = model
-            .context_window
-            .map(|window| format!("  {window} tokens"))
-            .unwrap_or_default();
-        println!("{}{context}", model.id);
+        println!("{}", model.id);
+        // Indented under the id rather than beside it: the id is what gets
+        // typed and copied, and a line that starts with it stays greppable.
+        if model.display_name != model.id {
+            println!("  {}", model.display_name);
+        }
+        if let Some(description) = &model.description {
+            println!("  {description}");
+        }
+        if let Some(window) = model.context_window {
+            println!("  context: {window} tokens");
+        }
+        if model.supports_reasoning() {
+            let levels: Vec<&str> = model
+                .reasoning_efforts
+                .iter()
+                .map(|effort| effort.as_str())
+                .collect();
+            let default = model
+                .starting_effort()
+                .map_or_else(String::new, |effort| format!(" (default: {effort})"));
+            println!("  effort: {}{default}", levels.join(", "));
+        }
     }
     Ok(())
 }

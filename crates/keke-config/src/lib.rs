@@ -24,6 +24,7 @@ use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
+use keke_config_types::ModelCatalogTtl;
 use keke_config_types::ModelSelection;
 use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
@@ -68,6 +69,9 @@ pub struct Config {
     pub compaction: CompactionConfig,
     /// Budgets for plugin-supplied programs.
     pub plugins: PluginTimeouts,
+    /// How long a fetched model catalog stays usable before the vendor is
+    /// asked again.
+    pub model_catalog_ttl: ModelCatalogTtl,
     /// Endpoints declared from configuration, in addition to the compiled-in
     /// vendors.
     pub providers: Vec<ProviderDeclaration>,
@@ -93,6 +97,8 @@ pub struct ConfigFile {
     pub reasoning_effort: Option<String>,
     pub compaction: Option<CompactionFile>,
     pub plugins: Option<PluginsFile>,
+    /// Seconds. `0` asks the vendor every time.
+    pub model_catalog_ttl_seconds: Option<u64>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
     /// across layers rather than replaced, so a project can add one without
     /// restating the user's.
@@ -157,6 +163,10 @@ impl Config {
                 .reasoning_effort
                 .clone()
                 .or(merged.reasoning_effort);
+            merged.model_catalog_ttl_seconds = layer
+                .file
+                .model_catalog_ttl_seconds
+                .or(merged.model_catalog_ttl_seconds);
 
             if let Some(compaction) = layer.file.compaction {
                 let base = merged
@@ -253,6 +263,11 @@ impl Config {
             None => MaxOutputTokens::default(),
         };
 
+        let model_catalog_ttl = match merged.model_catalog_ttl_seconds {
+            Some(value) => ModelCatalogTtl::new(value).map_err(invalid)?,
+            None => ModelCatalogTtl::default(),
+        };
+
         let reasoning_effort = match merged.reasoning_effort.as_deref() {
             Some(value) => Some(ReasoningEffort::parse(value).map_err(invalid)?),
             None => None,
@@ -272,6 +287,7 @@ impl Config {
             reasoning_effort,
             compaction,
             plugins,
+            model_catalog_ttl,
             providers: merged
                 .providers
                 .into_iter()

@@ -55,6 +55,15 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Cyan)
         },
     ));
+    // Which model is answering. A person switching between vendors mid-session
+    // is choosing what the next answer costs and how good it will be; a bar
+    // that does not say leaves them re-reading the transcript to find out.
+    if !app.model().is_empty() {
+        spans.push(Span::styled(
+            format!("· {} ", app.model()),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
     // Beside the mode for the same reason: the level changes what the next
     // answer costs, and a person who cannot see it has to guess.
     if let Some(level) = app.reasoning_effort() {

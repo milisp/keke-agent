@@ -24,7 +24,9 @@ use std::sync::Mutex;
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectTo;
 use agent_client_protocol::Stdio;
+use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
+use keke_provider_api::ModelInfo;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::Conversation;
@@ -97,21 +99,81 @@ fn answer_for(option_id: &str) -> PermissionAnswer {
     }
 }
 
-/// The config option id keke offers a model under. The client sends it back,
-/// so it is the wire contract for what was changed.
+/// The config option ids keke offers. A client sends one back to say what it
+/// changed, so these strings are the wire contract.
 const MODEL: &str = "model";
+const REASONING_EFFORT: &str = "reasoning_effort";
+
+/// The value that means "no level; let the model decide".
+///
+/// A named option rather than an absent one, because unset is a state a person
+/// must be able to get back to — see
+/// [`ReasoningEffort`](keke_protocol::ReasoningEffort) on why it is not the
+/// bottom rung.
+const DEFAULT_EFFORT: &str = "default";
+
+/// One config option, described in keke's own terms.
+///
+/// The two protocol versions declare separate types with the same names, so
+/// what a client is offered is decided once here and rendered twice. Without
+/// this the versions could quietly come to offer different things, which is
+/// exactly the drift a client switching between them would report as a bug in
+/// whichever it tried second.
+struct Choice {
+    id: &'static str,
+    name: &'static str,
+    current: String,
+    /// `(value, label)`. The value is what comes back; the label is what a
+    /// person reads.
+    options: Vec<(String, String)>,
+}
 
 /// One live ACP session.
 struct Entry {
     conversation: Arc<dyn Conversation>,
-    /// What the provider serves, for answering `session/set_config_option` and
-    /// for describing the choice in the first place.
-    models: Vec<String>,
+    /// What the provider serves. Fixed for the session's life: it is what the
+    /// session was opened against, and a list that changed underneath a client
+    /// would make a selection it just made invalid.
+    models: Vec<ModelInfo>,
+    /// What is selected now. Behind a lock because `session/set_config_option`
+    /// changes it from the dispatch loop while the prompt handler reads it.
+    selected: Mutex<Selected>,
     /// Fed by the pump when a turn ends, read by the prompt handler. Carried in
     /// keke's own terms rather than either wire's: v1 wants the reason as the
     /// response to `session/prompt` and v2 wants it on the update stream, and
     /// this must serve both.
     outcomes: tokio::sync::Mutex<UnboundedReceiver<StopReason>>,
+}
+
+#[derive(Clone, Debug)]
+struct Selected {
+    model: String,
+    effort: Option<ReasoningEffort>,
+}
+
+impl Entry {
+    fn selected(&self) -> Selected {
+        self.selected
+            .lock()
+            .map(|selected| selected.clone())
+            // A poisoned lock means another thread panicked mid-change. The
+            // session is still answerable, and reporting the model as unset is
+            // a smaller lie than refusing every later request.
+            .unwrap_or_else(|_| Selected {
+                model: String::new(),
+                effort: None,
+            })
+    }
+
+    /// The levels the selected model takes, or nothing when it published none.
+    fn offered_efforts(&self) -> Vec<ReasoningEffort> {
+        let model = self.selected().model;
+        self.models
+            .iter()
+            .find(|candidate| candidate.id == model)
+            .map(|candidate| candidate.reasoning_efforts.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Default)]
@@ -129,12 +191,145 @@ impl Sessions {
     }
 }
 
-/// The models a session may be switched to, or the reason it may not.
+/// Register an opened conversation, and describe what a client may change.
 ///
-/// Shared so the two versions cannot disagree about what a client is allowed to
-/// ask for — only about how the refusal is spelled.
-fn chosen_model(entry: &Entry, chosen: Option<String>) -> Option<String> {
-    chosen.filter(|model| entry.models.contains(model))
+/// Shared by both versions so the two cannot disagree about what a session is.
+fn enrol(
+    sessions: &Sessions,
+    opened: &Opened,
+    outcomes: UnboundedReceiver<StopReason>,
+) -> Arc<Entry> {
+    let entry = Arc::new(Entry {
+        conversation: Arc::clone(&opened.conversation),
+        models: opened.models.clone(),
+        selected: Mutex::new(Selected {
+            model: opened.model.clone(),
+            effort: opened.effort,
+        }),
+        outcomes: tokio::sync::Mutex::new(outcomes),
+    });
+    sessions.insert(&opened.id, Arc::clone(&entry));
+    entry
+}
+
+/// What a client may change about a session, and what it is set to now.
+///
+/// An empty list is the honest answer when the provider could not be asked what
+/// it serves: offering a choice keke cannot honour would put the refusal after
+/// the click rather than before it. The effort option appears only when the
+/// selected model published a ladder — a menu of levels the endpoint will
+/// reject is worse than no menu.
+fn choices(entry: &Entry) -> Vec<Choice> {
+    let selected = entry.selected();
+    if entry.models.is_empty() {
+        return Vec::new();
+    }
+    let mut choices = vec![Choice {
+        id: MODEL,
+        name: "Model",
+        current: selected.model,
+        options: entry
+            .models
+            .iter()
+            // The display name is what the vendor calls it. Showing the slug
+            // twice is what a client falls back to when keke says nothing, and
+            // it is the difference between "GPT-5.6-Sol" and "gpt-5.6-sol" in
+            // a menu someone has to read.
+            .map(|model| (model.id.clone(), model.display_name.clone()))
+            .collect(),
+    }];
+
+    let offered = entry.offered_efforts();
+    if !offered.is_empty() {
+        let mut options = vec![(
+            DEFAULT_EFFORT.to_string(),
+            "Default (let the model decide)".to_string(),
+        )];
+        options.extend(
+            offered
+                .iter()
+                .map(|effort| (effort.to_string(), effort_label(*effort))),
+        );
+        choices.push(Choice {
+            id: REASONING_EFFORT,
+            name: "Reasoning effort",
+            current: selected
+                .effort
+                .map_or_else(|| DEFAULT_EFFORT.to_string(), |effort| effort.to_string()),
+            options,
+        });
+    }
+    choices
+}
+
+/// How a level is written in a menu. Capitalised because it sits beside model
+/// names in the same list, and `xhigh` reads as a typo next to `GPT-5.6-Sol`.
+fn effort_label(effort: ReasoningEffort) -> String {
+    match effort {
+        ReasoningEffort::Low => "Low",
+        ReasoningEffort::Medium => "Medium",
+        ReasoningEffort::High => "High",
+        ReasoningEffort::XHigh => "Extra high",
+        ReasoningEffort::Max => "Maximum",
+        ReasoningEffort::Ultra => "Ultra",
+    }
+    .to_string()
+}
+
+/// Apply one `session/set_config_option`, or say why it cannot be.
+///
+/// Invariant 8: an option keke was not offering is an error rather than a
+/// silent no-op, which would leave the client showing a selection the session
+/// does not have. Shared so the two versions cannot disagree about what a
+/// client is allowed to ask for — only about how the refusal is spelled.
+fn apply(entry: &Entry, config_id: &str, value: Option<String>) -> Result<Vec<Choice>, String> {
+    match config_id {
+        MODEL => {
+            let wanted = value.ok_or_else(|| "no model named".to_string())?;
+            if !entry.models.iter().any(|model| model.id == wanted) {
+                return Err("not a model this session offers".to_string());
+            }
+            entry.conversation.set_model(wanted.clone());
+            if let Ok(mut selected) = entry.selected.lock() {
+                selected.model = wanted;
+            }
+            // A level the newly selected model does not take would be sent
+            // anyway and rejected on the next prompt, long after the change
+            // that caused it. Dropping it here is why the client is handed the
+            // whole option set back rather than just the one it changed.
+            let offered = entry.offered_efforts();
+            let stale = entry
+                .selected()
+                .effort
+                .is_some_and(|effort| !offered.is_empty() && !offered.contains(&effort));
+            if stale {
+                entry.conversation.set_reasoning_effort(None);
+                if let Ok(mut selected) = entry.selected.lock() {
+                    selected.effort = None;
+                }
+            }
+            Ok(choices(entry))
+        }
+        REASONING_EFFORT => {
+            let wanted = value.ok_or_else(|| "no reasoning effort named".to_string())?;
+            let effort = if wanted == DEFAULT_EFFORT {
+                None
+            } else {
+                let parsed = ReasoningEffort::parse(&wanted)
+                    .map_err(|_| "not a reasoning effort this session offers".to_string())?;
+                if !entry.offered_efforts().contains(&parsed) {
+                    return Err("not a reasoning effort this model offers".to_string());
+                }
+                Some(parsed)
+            };
+            entry.conversation.set_reasoning_effort(effort);
+            if let Ok(mut selected) = entry.selected.lock() {
+                selected.effort = effort;
+            }
+            Ok(choices(entry))
+        }
+        other => Err(format!("no config option `{other}`")),
+    }
 }
 
 #[cfg(test)]
@@ -147,5 +342,157 @@ mod tests {
         assert_eq!(answer_for("allow-always"), PermissionAnswer::AllowAlways);
         assert_eq!(answer_for("deny"), PermissionAnswer::Deny);
         assert_eq!(answer_for("something-else"), PermissionAnswer::Deny);
+    }
+
+    fn served(id: &str, name: &str, efforts: &[ReasoningEffort]) -> ModelInfo {
+        let mut model = ModelInfo::new(id);
+        name.clone_into(&mut model.display_name);
+        model.reasoning_efforts = efforts.to_vec();
+        model
+    }
+
+    fn entry(models: Vec<ModelInfo>) -> (Entry, Arc<crate::ScriptedConversation>) {
+        let (scripted, _updates) = crate::ScriptedConversation::new(Vec::new());
+        let scripted = Arc::new(scripted);
+        let model = models
+            .first()
+            .map(|model| model.id.clone())
+            .unwrap_or_default();
+        let (_tx, outcomes) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Entry {
+                conversation: Arc::clone(&scripted) as Arc<dyn Conversation>,
+                models,
+                selected: Mutex::new(Selected {
+                    model,
+                    effort: None,
+                }),
+                outcomes: tokio::sync::Mutex::new(outcomes),
+            },
+            scripted,
+        )
+    }
+
+    fn option<'a>(choices: &'a [Choice], id: &str) -> Option<&'a Choice> {
+        choices.iter().find(|choice| choice.id == id)
+    }
+
+    /// A client draws its picker from the labels. Sending the slug as the
+    /// label is what makes a menu of `gpt-5.6-*` unreadable.
+    #[test]
+    fn the_model_option_is_labelled_with_what_the_vendor_calls_it() {
+        let (entry, _scripted) = entry(vec![
+            served("gpt-5.6-sol", "GPT-5.6-Sol", &[ReasoningEffort::Low]),
+            served("gpt-5.2", "GPT-5.2", &[]),
+        ]);
+        let choices = choices(&entry);
+        let models = option(&choices, MODEL).expect("a model option");
+
+        assert_eq!(models.current, "gpt-5.6-sol");
+        assert_eq!(
+            models.options,
+            vec![
+                ("gpt-5.6-sol".to_string(), "GPT-5.6-Sol".to_string()),
+                ("gpt-5.2".to_string(), "GPT-5.2".to_string()),
+            ]
+        );
+    }
+
+    /// The levels a model takes are a choice a client can draw, and until now
+    /// keke told it about none of them.
+    #[test]
+    fn a_model_that_publishes_a_ladder_gets_an_effort_option() {
+        let (entry, _scripted) = entry(vec![served(
+            "gpt-5.6-sol",
+            "GPT-5.6-Sol",
+            &[ReasoningEffort::Low, ReasoningEffort::Ultra],
+        )]);
+        let choices = choices(&entry);
+        let efforts = option(&choices, REASONING_EFFORT).expect("an effort option");
+
+        assert_eq!(efforts.current, DEFAULT_EFFORT);
+        let values: Vec<&str> = efforts
+            .options
+            .iter()
+            .map(|(value, _)| value.as_str())
+            .collect();
+        assert_eq!(values, vec![DEFAULT_EFFORT, "low", "ultra"]);
+    }
+
+    /// A menu of levels the endpoint will reject is worse than no menu.
+    #[test]
+    fn a_model_with_no_ladder_is_offered_no_effort_option() {
+        let (entry, _scripted) = entry(vec![served("grok-3-mini", "grok-3-mini", &[])]);
+        assert!(option(&choices(&entry), REASONING_EFFORT).is_none());
+    }
+
+    /// Invariant 8: a selection keke was not offering is an error, not a
+    /// silent no-op that leaves the client showing something untrue.
+    #[test]
+    fn a_model_this_session_does_not_offer_is_refused() {
+        let (entry, scripted) = entry(vec![served("gpt-5.2", "GPT-5.2", &[])]);
+
+        assert!(apply(&entry, MODEL, Some("gpt-4o".to_string())).is_err());
+        assert!(apply(&entry, "colour-scheme", Some("dark".to_string())).is_err());
+        assert_eq!(entry.selected().model, "gpt-5.2");
+        assert!(scripted.models().is_empty());
+    }
+
+    #[test]
+    fn a_level_this_model_does_not_offer_is_refused() {
+        let (entry, scripted) = entry(vec![served(
+            "gpt-5.2",
+            "GPT-5.2",
+            &[ReasoningEffort::Low, ReasoningEffort::High],
+        )]);
+
+        assert!(apply(&entry, REASONING_EFFORT, Some("ultra".to_string())).is_err());
+        assert!(apply(&entry, REASONING_EFFORT, Some("hgih".to_string())).is_err());
+        assert!(scripted.efforts().is_empty());
+
+        apply(&entry, REASONING_EFFORT, Some("high".to_string())).expect("high is offered");
+        assert_eq!(entry.selected().effort, Some(ReasoningEffort::High));
+        assert_eq!(scripted.efforts(), vec![Some(ReasoningEffort::High)]);
+    }
+
+    /// Unset is a level a person must be able to get back to, so it is an
+    /// option with a name rather than the absence of one.
+    #[test]
+    fn the_default_level_is_reachable_again() {
+        let (entry, scripted) = entry(vec![served("gpt-5.2", "GPT-5.2", &[ReasoningEffort::High])]);
+        apply(&entry, REASONING_EFFORT, Some("high".to_string())).expect("offered");
+        apply(&entry, REASONING_EFFORT, Some(DEFAULT_EFFORT.to_string())).expect("unset");
+
+        assert_eq!(entry.selected().effort, None);
+        assert_eq!(scripted.efforts(), vec![Some(ReasoningEffort::High), None]);
+    }
+
+    /// Carrying a level onto a model that does not take it would fail the next
+    /// prompt, long after the change that caused it.
+    #[test]
+    fn switching_models_drops_a_level_the_new_one_does_not_take() {
+        let (entry, scripted) = entry(vec![
+            served("gpt-5.6-sol", "GPT-5.6-Sol", &[ReasoningEffort::Ultra]),
+            served("gpt-5.2", "GPT-5.2", &[ReasoningEffort::High]),
+        ]);
+        apply(&entry, REASONING_EFFORT, Some("ultra".to_string())).expect("offered");
+
+        let choices = apply(&entry, MODEL, Some("gpt-5.2".to_string())).expect("offered");
+
+        assert_eq!(entry.selected().effort, None);
+        assert_eq!(
+            option(&choices, REASONING_EFFORT).map(|choice| choice.current.as_str()),
+            Some(DEFAULT_EFFORT),
+            "the client is handed the whole option set back so its picker follows"
+        );
+        assert_eq!(scripted.efforts(), vec![Some(ReasoningEffort::Ultra), None]);
+    }
+
+    /// Offering a choice keke cannot honour puts the refusal after the click
+    /// rather than before it.
+    #[test]
+    fn a_provider_that_could_not_be_asked_offers_no_choice() {
+        let (entry, _scripted) = entry(Vec::new());
+        assert!(choices(&entry).is_empty());
     }
 }

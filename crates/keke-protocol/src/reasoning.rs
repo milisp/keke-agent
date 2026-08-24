@@ -26,8 +26,12 @@ pub enum ReasoningEffort {
     /// One rung above `High`, spelled `xhigh` on the wires that take it.
     #[serde(rename = "xhigh")]
     XHigh,
-    /// As much as the model will spend.
+    /// As much as the model will spend on the answer itself.
     Max,
+    /// Above `Max`: the vendors that offer it spend `Max` *and* let the model
+    /// break the work up on its own. A rung rather than a separate flag,
+    /// because the endpoints that take it take it in the same field.
+    Ultra,
 }
 
 impl ReasoningEffort {
@@ -40,6 +44,7 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 
@@ -55,8 +60,9 @@ impl ReasoningEffort {
             "high" => Ok(Self::High),
             "xhigh" | "x-high" => Ok(Self::XHigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             other => Err(format!(
-                "reasoning effort must be one of low, medium, high, xhigh, max; got `{other}`"
+                "reasoning effort must be one of low, medium, high, xhigh, max, ultra; got `{other}`"
             )),
         }
     }
@@ -88,6 +94,7 @@ mod tests {
             ReasoningEffort::High,
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
         ] {
             assert_eq!(ReasoningEffort::parse(effort.as_str()), Ok(effort));
             let json = serde_json::to_value(effort).expect("serialize");
@@ -102,6 +109,7 @@ mod tests {
         assert!(ReasoningEffort::Low < ReasoningEffort::Medium);
         assert!(ReasoningEffort::High < ReasoningEffort::XHigh);
         assert!(ReasoningEffort::XHigh < ReasoningEffort::Max);
+        assert!(ReasoningEffort::Max < ReasoningEffort::Ultra);
     }
 
     #[test]

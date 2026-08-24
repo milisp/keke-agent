@@ -171,6 +171,57 @@ impl Default for CompactionConfig {
     }
 }
 
+/// How long a fetched model catalog stays usable without asking the vendor
+/// again.
+///
+/// A validated field rather than a constant in whichever plugin does the
+/// fetching: how long a deployment is willing to show yesterday's model list is
+/// exactly the kind of number one deployment sets differently from another. An
+/// air-gapped install wants a long life; someone tracking a vendor's weekly
+/// releases wants a short one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelCatalogTtl(u64);
+
+impl ModelCatalogTtl {
+    /// Zero is a real setting — "ask every time" — so the floor is zero rather
+    /// than a minimum age. The ceiling exists because a lifetime longer than a
+    /// week is indistinguishable from never refreshing, and a picker that never
+    /// learns about a new model looks like keke not supporting it.
+    pub const MAX_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+    /// Validate a configured lifetime, in seconds.
+    pub fn new(seconds: u64) -> Result<Self, String> {
+        if seconds <= Self::MAX_SECONDS {
+            Ok(Self(seconds))
+        } else {
+            Err(format!(
+                "model-catalog-ttl must be at most {} seconds, got {seconds}",
+                Self::MAX_SECONDS
+            ))
+        }
+    }
+
+    #[must_use]
+    pub fn get(self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.0)
+    }
+
+    #[must_use]
+    pub fn seconds(self) -> u64 {
+        self.0
+    }
+}
+
+/// Six hours: long enough that opening the interface a dozen times in an
+/// afternoon costs one request, short enough that a model released this morning
+/// is selectable this evening.
+impl Default for ModelCatalogTtl {
+    fn default() -> Self {
+        Self(6 * 60 * 60)
+    }
+}
+
 /// Budgets for the programs runtime plugins bring with them.
 ///
 /// A hook and an MCP server are both someone else's process running inside a

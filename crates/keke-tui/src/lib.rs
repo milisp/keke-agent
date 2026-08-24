@@ -58,6 +58,19 @@ pub use transcript::PermissionCell;
 pub use transcript::ToolCell;
 pub use transcript::Transcript;
 
+/// Which model a session is asking, and what its provider serves.
+///
+/// A value rather than two arguments because the two are only ever meaningful
+/// together: a current model with no list means "no choice to offer", and a
+/// list without a current one has nothing to mark.
+#[derive(Debug, Default)]
+pub struct Models {
+    pub current: String,
+    /// Empty when the provider could not be asked and had nothing to fall back
+    /// on. The surface then offers no choice rather than a wrong one.
+    pub available: Vec<keke_provider_api::ModelInfo>,
+}
+
 /// What a resumed session hands the interface: what was said and what it
 /// spent. Empty for a fresh session, which is why it is a value rather than an
 /// `Option` at every call site.
@@ -70,16 +83,18 @@ pub struct Resumed {
 /// Run the interface until the person quits.
 ///
 /// `updates` is the agent's stream; the app also produces its own, so both are
-/// drained here rather than merged upstream. `commands` and `approval` come
-/// from the composition root: nothing here knows what a plugin is, or what the
-/// configured policy or effort level was. `history` is what was typed in this project before,
-/// which the host reads and writes because only it knows where that lives.
+/// drained here rather than merged upstream. `commands`, `approval` and
+/// `models` come from the composition root: nothing here knows what a plugin
+/// is, what the configured policy or effort level was, or how to ask a provider
+/// what it serves. `history` is what was typed in this project before, which
+/// the host reads and writes because only it knows where that lives.
 pub async fn run(
     conversation: Arc<dyn Conversation>,
     updates: UnboundedReceiver<Update>,
     commands: SlashCommands,
     approval: keke_config_types::ApprovalPolicy,
     effort: Option<keke_config_types::ReasoningEffort>,
+    models: Models,
     resumed: Resumed,
     history: PromptHistory,
 ) -> anyhow::Result<()> {
@@ -88,6 +103,7 @@ pub async fn run(
         .with_commands(commands)
         .with_approval_policy(approval)
         .with_reasoning_effort(effort)
+        .with_models(models.current, models.available)
         .with_prompt_history(history);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {
         app = app.with_history(&resumed.history, resumed.usage);

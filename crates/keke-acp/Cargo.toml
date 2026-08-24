@@ -13,6 +13,7 @@ keke-core = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-paths = { workspace = true }
 keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
@@ -24,7 +25,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 keke-paths = { workspace = true }
-keke-provider-api = { workspace = true }
 keke-tool = { workspace = true }
 schemars = { workspace = true }
 tempfile = { workspace = true }

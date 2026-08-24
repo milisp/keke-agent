@@ -58,6 +58,13 @@ else is written against.
 | `keke-auth-api` | `AuthProvider`, `CredentialStore`, `LoginUi` |
 | `keke-plugin-api` | contributor traits + `ExtensionRegistryBuilder` |
 
+### Tier 0.5 — shared implementation
+
+Above the contracts and below the vendor plugins that configure them.
+`keke-wire` speaks the three inference wire formats; `keke-catalog` keeps a
+provider's model list on disk so a picker is drawn without a round trip, and is
+still drawn when the vendor cannot be reached at all.
+
 ### Tier 1 — engine
 
 `keke-core` (session lifecycle, turn loop, context assembly, tool dispatch,
@@ -69,8 +76,8 @@ compaction, rollout log), `keke-config` (layered load), `keke-credentials`
 ### Tier 2 — plugins
 
 Compiled-in crates that register through tier 0 traits:
-`keke-provider-xai`, `keke-provider-chatgpt`, `keke-auth-xai`,
-`keke-auth-chatgpt`, `keke-tools`, `keke-mcp`, `keke-hooks`, `keke-skills`,
+`keke-provider-grok`, `keke-provider-codex`, `keke-auth-grok`,
+`keke-auth-codex`, `keke-tools`, `keke-mcp`, `keke-hooks`, `keke-skills`,
 `keke-plugin`.
 
 ### Tier 3 — surfaces
@@ -117,6 +124,24 @@ A compiled-in provider crate is for a vendor with real behavior of its own — a
 OAuth flow, a non-standard error shape, an endpoint outside the three formats.
 Declarations accumulate across config layers and are keyed by route, so
 redeclaring one replaces that entry rather than the whole set.
+
+**What a provider serves is part of what it is.** `ModelInfo` carries a display
+name, a context window, and the reasoning levels the model accepts — not just an
+id. A surface that only has ids makes a person guess which `gpt-5.6-*` is which,
+and cannot tell that one of them takes a level the others do not. The listings
+disagree about how much they say: the plain OpenAI `/models` is a bag of ids,
+while both subscription backends publish the ladder, so decoding the richer
+shape lives in the vendor crate and the neutral one lives in `keke-wire`.
+
+A compiled-in vendor also ships its own catalog as a file, and answers from it
+when the endpoint cannot be reached. `list_models` on such a provider therefore
+never fails and never comes back empty: a person offline, behind a proxy, or not
+yet signed in still gets a picker, and one that lists models the endpoint will
+honour. The order it tries is cache (while fresh) → vendor → cache (stale) →
+compiled-in. How long "fresh" lasts is `model-catalog-ttl-seconds`, a validated
+`keke-config-types` field rather than a constant in a plugin, because an
+air-gapped install and someone tracking a vendor's weekly releases want
+different answers.
 
 ### Authentication
 

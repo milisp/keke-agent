@@ -1,6 +1,6 @@
 [package]
-name = "keke-provider-grok"
-description = "The xAI Grok model provider."
+name = "keke-provider-codex"
+description = "The OpenAI model provider, over the public API and the ChatGPT subscription backend."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,8 +18,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
-keke-protocol = { workspace = true }
 keke-paths = { workspace = true }
+keke-protocol = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = { workspace = true }

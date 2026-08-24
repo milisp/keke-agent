@@ -59,12 +59,12 @@ use keke_protocol::ToolStatus;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::Entry;
-use super::MODEL;
 use super::SessionFactory;
 use super::Sessions;
 use super::answer_for;
-use super::chosen_model;
+use super::apply;
+use super::choices;
+use super::enrol;
 use crate::Conversation;
 use crate::Opened;
 use crate::PermissionAnswer;
@@ -212,27 +212,14 @@ pub(super) fn agent(
                     let Some(entry) = sessions.get(request.session_id.0.as_ref()) else {
                         return responder.respond_with_error(unknown_session(&request.session_id));
                     };
-                    if request.config_id.0.as_ref() != MODEL {
-                        return responder.respond_with_error(
-                            agent_client_protocol::Error::invalid_params()
-                                .data(format!("no config option `{}`", request.config_id.0)),
-                        );
-                    }
-                    // Invariant 8: a model keke was not offering is an error
-                    // rather than a silent no-op, which would leave the client
-                    // showing a selection the session does not have.
                     let chosen = request.value.as_id().map(ToString::to_string);
-                    let Some(model) = chosen_model(&entry, chosen) else {
-                        return responder.respond_with_error(
-                            agent_client_protocol::Error::invalid_params()
-                                .data("not a model this session offers".to_string()),
-                        );
-                    };
-                    entry.conversation.set_model(model.clone());
-                    responder.respond(SetSessionConfigOptionResponse::new(config_options(
-                        &model,
-                        &entry.models,
-                    )))
+                    match apply(&entry, request.config_id.0.as_ref(), chosen) {
+                        Ok(choices) => responder
+                            .respond(SetSessionConfigOptionResponse::new(rendered(&choices))),
+                        Err(refusal) => responder.respond_with_error(
+                            agent_client_protocol::Error::invalid_params().data(refusal),
+                        ),
+                    }
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -263,17 +250,10 @@ fn start(
 ) -> Result<(SessionId, Vec<SessionConfigOption>), agent_client_protocol::Error> {
     // The id is the one the session is logged under, not one invented here:
     // what a client resumes must be what `session/list` showed it.
-    let id = SessionId::new(opened.id);
-    let models = opened.models.clone();
+    let id = SessionId::new(opened.id.clone());
     let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
-    sessions.insert(
-        id.0.as_ref(),
-        Arc::new(Entry {
-            conversation: Arc::clone(&opened.conversation),
-            models: opened.models.clone(),
-            outcomes: tokio::sync::Mutex::new(outcome_rx),
-        }),
-    );
+    let entry = enrol(sessions, &opened, outcome_rx);
+    let options = rendered(&choices(&entry));
     // Spawned, so the dispatch loop is free to deliver the permission
     // responses the pump is about to wait on.
     cx.spawn(pump(
@@ -283,34 +263,36 @@ fn start(
         outcome_tx,
         cx.clone(),
     ))?;
-    Ok((id, config_options(&opened.model, &models)))
+    Ok((id, options))
 }
 
-/// What a client may change about a session, and what it is set to now.
+/// Render keke's config options in this protocol version's types.
 ///
-/// Only the model today. An empty list is the honest answer when the provider
-/// could not be asked what it serves: offering a choice keke cannot honour
-/// would put the refusal after the click rather than before it.
-fn config_options(current: &str, models: &[String]) -> Vec<SessionConfigOption> {
-    if models.is_empty() {
-        return Vec::new();
-    }
-    vec![
-        SessionConfigOption::select(
-            MODEL,
-            "Model",
-            current,
-            SessionConfigSelectOptions::Ungrouped(
-                models
-                    .iter()
-                    .map(|model| SessionConfigSelectOption::new(model.as_str(), model.as_str()))
-                    .collect(),
-            ),
-        )
-        // The category is what tells a client this is the model picker rather
-        // than one more setting to bury in a menu.
-        .category(SessionConfigOptionCategory::Model),
-    ]
+/// What is offered is decided in `super::choices`; only the spelling is here,
+/// because v1 and v2 declare separate types with the same names.
+fn rendered(choices: &[super::Choice]) -> Vec<SessionConfigOption> {
+    choices
+        .iter()
+        .map(|choice| {
+            SessionConfigOption::select(
+                choice.id,
+                choice.name,
+                choice.current.as_str(),
+                SessionConfigSelectOptions::Ungrouped(
+                    choice
+                        .options
+                        .iter()
+                        .map(|(value, label)| {
+                            SessionConfigSelectOption::new(value.as_str(), label.as_str())
+                        })
+                        .collect(),
+                ),
+            )
+            // The category is what tells a client this is the model picker
+            // rather than one more setting to bury in a menu.
+            .category(SessionConfigOptionCategory::Model)
+        })
+        .collect()
 }
 
 /// Send a resumed session's history to the client as ordinary updates.
