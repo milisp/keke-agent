@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-24
+
 ### Added
 - `/model` lists what the session's provider serves — display name, context
   window, and the reasoning levels each model takes — and switches between
@@ -95,4 +97,5 @@ Foundational engine, TUI, provider wiring, and plugin system:
 - History summarization to keep long sessions inside the context window.
 - `docs/PROGRESS.md` / `docs/ROADMAP.md` tracking crate status and next steps.
 
+[0.1.2]: https://github.com/milisp/keke-agent/releases/tag/v0.1.2
 [0.1.1]: https://github.com/milisp/keke-agent/releases/tag/v0.1.1
