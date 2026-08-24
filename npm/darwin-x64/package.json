@@ -1,0 +1,19 @@
+{
+  "name": "@milisp/keke-darwin-x64",
+  "version": "0.1.2",
+  "description": "keke prebuilt binary for macOS x64",
+  "license": "Apache-2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "keke"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/milisp/keke-agent.git"
+  }
+}

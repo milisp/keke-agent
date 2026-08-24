@@ -1,0 +1,31 @@
+{
+  "name": "@milisp/keke",
+  "version": "0.1.2",
+  "description": "keke is a multi-vendor terminal coding agent.",
+  "license": "Apache-2.0",
+  "bin": {
+    "keke": "bin/keke.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "optionalDependencies": {
+    "@milisp/keke-darwin-x64": "0.1.2",
+    "@milisp/keke-darwin-arm64": "0.1.2",
+    "@milisp/keke-linux-x64": "0.1.2",
+    "@milisp/keke-linux-arm64": "0.1.2",
+    "@milisp/keke-win32-x64": "0.1.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/milisp/keke-agent.git"
+  }
+}

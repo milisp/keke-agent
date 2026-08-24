@@ -26,7 +26,7 @@ detect_target() {
   arch="$(uname -m)"
   case "$os" in
     Darwin) plat="apple-darwin" ;;
-    Linux) plat="unknown-linux-gnu" ;;
+    Linux) plat="unknown-linux-musl" ;;
     *) die "unsupported OS: $os (build from source instead: cargo install --path crates/keke-cli)" ;;
   esac
   case "$arch" in
