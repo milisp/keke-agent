@@ -31,7 +31,11 @@ use serde_json::json;
 use crate::decode::Sink;
 use crate::decode::WireDecoder;
 
-/// The API version this crate's translation was written against. Anthropic
+/// The API version this crate's translation was written against.
+///
+/// A contract version, not a date to keep current: Anthropic has published no
+/// GA value after this one, every current model is served under it, and a
+/// later-looking date is refused rather than accepted as "newer". Anthropic
 /// requires the header and pins breaking changes to it, so sending a fixed one
 /// is what keeps a server-side revision from silently changing our parsing.
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";

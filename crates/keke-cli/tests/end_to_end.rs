@@ -23,8 +23,12 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        let home = tempfile::tempdir().expect("tempdir");
+        // The stub speaks xAI's wire, so the fixture states the vendor rather
+        // than riding on whichever one is compiled in as the default.
+        std::fs::write(home.path().join("config.toml"), "provider = \"grok\"\n").expect("write");
         Self {
-            home: tempfile::tempdir().expect("tempdir"),
+            home,
             server: MockInferenceServer::start().await,
         }
     }

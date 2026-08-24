@@ -10,6 +10,7 @@ mod cli;
 mod commands;
 mod compose;
 mod declared;
+mod first_run;
 mod install;
 mod plugins;
 mod ui;

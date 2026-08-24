@@ -128,8 +128,8 @@ pub struct PluginsFile {
 ///
 /// These are defaults, not policy: every one of them is overridable from a
 /// config file, which is what invariant 9 in `AGENTS.md` requires.
-const DEFAULT_PROVIDER: &str = "grok";
-const DEFAULT_MODEL: &str = "grok-4.6";
+const DEFAULT_PROVIDER: &str = "anthropic";
+const DEFAULT_MODEL: &str = "claude-opus-5";
 
 impl Config {
     /// Load and merge every layer for `workspace_root`.

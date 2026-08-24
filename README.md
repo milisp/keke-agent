@@ -48,8 +48,8 @@ keke doctor                              # which providers and logins resolve
 | Provider | How you authenticate | Notes |
 | --- | --- | --- |
 | OpenAI / ChatGPT | `keke login codex`, or `OPENAI_API_KEY` | OAuth flow ported from codex |
-| xAI Grok | `keke login grok`, or `XAI_API_KEY` | Built in; the default provider |
-| Anthropic | `env-key` in `config.toml` | Declare with `wire = "messages"` |
+| Anthropic Claude | `ANTHROPIC_API_KEY` | Built in; the default provider. API key only — no subscription login |
+| xAI Grok | `keke login grok`, or `XAI_API_KEY` | Built in |
 | Local (Ollama, vLLM, …) | none | Your code never leaves the machine |
 | Any OpenAI-compatible gateway | `env-key` in `config.toml` | Company proxies, NVIDIA NIM, routers |
 

@@ -66,6 +66,30 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         interactive.then(|| Arc::clone(&approvals)),
     )?;
 
+    // A first run that declares an endpoint changes what the registry should
+    // contain, and the registry is frozen once built — so it is rebuilt rather
+    // than mutated, and the person's own answer works in the session they gave
+    // it in rather than after a restart.
+    let mut composed = composed;
+    if matches!(command, Command::Tui) && is_interactive() {
+        match crate::first_run::maybe_run(&mut config, &composed).await? {
+            crate::first_run::Outcome::ProvidersChanged => {
+                composed = Composed::build(
+                    &config.home,
+                    &config.providers,
+                    config.plugins,
+                    config.model_catalog_ttl,
+                    interactive.then(|| Arc::clone(&approvals)),
+                )?;
+            }
+            // Not an error: the person was asked a question and chose not to
+            // answer it. Exiting quietly leaves them where they can act on
+            // what the picker just told them.
+            crate::first_run::Outcome::Abandoned => return Ok(()),
+            crate::first_run::Outcome::Unchanged => {}
+        }
+    }
+
     match command {
         Command::Tui => {
             tui(

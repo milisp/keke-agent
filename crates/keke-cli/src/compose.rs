@@ -32,6 +32,13 @@ use keke_provider_api::WireApi;
 const GROK_SUBSCRIPTION_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+/// Anthropic's public API. There is no subscription address beside it: keke
+/// spends an API key here and nothing else, so unlike the two vendors above
+/// this route has one endpoint and one credential shape.
+const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+/// The variable the key is read from, and the name surfaces report it under.
+/// A reference, never a value — see `keke_auth_api::store`.
+const ANTHROPIC_ENV_KEY: &str = "ANTHROPIC_API_KEY";
 
 /// Whether this credential is a login rather than a key.
 ///
@@ -160,6 +167,30 @@ impl Composed {
                 Some(catalog),
             )) as ArcProvider)
             .context("registering the codex provider")?;
+
+        // Anthropic has no login flow to register: `auth_id: None` is what
+        // tells every surface to talk about the key rather than offer `keke
+        // login`, which for this vendor would have nothing to open.
+        let anthropic_key = keke_auth_api::CredentialRef::new(ANTHROPIC_ENV_KEY)
+            .context("the anthropic credential name")?;
+        providers
+            .register(crate::declared::wire_provider(
+                keke_provider_api::ProviderInfo {
+                    route: "anthropic".to_string(),
+                    display_name: "Anthropic".to_string(),
+                    base_url: base_url_override("ANTHROPIC_BASE_URL")
+                        .unwrap_or_else(|| ANTHROPIC_BASE_URL.to_string()),
+                    wire_api: WireApi::Messages,
+                    auth_id: None,
+                    env_key: Some(ANTHROPIC_ENV_KEY.to_string()),
+                },
+                Arc::new(crate::api_key::ApiKeyAuth::with_header(
+                    anthropic_key,
+                    crate::api_key::KeyHeader::XApiKey,
+                    Arc::clone(&credentials),
+                )),
+            ))
+            .context("registering the anthropic provider")?;
 
         for declaration in declared {
             let provider = crate::declared::provider_for(declaration, &credentials)?;

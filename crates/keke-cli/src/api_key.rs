@@ -22,15 +22,36 @@ use keke_auth_api::CredentialSnapshot;
 use keke_auth_api::CredentialStore;
 use keke_auth_api::LoginUi;
 
-/// Sends a stored API key as a bearer token.
+/// How an endpoint wants its API key presented.
+///
+/// Not a detail the wire layer can decide: the same Messages format is served
+/// by vendors that read `authorization` and by Anthropic, which reads
+/// `x-api-key` and answers a bearer token with an authentication error that
+/// names neither header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyHeader {
+    Bearer,
+    XApiKey,
+}
+
+/// Sends a stored API key, in whichever header the endpoint reads.
 pub(crate) struct ApiKeyAuth {
     key: CredentialRef,
+    header: KeyHeader,
     store: Arc<dyn CredentialStore>,
 }
 
 impl ApiKeyAuth {
     pub(crate) fn new(key: CredentialRef, store: Arc<dyn CredentialStore>) -> Self {
-        Self { key, store }
+        Self::with_header(key, KeyHeader::Bearer, store)
+    }
+
+    pub(crate) fn with_header(
+        key: CredentialRef,
+        header: KeyHeader,
+        store: Arc<dyn CredentialStore>,
+    ) -> Self {
+        Self { key, header, store }
     }
 
     /// Read the key, treating a store failure as absence.
@@ -66,7 +87,10 @@ impl AuthProvider for ApiKeyAuth {
             // Read per call rather than at construction: a key exported after
             // keke started, or rotated mid-session, reaches the next request.
             self.value()
-                .map(|key| AuthHeaders::bearer(&key))
+                .map(|key| match self.header {
+                    KeyHeader::Bearer => AuthHeaders::bearer(&key),
+                    KeyHeader::XApiKey => AuthHeaders::new().with("x-api-key", key),
+                })
                 .ok_or_else(|| AuthError::NotConfigured(self.key.to_string()))
         })
     }
@@ -190,6 +214,18 @@ mod tests {
                 .iter()
                 .any(|(_, value)| value.contains("arrived-late"))
         );
+    }
+
+    #[tokio::test]
+    async fn an_x_api_key_endpoint_never_sends_a_bearer_token() {
+        let store = Arc::new(MemoryStore::new());
+        let name = CredentialRef::new("ANTHROPIC_API_KEY").expect("valid reference");
+        store.save(&name, "sk-ant-secret").expect("saves");
+
+        let auth = ApiKeyAuth::with_header(name, KeyHeader::XApiKey, store);
+        let headers = auth.headers().await.expect("headers");
+        let rendered: Vec<(&str, &str)> = headers.iter().collect();
+        assert_eq!(rendered, vec![("x-api-key", "sk-ant-secret")]);
     }
 
     /// A rejected API key will be rejected again; claiming a refresh would make
