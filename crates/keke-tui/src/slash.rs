@@ -1,7 +1,7 @@
 //! Commands a person types instead of sending to the model.
 //!
 //! Two kinds share one namespace: the ones the surface carries out itself
-//! (`/help`, `/mode`), and the ones a plugin contributes as a prompt file. They
+//! (`/help`, `/effort`), and the ones a plugin contributes as a prompt file. They
 //! share it because a person typing `/` wants one list, not two — but they stay
 //! distinct in the type, because a plugin must never be able to redefine what
 //! `/quit` does.
@@ -28,8 +28,6 @@ pub enum Builtin {
     Help,
     Clear,
     Quit,
-    /// Cycles the approval policy, or sets the one named as an argument.
-    Mode,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
     /// Lists what the session's provider serves, or switches to the model
@@ -148,11 +146,6 @@ fn builtins() -> Vec<SlashCommand> {
         // word meaning something different from what it did a moment ago.
         (Builtin::Clear, "new", "clear the transcript on screen"),
         (
-            Builtin::Mode,
-            "mode",
-            "cycle the approval mode, or name one: on-request, on-failure, never",
-        ),
-        (
             Builtin::Effort,
             "effort",
             "cycle the reasoning effort, or name one: low, medium, high, xhigh, max, ultra, default",
@@ -223,9 +216,8 @@ pub fn effort_name(effort: Option<ReasoningEffort>) -> &'static str {
 
 /// Read the argument to `/effort`. `Ok(None)` means "no argument, cycle".
 ///
-/// A level nobody recognizes is an error rather than a fallback, for the same
-/// reason `/mode` refuses one: a typo that quietly bought less thinking is
-/// invisible until the answers are worse.
+/// A level nobody recognizes is an error rather than a fallback: a typo that
+/// quietly bought less thinking is invisible until the answers are worse.
 pub fn effort(argument: &str) -> Result<Option<Option<ReasoningEffort>>, String> {
     match argument.trim() {
         "" => Ok(None),
@@ -269,23 +261,6 @@ pub fn next_effort(
             .position(|rung| *rung == current)
             .and_then(|at| rungs.get(at + 1))
             .copied(),
-    }
-}
-
-/// Read the argument to `/mode`. `Ok(None)` means "no argument, cycle".
-///
-/// A name nobody recognizes is an error rather than a fallback to the default:
-/// a typo that quietly loosened approvals is the one failure mode this setting
-/// cannot have.
-pub fn policy(argument: &str) -> Result<Option<ApprovalPolicy>, String> {
-    match argument.trim() {
-        "" => Ok(None),
-        "on-request" => Ok(Some(ApprovalPolicy::OnRequest)),
-        "on-failure" => Ok(Some(ApprovalPolicy::OnFailure)),
-        "never" => Ok(Some(ApprovalPolicy::Never)),
-        other => Err(format!(
-            "unknown approval mode {other:?} — on-request, on-failure, or never"
-        )),
     }
 }
 
@@ -343,13 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_mode_is_refused_rather_than_defaulted() {
-        assert!(policy("on-reqeust").is_err());
-        assert_eq!(policy(""), Ok(None));
-        assert_eq!(policy("never"), Ok(Some(ApprovalPolicy::Never)));
-    }
-
-    #[test]
     fn an_unknown_effort_is_refused_rather_than_defaulted() {
         assert!(effort("hgih").is_err());
         assert_eq!(effort(""), Ok(None));
@@ -393,7 +361,7 @@ mod tests {
     #[test]
     fn a_path_is_not_a_command() {
         assert_eq!(parse("/usr/bin/env is missing"), None);
-        assert_eq!(parse("/mode never"), Some(("mode", "never")));
+        assert_eq!(parse("/effort high"), Some(("effort", "high")));
         assert_eq!(parse("/help"), Some(("help", "")));
         assert_eq!(parse("hello"), None);
     }

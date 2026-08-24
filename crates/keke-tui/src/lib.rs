@@ -86,7 +86,7 @@ pub struct Resumed {
 pub struct SessionDefaults {
     pub approval: keke_config_types::ApprovalPolicy,
     pub effort: Option<keke_config_types::ReasoningEffort>,
-    /// `$KEKE_HOME`, so `/model`, `/mode`, and `/effort` persist past this
+    /// `$KEKE_HOME`, so `/model` and `/effort` persist past this
     /// process.
     pub config_home: keke_paths::AbsPath,
 }

@@ -112,9 +112,10 @@ pub struct App {
     /// terminal can no longer select with.
     pub(crate) selection: crate::selection::Selection,
     should_quit: bool,
-    /// Where `$KEKE_HOME/config.toml` lives, so `/model`, `/mode`, and
-    /// `/effort` can write the switch back to disk. `None` in tests, where
-    /// there is no home to write into and persistence is not under test.
+    /// Where `$KEKE_HOME/config.toml` lives, so `/model`, `/effort`, and the
+    /// shift-tab approval-mode gesture can write the switch back to disk.
+    /// `None` in tests, where there is no home to write into and persistence
+    /// is not under test.
     config_home: Option<keke_paths::AbsPath>,
 }
 
@@ -172,8 +173,9 @@ impl App {
         self
     }
 
-    /// Where `$KEKE_HOME` is, so a typed `/model`, `/mode`, or `/effort`
-    /// writes the new value back to `config.toml` and outlives this process.
+    /// Where `$KEKE_HOME` is, so a typed `/model` or `/effort`, or the
+    /// shift-tab approval-mode gesture, writes the new value back to
+    /// `config.toml` and outlives this process.
     #[must_use]
     pub fn with_config_home(mut self, home: keke_paths::AbsPath) -> Self {
         self.config_home = Some(home);
@@ -599,8 +601,8 @@ impl App {
 
     /// Cycle the approval mode: the shift-tab gesture.
     ///
-    /// Silent, unlike `/mode`. The gesture is meant to be tapped through the
-    /// modes while looking at the status bar, and a line per tap would push the
+    /// Silent by design. The gesture is meant to be tapped through the modes
+    /// while looking at the status bar, and a line per tap would push the
     /// conversation off screen to say what the bar is already saying.
     pub fn cycle_approval_policy(&mut self) {
         let next = match self.approval {
@@ -634,17 +636,6 @@ impl App {
         self.conversation.set_approval_policy(policy);
     }
 
-    /// Set the mode, which is what a typed `/mode` does. Nothing goes to the
-    /// transcript: the person can already see what they typed and what it
-    /// changed to in the input box, and a line saying so would read as the
-    /// agent narrating a switch it did not make.
-    fn set_approval_policy_aloud(&mut self, policy: ApprovalPolicy) {
-        self.set_approval_policy(policy);
-        self.persist_override(|file| {
-            file.approval_policy = Some(policy);
-        });
-    }
-
     #[must_use]
     pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.effort
@@ -656,8 +647,7 @@ impl App {
     }
 
     /// Set the level, which is what a typed `/effort` does. Silent in the
-    /// transcript for the same reason `/mode` is: the input box already shows
-    /// what was typed.
+    /// transcript: the input box already shows what was typed.
     fn set_reasoning_effort_aloud(&mut self, effort: Option<ReasoningEffort>) {
         self.set_reasoning_effort(effort);
         self.persist_override(|file| {
@@ -799,15 +789,6 @@ impl App {
                     self.set_model_aloud(&wanted);
                 }
             }
-            SlashAction::Builtin(Builtin::Mode) => match crate::slash::policy(arguments) {
-                Ok(Some(policy)) => self.set_approval_policy_aloud(policy),
-                Ok(None) => {
-                    self.cycle_approval_policy();
-                    let policy = self.approval;
-                    self.set_approval_policy_aloud(policy);
-                }
-                Err(unknown) => self.transcript.push(Cell::Error(unknown)),
-            },
             SlashAction::Prompt(path) => match std::fs::read_to_string(&path) {
                 Ok(body) => {
                     let text = if arguments.is_empty() {

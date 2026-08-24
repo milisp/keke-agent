@@ -622,7 +622,7 @@ async fn typing_a_slash_opens_the_command_menu() {
 #[tokio::test]
 async fn the_menu_closes_once_arguments_are_being_typed() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    type_text(&mut app, "/mode never");
+    type_text(&mut app, "/effort high");
     assert!(app.completions().is_empty());
 }
 
@@ -633,7 +633,7 @@ async fn a_command_runs_instead_of_reaching_the_model() {
     app.handle_key(key(KeyCode::Enter));
 
     assert!(scripted.prompts().is_empty(), "a command is not a prompt");
-    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("/mode")));
+    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("/effort")));
 }
 
 #[tokio::test]
@@ -745,25 +745,6 @@ async fn shift_tab_cycles_the_approval_mode_and_tells_the_agent() {
 }
 
 #[tokio::test]
-async fn the_mode_command_names_a_mode_and_refuses_a_typo() {
-    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-
-    type_text(&mut app, "/mode never");
-    app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
-
-    type_text(&mut app, "/mode nevr");
-    app.handle_key(key(KeyCode::Enter));
-    assert_eq!(
-        app.approval_policy(),
-        ApprovalPolicy::Never,
-        "a typo must not move the mode"
-    );
-    assert!(matches!(app.transcript.last(), Some(Cell::Error(_))));
-    assert_eq!(scripted.policies(), vec![ApprovalPolicy::Never]);
-}
-
-#[tokio::test]
 async fn clear_empties_the_screen_and_quit_leaves() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(Update::TextDelta("hi".to_string()));
@@ -775,19 +756,6 @@ async fn clear_empties_the_screen_and_quit_leaves() {
     type_text(&mut app, "/quit");
     app.handle_key(key(KeyCode::Enter));
     assert!(app.should_quit());
-}
-
-/// Neither the gesture nor the typed command narrates the switch in the
-/// transcript — the input box already shows what was typed.
-#[tokio::test]
-async fn the_mode_command_sets_the_mode_silently() {
-    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-
-    type_text(&mut app, "/mode never");
-    app.handle_key(key(KeyCode::Enter));
-
-    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
-    assert!(app.transcript.is_empty());
 }
 
 /// The level the agent is asked for must follow what the surface shows, and a

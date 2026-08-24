@@ -21,7 +21,7 @@ drift the way the README status line did.
 - **ACP server** — serves the Agent Client Protocol over stdio; an editor
   can drive a real session through it.
 - **TUI** — `keke-tui` built against the ACP seam, not the engine directly.
-  Slash commands (`/help`, `/clear`, `/mode`, `/thinking`, `/quit`, plus every
+  Slash commands (`/help`, `/clear`, `/effort`, `/model`, `/quit`, plus every
   plugin-contributed command file) with a completion menu, and shift-tab to
   cycle the approval mode, which takes effect on the next tool call rather than
   the next turn.
