@@ -288,11 +288,20 @@ fn rendered(choices: &[super::Choice]) -> Vec<SessionConfigOption> {
                         .collect(),
                 ),
             )
-            // The category is what tells a client this is the model picker
-            // rather than one more setting to bury in a menu.
-            .category(SessionConfigOptionCategory::Model)
+            // The category is what tells a client which menu a choice
+            // belongs in, rather than lumping the effort ladder in with the
+            // model picker.
+            .category(category_for(choice.id))
         })
         .collect()
+}
+
+fn category_for(id: &str) -> SessionConfigOptionCategory {
+    if id == super::REASONING_EFFORT {
+        SessionConfigOptionCategory::ThoughtLevel
+    } else {
+        SessionConfigOptionCategory::Model
+    }
 }
 
 /// Send a resumed session's history to the client as ordinary updates.
