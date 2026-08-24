@@ -1,6 +1,6 @@
 {
   "name": "@milisp/keke-darwin-x64",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "keke prebuilt binary for macOS x64",
   "license": "Apache-2.0",
   "os": [

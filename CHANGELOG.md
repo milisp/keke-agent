@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-24
+
+### Added
+- The active approval policy is persisted in session logs and takes priority
+  over config defaults when a session is resumed.
+- TUI slash command overrides persist to `config.toml` instead of living only
+  in memory for the session.
+
+### Changed
+- Removed redundant transcript notifications now that overrides persist to
+  config directly.
+
+### Removed
+- `/mode`, in favor of the shift-tab gesture for approval policy management.
+- The legacy `/mouse` and `/thinking` slash commands.
+
 ## [0.1.2] - 2026-08-24
 
 ### Added
