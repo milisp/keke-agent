@@ -1229,3 +1229,154 @@ fn a_paste_lands_where_the_cursor_is() {
     assert_eq!(app.input.text(), "a中b");
     assert_eq!(app.input.cursor_display().1, 3);
 }
+
+/// A model's ladder, as a provider would publish it.
+fn served(id: &str, name: &str, efforts: &[ReasoningEffort]) -> keke_provider_api::ModelInfo {
+    let mut model = keke_provider_api::ModelInfo::new(id);
+    model.display_name = name.to_string();
+    model.context_window = Some(272_000);
+    model.reasoning_efforts = efforts.to_vec();
+    model
+}
+
+fn app_with_models() -> (
+    App,
+    Arc<ScriptedConversation>,
+    UnboundedReceiver<Update>,
+    UnboundedReceiver<Update>,
+) {
+    let (app, scripted, updates, local) = app_with_commands(Vec::new(), Vec::new());
+    (
+        app.with_models(
+            "gpt-5.6-sol",
+            vec![
+                served(
+                    "gpt-5.6-sol",
+                    "GPT-5.6-Sol",
+                    &[ReasoningEffort::Low, ReasoningEffort::Ultra],
+                ),
+                served(
+                    "gpt-5.2",
+                    "GPT-5.2",
+                    &[ReasoningEffort::Low, ReasoningEffort::High],
+                ),
+            ],
+        ),
+        scripted,
+        updates,
+        local,
+    )
+}
+
+/// A person asking what they can switch to must get names and ladders, not a
+/// column of slugs they have to recognise.
+#[tokio::test]
+async fn the_model_command_lists_what_the_provider_serves() {
+    let (mut app, _scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/model");
+    app.handle_key(key(KeyCode::Enter));
+
+    let Some(Cell::Notice(text)) = app.transcript.last() else {
+        panic!("expected a notice, got {:?}", app.transcript.last());
+    };
+    assert!(text.contains("GPT-5.6-Sol"), "{text}");
+    assert!(text.contains("gpt-5.6-sol"), "{text}");
+    assert!(text.contains("272k context"), "{text}");
+    assert!(text.contains("effort: low, ultra"), "{text}");
+    // The one answering is marked, or the list does not say where you are.
+    assert!(text.contains("* GPT-5.6-Sol"), "{text}");
+}
+
+#[tokio::test]
+async fn the_model_command_switches_and_tells_the_agent() {
+    let (mut app, scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/model gpt-5.2");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(app.model(), "gpt-5.2");
+    assert_eq!(scripted.models(), vec!["gpt-5.2".to_string()]);
+    assert!(matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("gpt-5.2")));
+}
+
+/// Invariant 8: a model the provider does not serve is refused here, where the
+/// person can still see what they typed, rather than on the next prompt.
+#[tokio::test]
+async fn a_model_the_provider_does_not_serve_is_refused() {
+    let (mut app, scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/model gpt-4o");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(
+        app.model(),
+        "gpt-5.6-sol",
+        "a refusal must not move the model"
+    );
+    assert!(scripted.models().is_empty());
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(text)) if text.contains("gpt-4o")));
+}
+
+/// With no list there is nothing to check against, so nothing is refused:
+/// keke has no grounds to say a model does not exist.
+#[tokio::test]
+async fn without_a_list_any_model_is_accepted() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/model something-keke-never-heard-of");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(app.model(), "something-keke-never-heard-of");
+    assert_eq!(
+        scripted.models(),
+        vec!["something-keke-never-heard-of".to_string()]
+    );
+}
+
+/// Cycling must stay on the ladder the model published, or every second tap
+/// buys a request the endpoint will reject.
+#[tokio::test]
+async fn cycling_the_effort_stays_on_the_current_model_ladder() {
+    let (mut app, _scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/effort");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.reasoning_effort(), Some(ReasoningEffort::Low));
+
+    type_text(&mut app, "/effort");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.reasoning_effort(),
+        Some(ReasoningEffort::Ultra),
+        "gpt-5.6-sol offers low and ultra, so medium is not on this ladder"
+    );
+
+    type_text(&mut app, "/effort");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.reasoning_effort(), None);
+}
+
+/// A level carried over from the previous model would be sent anyway and
+/// rejected, so it is dropped where the cause is still on screen.
+#[tokio::test]
+async fn switching_to_a_model_without_the_current_level_drops_it() {
+    let (mut app, scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/effort ultra");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.reasoning_effort(), Some(ReasoningEffort::Ultra));
+
+    type_text(&mut app, "/model gpt-5.2");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(app.reasoning_effort(), None);
+    assert!(
+        matches!(app.transcript.last(), Some(Cell::Notice(text)) if text.contains("does not take"))
+    );
+    assert_eq!(
+        scripted.efforts(),
+        vec![Some(ReasoningEffort::Ultra), None],
+        "the agent must be told the level was dropped, not just the surface"
+    );
+}

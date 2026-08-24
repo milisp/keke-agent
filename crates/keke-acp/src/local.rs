@@ -184,6 +184,7 @@ pub async fn local(
     let cancel = session.canceller();
     let approval = session.approval_switch();
     let effort = session.effort_switch();
+    let configured_effort = effort.get();
     let model_switch = session.model_switch();
     let model = session.model().to_string();
 
@@ -214,6 +215,7 @@ pub async fn local(
         // The composition root knows what the provider serves; `local` only
         // starts the session.
         models: Vec::new(),
+        effort: configured_effort,
         conversation: Arc::new(LocalConversation {
             commands,
             cancel: Box::new(cancel),

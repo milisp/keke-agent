@@ -63,6 +63,10 @@ fn thinking_budget(effort: ReasoningEffort) -> u32 {
         ReasoningEffort::High => 16_384,
         ReasoningEffort::XHigh => 32_768,
         ReasoningEffort::Max => 65_536,
+        // This wire has no rung above the top one, and `Ultra` is the ladder's
+        // top: it buys the same budget here, since the extra it names on the
+        // wires that take it is task delegation rather than more thinking.
+        ReasoningEffort::Ultra => 65_536,
     }
 }
 

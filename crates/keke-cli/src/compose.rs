@@ -18,7 +18,6 @@ use keke_auth_api::CredentialStore;
 use keke_plugin_api::ExtensionRegistry;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_provider_api::ArcProvider;
-use keke_provider_api::ProviderInfo;
 use keke_provider_api::ProviderRegistry;
 use keke_provider_api::WireApi;
 
@@ -34,28 +33,22 @@ const GROK_SUBSCRIPTION_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// Pick the endpoint the stored credential is actually valid at.
-///
-/// Sending a subscription token to the public API, or an API key to the
-/// subscription backend, fails as a 401 that looks like a bad credential rather
-/// than like the wrong address.
 /// Whether this credential is a login rather than a key.
 ///
 /// The two are spent at different addresses for both vendors, and sending
 /// either to the other's fails as an authentication error that names neither
-/// the address nor the account.
+/// the address nor the account. A subscription backend also fixes its own
+/// sampling and publishes a richer catalog, so this one answer decides three
+/// things at once — which is why it is asked here, in the only place that can
+/// see the stored credential.
 fn is_subscription(auth: &dyn AuthProvider) -> bool {
     !matches!(auth.snapshot().source.as_str(), "apikey" | "env")
 }
 
-fn codex_base_url(auth: &dyn AuthProvider) -> String {
-    if let Ok(explicit) = std::env::var("OPENAI_BASE_URL") {
-        return explicit;
-    }
-    match auth.snapshot().source.as_str() {
-        "apikey" | "env" => OPENAI_BASE_URL.to_string(),
-        _ => CHATGPT_BASE_URL.to_string(),
-    }
+/// The environment's override for a vendor's address, when it is set to
+/// something other than the empty string.
+fn base_url_override(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|url| !url.trim().is_empty())
 }
 
 /// The keyring service name credentials are filed under.
@@ -85,6 +78,7 @@ impl Composed {
         home: &keke_config_types::HomeLayout,
         declared: &[keke_config_types::ProviderDeclaration],
         timeouts: keke_config_types::PluginTimeouts,
+        catalog_ttl: keke_config_types::ModelCatalogTtl,
         approvals: Option<Arc<keke_acp::Approvals>>,
     ) -> Result<Self> {
         // Resolution finds every plugin; this holds back the programs of the
@@ -111,63 +105,62 @@ impl Composed {
         let mut auth = AuthRegistry::new();
         let mut providers = ProviderRegistry::new();
 
+        // Every compiled-in vendor caches what it serves under keke's home, so
+        // opening the interface a dozen times in an afternoon costs one model
+        // listing rather than a dozen — and so a picker is still drawn when the
+        // vendor cannot be reached at all.
+        let catalog = keke_catalog::CatalogCache::new(home, catalog_ttl.get());
+
         let grok_auth: Arc<dyn AuthProvider> = Arc::new(keke_auth_grok::GrokAuth::with_defaults(
             Arc::clone(&credentials),
             auth_files.clone(),
         ));
         auth.register(Arc::clone(&grok_auth));
-        let grok_base_url = std::env::var("XAI_BASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty());
+        let grok_subscription = is_subscription(grok_auth.as_ref());
         providers
-            .register(if is_subscription(grok_auth.as_ref()) {
-                // The subscription surface speaks the responses wire, not
-                // chat-completions — a login sent to the latter is refused
-                // before the model is ever reached.
-                crate::declared::wire_provider(
-                    ProviderInfo {
-                        route: keke_auth_grok::AUTH_ID.to_string(),
-                        display_name: "xAI Grok".to_string(),
-                        base_url: grok_base_url
-                            .unwrap_or_else(|| GROK_SUBSCRIPTION_BASE_URL.to_string()),
-                        wire_api: WireApi::Responses,
-                        auth_id: Some(keke_auth_grok::AUTH_ID.to_string()),
-                        env_key: Some(keke_auth_grok::DEFAULT_API_KEY_REF.to_string()),
+            .register(Arc::new(keke_provider_grok::GrokProvider::new(
+                grok_auth,
+                keke_provider_grok::Endpoint {
+                    base_url: base_url_override("XAI_BASE_URL").unwrap_or_else(|| {
+                        if grok_subscription {
+                            GROK_SUBSCRIPTION_BASE_URL.to_string()
+                        } else {
+                            keke_provider_grok::DEFAULT_BASE_URL.to_string()
+                        }
+                    }),
+                    wire_api: if grok_subscription {
+                        WireApi::Responses
+                    } else {
+                        WireApi::ChatCompletions
                     },
-                    grok_auth,
-                )
-            } else {
-                Arc::new(keke_provider_grok::GrokProvider::new(
-                    grok_auth,
-                    grok_base_url,
-                )) as ArcProvider
-            })
+                    fixed_sampling: grok_subscription,
+                },
+                Some(catalog.clone()),
+            )) as ArcProvider)
             .context("registering the grok provider")?;
 
         let codex_auth: Arc<dyn AuthProvider> = Arc::new(
             keke_auth_codex::CodexAuth::with_defaults(Arc::clone(&credentials), auth_files),
         );
         auth.register(Arc::clone(&codex_auth));
-        let codex_is_subscription = is_subscription(codex_auth.as_ref());
+        let codex_subscription = is_subscription(codex_auth.as_ref());
         providers
-            .register(crate::declared::wire_provider_with(
-                ProviderInfo {
-                    route: keke_auth_codex::AUTH_ID.to_string(),
-                    display_name: "OpenAI Codex".to_string(),
-                    base_url: codex_base_url(codex_auth.as_ref()),
-                    wire_api: WireApi::Responses,
-                    auth_id: Some(keke_auth_codex::AUTH_ID.to_string()),
-                    env_key: Some(keke_auth_codex::DEFAULT_API_KEY_REF.to_string()),
-                },
+            .register(Arc::new(keke_provider_codex::CodexProvider::new(
                 codex_auth,
-                codex_is_subscription,
-            ))
+                keke_provider_codex::Endpoint {
+                    base_url: base_url_override("OPENAI_BASE_URL").unwrap_or_else(|| {
+                        if codex_subscription {
+                            CHATGPT_BASE_URL.to_string()
+                        } else {
+                            OPENAI_BASE_URL.to_string()
+                        }
+                    }),
+                    fixed_sampling: codex_subscription,
+                },
+                Some(catalog),
+            )) as ArcProvider)
             .context("registering the codex provider")?;
 
-        // Declared endpoints register last, so a config file can add a route
-        // without being able to shadow a compiled-in vendor by accident —
-        // `ProviderRegistry::register` refuses a duplicate rather than
-        // silently replacing one.
         for declaration in declared {
             let provider = crate::declared::provider_for(declaration, &credentials)?;
             providers.register(provider).with_context(|| {

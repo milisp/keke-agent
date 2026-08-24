@@ -67,6 +67,12 @@ pub struct App {
     /// How hard the model is asked to think. `None` is the vendor's own
     /// default, which is a state of its own and not the lowest rung.
     effort: Option<ReasoningEffort>,
+    /// Which model is answering, and every model this session's provider
+    /// serves. The list is empty when the provider could not be asked and had
+    /// nothing to fall back on; `/model` then says so rather than showing an
+    /// empty menu.
+    model: String,
+    models: Vec<keke_provider_api::ModelInfo>,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
     /// held because the status bar keeps showing the duration after the turn
@@ -125,6 +131,8 @@ impl App {
                 completion: 0,
                 approval: ApprovalPolicy::default(),
                 effort: None,
+                model: String::new(),
+                models: Vec::new(),
                 turn: Turn::Idle,
                 started: None,
                 last_turn: None,
@@ -172,6 +180,23 @@ impl App {
     #[must_use]
     pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
         self.effort = effort;
+        self
+    }
+
+    /// Which model the session was configured with, and what its provider
+    /// serves.
+    ///
+    /// Both come from the composition root: only it has a provider to ask, and
+    /// only it knows that asking one may mean a network call. A surface handed
+    /// an empty list offers no choice rather than a wrong one.
+    #[must_use]
+    pub fn with_models(
+        mut self,
+        model: impl Into<String>,
+        models: Vec<keke_provider_api::ModelInfo>,
+    ) -> Self {
+        self.model = model.into();
+        self.models = models;
         self
     }
 
@@ -607,6 +632,102 @@ impl App {
         )));
     }
 
+    /// Which model is answering, for the status bar.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// What this session's provider serves.
+    #[must_use]
+    pub fn models(&self) -> &[keke_provider_api::ModelInfo] {
+        &self.models
+    }
+
+    /// The levels the current model takes, or nothing when it did not say.
+    ///
+    /// Empty is not "no reasoning": it is "the vendor published no ladder", and
+    /// the difference matters because the first would hide `/effort` and the
+    /// second must leave every rung available.
+    fn offered_efforts(&self) -> Vec<ReasoningEffort> {
+        self.models
+            .iter()
+            .find(|model| model.id == self.model)
+            .map(|model| model.reasoning_efforts.clone())
+            .unwrap_or_default()
+    }
+
+    /// Switch models, or say why not.
+    ///
+    /// A model the provider does not serve is refused rather than sent: the
+    /// rejection would otherwise land on the next prompt, long after the
+    /// command that caused it. When the provider could not be asked at all the
+    /// list is empty and nothing is refused — keke has no grounds to.
+    fn set_model_aloud(&mut self, wanted: &str) {
+        if !self.models.is_empty() && !self.models.iter().any(|model| model.id == wanted) {
+            self.transcript.push(Cell::Error(format!(
+                "no model {wanted:?} on this provider — /model lists them"
+            )));
+            return;
+        }
+        self.model = wanted.to_string();
+        self.conversation.set_model(wanted.to_string());
+        self.transcript
+            .push(Cell::Notice(format!("model: {wanted}")));
+
+        // A level the new model does not take would be sent anyway and
+        // rejected, so it is dropped here where the cause is still on screen.
+        let offered = self.offered_efforts();
+        if let Some(level) = self.effort
+            && !offered.is_empty()
+            && !offered.contains(&level)
+        {
+            self.set_reasoning_effort(None);
+            self.transcript.push(Cell::Notice(format!(
+                "{wanted} does not take {level} — reasoning effort is back to the model's default"
+            )));
+        }
+    }
+
+    /// What `/model` prints with no argument.
+    fn model_list(&self) -> String {
+        if self.models.is_empty() {
+            return format!(
+                "model: {}\n\nThis provider published no model list, so there is nothing to \n\
+                 choose between here. `/model <id>` still switches to whatever you name.",
+                if self.model.is_empty() {
+                    "(unset)"
+                } else {
+                    &self.model
+                }
+            );
+        }
+        let mut text = String::from("models:");
+        for model in &self.models {
+            let current = if model.id == self.model { "*" } else { " " };
+            text.push_str(&format!(
+                "\n {current} {} ({})",
+                model.display_name, model.id
+            ));
+            if let Some(window) = model.context_window {
+                text.push_str(&format!("  ·  {}k context", window / 1_000));
+            }
+            if model.supports_reasoning() {
+                let levels: Vec<&str> = model
+                    .reasoning_efforts
+                    .iter()
+                    .map(|effort| effort.as_str())
+                    .collect();
+                text.push_str(&format!("  ·  effort: {}", levels.join(", ")));
+            }
+            if let Some(description) = &model.description {
+                text.push_str(&format!("\n      {description}"));
+            }
+        }
+        text.push_str("\n\n/model <id> switches; /effort sets how hard it thinks.");
+        text
+    }
+
     fn run_command(&mut self, typed: &str, name: &str, arguments: &str) {
         let Some(command) = self.commands.find(name) else {
             self.transcript.push(Cell::Error(format!(
@@ -641,11 +762,20 @@ impl App {
             SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {
                 Ok(Some(effort)) => self.set_reasoning_effort_aloud(effort),
                 Ok(None) => {
-                    let next = crate::slash::next_effort(self.effort);
+                    let next = crate::slash::next_effort(self.effort, &self.offered_efforts());
                     self.set_reasoning_effort_aloud(next);
                 }
                 Err(unknown) => self.transcript.push(Cell::Error(unknown)),
             },
+            SlashAction::Builtin(Builtin::Model) => {
+                let wanted = arguments.trim().to_string();
+                if wanted.is_empty() {
+                    let text = self.model_list();
+                    self.transcript.push(Cell::Notice(text));
+                } else {
+                    self.set_model_aloud(&wanted);
+                }
+            }
             SlashAction::Builtin(Builtin::Mode) => match crate::slash::policy(arguments) {
                 Ok(Some(policy)) => self.set_approval_policy_aloud(policy),
                 Ok(None) => {

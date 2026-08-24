@@ -1,6 +1,6 @@
 [package]
-name = "keke-provider-grok"
-description = "The xAI Grok model provider."
+name = "keke-catalog"
+description = "What a provider serves, remembered on disk between runs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,20 +8,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-keke-auth-api = { workspace = true }
-keke-catalog = { workspace = true }
+keke-paths = { workspace = true }
 keke-provider-api = { workspace = true }
-keke-wire = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-futures = { workspace = true }
 keke-protocol = { workspace = true }
-keke-paths = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-wiremock = { workspace = true }
 [lints]
 workspace = true

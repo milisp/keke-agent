@@ -80,10 +80,18 @@ pub enum Update {
 pub struct Opened {
     pub id: String,
     /// The model this session is asking, and every model the surface may offer
-    /// instead. Empty when the provider could not be asked — a surface then
-    /// offers no choice rather than a wrong one.
+    /// instead. Empty when the provider could not be asked and had nothing to
+    /// fall back on — a surface then offers no choice rather than a wrong one.
+    ///
+    /// Carried as [`ModelInfo`] rather than as ids because what a person picks
+    /// from is a name and a ladder: a menu of slugs makes them guess which
+    /// `gpt-5.6-*` is which, and hides that one of them takes an effort level
+    /// the others do not.
     pub model: String,
-    pub models: Vec<String>,
+    pub models: Vec<keke_provider_api::ModelInfo>,
+    /// The level this session was configured with, so a client's picker starts
+    /// on what is in force rather than on a guess.
+    pub effort: Option<ReasoningEffort>,
     pub conversation: Arc<dyn Conversation>,
     pub updates: UnboundedReceiver<Update>,
     /// What the session was rebuilt from. Empty for a session that is new.

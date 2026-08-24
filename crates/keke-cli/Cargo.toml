@@ -30,6 +30,8 @@ keke-skills = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
+keke-catalog = { workspace = true }
+keke-provider-codex = { workspace = true }
 keke-provider-grok = { workspace = true }
 keke-tools = { workspace = true }
 keke-wire = { workspace = true }

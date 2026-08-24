@@ -1,18 +1,15 @@
-//! The xAI Grok model provider.
+//! The OpenAI model provider.
 //!
-//! xAI serves the OpenAI schemas, so everything about the translation and the
-//! stream is shared with every other vendor that does — [`keke_wire`] owns it.
-//! What is left here, and all that should be here, is the vendor's identity:
-//! where it lives, what credential it uses, which wire format it speaks, and
-//! the shape of the catalog it publishes.
+//! One vendor with two addresses. A ChatGPT login is spent at the subscription
+//! backend, which fixes its own sampling and publishes a catalog rich enough to
+//! draw a picker from; an API key is spent at the public API, which takes a
+//! reply budget and answers `/models` with a bag of ids. Which one a session
+//! talks to follows the credential, and the composition root is the only place
+//! that knows which credential is stored — so it passes the address in rather
+//! than this crate guessing.
 //!
-//! One vendor, two addresses. A grok *login* is spent at the subscription
-//! proxy, which speaks the responses wire, fixes its own sampling, and
-//! publishes a catalog with reasoning levels in it. An API key is spent at the
-//! pay-per-token API, which takes chat completions and answers `/models` with
-//! the plain listing. Which one a session talks to follows the credential, and
-//! the composition root is the only place that knows which is stored — so the
-//! address arrives from there rather than being guessed here.
+//! What is here and nowhere else is the vendor's identity and the shape of its
+//! catalog. Everything about the request and the stream is `keke-wire`'s.
 
 mod catalog;
 
@@ -32,33 +29,10 @@ use keke_wire::WireClient;
 
 /// The route key this provider registers under, and the auth id it draws its
 /// credentials from.
-pub const ROUTE: &str = "grok";
+pub const ROUTE: &str = "codex";
 
-/// The public xAI endpoint, where an API key is spent.
-pub const DEFAULT_BASE_URL: &str = "https://api.x.ai/v1";
-
-/// How to reach xAI for one session.
-pub struct Endpoint {
-    pub base_url: String,
-    pub wire_api: WireApi,
-    /// Whether this address refuses a request that names a reply budget or a
-    /// temperature, as the subscription proxy does.
-    pub fixed_sampling: bool,
-}
-
-impl Default for Endpoint {
-    /// The pay-per-token API, which is what an API key reaches.
-    fn default() -> Self {
-        Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
-            wire_api: WireApi::ChatCompletions,
-            fixed_sampling: false,
-        }
-    }
-}
-
-/// xAI's Grok models.
-pub struct GrokProvider {
+/// OpenAI over the responses wire.
+pub struct CodexProvider {
     info: ProviderInfo,
     wire: WireClient,
     /// `None` disables caching entirely, which is what a surface with no home
@@ -66,36 +40,44 @@ pub struct GrokProvider {
     cache: Option<CatalogCache>,
 }
 
-impl GrokProvider {
+/// How to reach OpenAI for one session.
+pub struct Endpoint {
+    /// Where to send requests. The composition root picks it from the stored
+    /// credential, because a subscription token at the public API and an API
+    /// key at the subscription backend both fail as a 401 that names neither
+    /// the address nor the account.
+    pub base_url: String,
+    /// Whether this address refuses a request that names a reply budget or a
+    /// temperature, as the subscription backend does.
+    pub fixed_sampling: bool,
+}
+
+impl CodexProvider {
     #[must_use]
     pub fn new(
         auth: Arc<dyn AuthProvider>,
         endpoint: Endpoint,
         cache: Option<CatalogCache>,
     ) -> Self {
-        let base_url = if endpoint.base_url.trim().is_empty() {
-            DEFAULT_BASE_URL.to_string()
-        } else {
-            endpoint.base_url
-        };
-        let mut wire = WireClient::new(base_url, auth);
+        let mut wire = WireClient::new(endpoint.base_url, auth);
         if endpoint.fixed_sampling {
             wire = wire.with_fixed_sampling();
         }
         Self {
             info: ProviderInfo {
                 route: ROUTE.to_string(),
-                display_name: "xAI Grok".to_string(),
+                display_name: "OpenAI Codex".to_string(),
                 base_url: wire.base_url().to_string(),
-                wire_api: endpoint.wire_api,
+                wire_api: WireApi::Responses,
                 auth_id: Some(ROUTE.to_string()),
-                env_key: Some("XAI_API_KEY".to_string()),
+                env_key: Some("OPENAI_API_KEY".to_string()),
             },
             wire,
             cache,
         }
     }
 
+    /// Ask the endpoint what it serves.
     async fn fetch(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         let body = self.wire.fetch("/models").await?;
         catalog::parse(&body)
@@ -103,7 +85,7 @@ impl GrokProvider {
     }
 }
 
-impl ModelProvider for GrokProvider {
+impl ModelProvider for CodexProvider {
     fn info(&self) -> &ProviderInfo {
         &self.info
     }
@@ -115,14 +97,15 @@ impl ModelProvider for GrokProvider {
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }
 
-    /// What xAI serves, from the cache when it is current and from the vendor
-    /// otherwise.
+    /// What OpenAI serves, from the cache when it is current and from the
+    /// vendor otherwise.
     ///
-    /// This never fails and never comes back empty. A fetch that fails falls
-    /// through to the last answer received, and then to the compiled-in
-    /// catalog: a person offline or not yet signed in still gets a picker, and
-    /// one that lists models the endpoint will honour because the compiled-in
-    /// list is the vendor's own.
+    /// This never fails and never comes back empty, which is the difference
+    /// from a provider that can only be asked: a fetch that fails falls through
+    /// to the last answer received, and then to the compiled-in catalog. A
+    /// person offline, behind a proxy, or not yet signed in still gets a
+    /// picker — and one that lists a model the endpoint will honour, because
+    /// the compiled-in list is the vendor's own.
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
         Box::pin(async move {
             let cached = self.cache.as_ref().and_then(|cache| cache.load(ROUTE));
@@ -140,7 +123,7 @@ impl ModelProvider for GrokProvider {
                 }
                 Ok(_) => Ok(fallback(cached)),
                 Err(error) => {
-                    tracing::debug!(%error, "could not list xAI's models; using what is on hand");
+                    tracing::debug!(%error, "could not list OpenAI's models; using what is on hand");
                     Ok(fallback(cached))
                 }
             }

@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `/model` lists what the session's provider serves — display name, context
+  window, and the reasoning levels each model takes — and switches between
+  them. A model the provider does not serve is refused where it was typed
+  rather than on the next prompt.
+- Model catalogs carry reasoning levels. `keke-provider-codex` is a crate of
+  its own, both vendors decode their subscription backends' richer `/models`
+  listings, and each ships its vendor's own catalog as a floor — so a picker is
+  drawn offline, behind a proxy, and before the first login.
+- Catalogs are cached under `<keke-home>/cache/models`, for
+  `model-catalog-ttl-seconds` (default six hours). A vendor that cannot be
+  reached falls through to the last answer it gave, and then to the
+  compiled-in list.
+- ACP sessions offer a `reasoning_effort` config option alongside `model`,
+  populated from what the selected model actually accepts, with the model's
+  own default reachable as a named choice.
+- `ultra`, the rung above `max`, which the newest OpenAI models take.
 - `^Y` / `/copy` puts the last reply on the clipboard, via OSC 52 so it works
   over ssh and inside a multiplexer.
 - A prompt taller than the composer scrolls inside it instead of hiding the
@@ -19,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   instead of accumulating in the transcript.
 
 ### Changed
+- ACP model options are labelled with what the vendor calls the model rather
+  than with its slug twice.
+- `/effort` cycles the ladder the current model published, when it published
+  one, instead of every rung keke knows. Switching to a model that does not
+  take the level in force drops it and says so.
+- The status bar names the model that is answering.
 - The wheel scrolls the conversation, by mouse capture where the terminal
   takes it and by alternate scroll mode where it does not — an empty composer
   gives the arrow keys to the transcript.

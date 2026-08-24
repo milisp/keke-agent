@@ -174,21 +174,32 @@ impl WireClient {
     /// rejected key would present an authentication problem as an account with
     /// no models.
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let builder = self.http.get(self.url("/models"));
+        let body = self.fetch("/models").await?;
+        let listing: ModelListing = serde_json::from_str(&body)
+            .map_err(|error| ProviderError::Protocol(format!("undecodable model list: {error}")))?;
+        Ok(listing.data.into_iter().map(ModelInfo::from).collect())
+    }
+
+    /// `GET` `path` with this client's credentials, returning the body as text.
+    ///
+    /// Exposed because a vendor whose listing is richer than the plain one
+    /// decodes it in its own crate — the shape is the vendor's, but the
+    /// endpoint, the credential, and the retry behaviour are not, and a plugin
+    /// that built its own HTTP client to read one JSON document would drop all
+    /// three.
+    pub async fn fetch(&self, path: &str) -> Result<String, ProviderError> {
+        let builder = self.http.get(self.url(path));
         let response = self
             .authorize(builder)
             .await?
             .send()
             .await
             .map_err(http::transport_error)?;
-        let body = http::check_status(response)
+        http::check_status(response)
             .await?
             .text()
             .await
-            .map_err(|error| ProviderError::Protocol(error.to_string()))?;
-        let listing: ModelListing = serde_json::from_str(&body)
-            .map_err(|error| ProviderError::Protocol(format!("undecodable model list: {error}")))?;
-        Ok(listing.data.into_iter().map(ModelInfo::from).collect())
+            .map_err(|error| ProviderError::Protocol(error.to_string()))
     }
 
     fn url(&self, path: &str) -> String {
@@ -249,19 +260,18 @@ impl From<WireModel> for ModelInfo {
             .input_modalities
             .as_ref()
             .is_some_and(|modalities| modalities.iter().any(|kind| kind == "image"));
-        Self {
-            display_name: wire.display_name.unwrap_or_else(|| wire.id.clone()),
-            id: wire.id,
-            context_window: wire.context_window,
-            max_output_tokens: wire.max_output_tokens,
-            // No listing states these, and claiming otherwise would make the
-            // engine withhold tools it could have sent. A model that cannot use
-            // them rejects the request; a model that can, and was not offered
-            // them, silently answers worse.
-            supports_tools: true,
-            supports_vision,
-            supports_reasoning: true,
+        let mut model = ModelInfo::new(wire.id);
+        if let Some(name) = wire.display_name {
+            model.display_name = name;
         }
+        model.context_window = wire.context_window;
+        model.max_output_tokens = wire.max_output_tokens;
+        model.supports_vision = supports_vision;
+        // The plain listing says nothing about reasoning levels, so this
+        // provider offers none. A ladder invented here would be one a person
+        // could select and the endpoint would then reject; a vendor that
+        // publishes its levels parses them in its own crate.
+        model
     }
 }
 

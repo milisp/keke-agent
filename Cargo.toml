@@ -19,6 +19,7 @@ keke-protocol = { path = "crates/keke-protocol", version = "0.1.1" }
 keke-provider-api = { path = "crates/keke-provider-api", version = "0.1.1" }
 keke-tool = { path = "crates/keke-tool", version = "0.1.1" }
 keke-wire = { path = "crates/keke-wire", version = "0.1.1" }
+keke-catalog = { path = "crates/keke-catalog", version = "0.1.1" }
 
 # --- tier 1: engine ---
 keke-acp = { path = "crates/keke-acp", version = "0.1.1" }
@@ -34,6 +35,7 @@ keke-mcp = { path = "crates/keke-mcp", version = "0.1.1" }
 keke-skills = { path = "crates/keke-skills", version = "0.1.1" }
 keke-auth-grok = { path = "crates/keke-auth-grok", version = "0.1.1" }
 keke-plugin = { path = "crates/keke-plugin", version = "0.1.1" }
+keke-provider-codex = { path = "crates/keke-provider-codex", version = "0.1.1" }
 keke-provider-grok = { path = "crates/keke-provider-grok", version = "0.1.1" }
 keke-test-support = { path = "crates/keke-test-support", version = "0.1.1" }
 keke-tools = { path = "crates/keke-tools", version = "0.1.1" }

@@ -1661,6 +1661,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-catalog"
+version = "0.1.1"
+dependencies = [
+ "keke-paths",
+ "keke-protocol",
+ "keke-provider-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "keke-cli"
 version = "0.1.1"
 dependencies = [
@@ -1673,6 +1686,7 @@ dependencies = [
  "keke-auth-api",
  "keke-auth-codex",
  "keke-auth-grok",
+ "keke-catalog",
  "keke-config",
  "keke-config-types",
  "keke-core",
@@ -1684,6 +1698,7 @@ dependencies = [
  "keke-plugin-api",
  "keke-protocol",
  "keke-provider-api",
+ "keke-provider-codex",
  "keke-provider-grok",
  "keke-skills",
  "keke-test-support",
@@ -1849,16 +1864,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-provider-codex"
+version = "0.1.1"
+dependencies = [
+ "futures",
+ "keke-auth-api",
+ "keke-catalog",
+ "keke-paths",
+ "keke-protocol",
+ "keke-provider-api",
+ "keke-wire",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "keke-provider-grok"
 version = "0.1.1"
 dependencies = [
  "futures",
  "keke-auth-api",
+ "keke-catalog",
+ "keke-paths",
  "keke-protocol",
  "keke-provider-api",
  "keke-wire",
+ "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tracing",
  "wiremock",
 ]
 
@@ -1931,6 +1970,7 @@ dependencies = [
  "keke-auth-api",
  "keke-config-types",
  "keke-protocol",
+ "keke-provider-api",
  "ratatui",
  "serde_json",
  "tempfile",

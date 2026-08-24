@@ -16,6 +16,10 @@ pub use error::ProviderError;
 pub use info::ModelInfo;
 pub use info::ProviderInfo;
 pub use info::WireApi;
+/// Re-exported so a vendor plugin describing what it serves needs only this
+/// crate: the ladder is `keke-protocol`'s, and a plugin that had to name both
+/// would be one more place the two could disagree.
+pub use keke_protocol::ReasoningEffort;
 pub use stream::StreamChunk;
 pub use stream::StreamEvent;
 
@@ -24,7 +28,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use keke_protocol::Message;
-use keke_protocol::ReasoningEffort;
 use keke_protocol::ToolCallId;
 use serde_json::Value;
 

@@ -33,6 +33,9 @@ pub enum Builtin {
     Mode,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
+    /// Lists what the session's provider serves, or switches to the model
+    /// named as an argument.
+    Model,
     /// Puts the last reply on the system clipboard.
     Copy,
     /// Gives the mouse back to the terminal, or takes it again.
@@ -155,7 +158,12 @@ fn builtins() -> Vec<SlashCommand> {
         (
             Builtin::Effort,
             "effort",
-            "cycle the reasoning effort, or name one: low, medium, high, xhigh, max, default",
+            "cycle the reasoning effort, or name one: low, medium, high, xhigh, max, ultra, default",
+        ),
+        (
+            Builtin::Model,
+            "model",
+            "list the models this provider serves, or name one to switch to it",
         ),
         (Builtin::Thinking, "thinking", "show or hide reasoning"),
         (
@@ -235,19 +243,41 @@ pub fn effort(argument: &str) -> Result<Option<Option<ReasoningEffort>>, String>
     }
 }
 
+/// Every rung there is, weakest first. The ladder a person cycles through when
+/// the model has not said which of them it takes.
+pub const LADDER: [ReasoningEffort; 6] = [
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::XHigh,
+    ReasoningEffort::Max,
+    ReasoningEffort::Ultra,
+];
+
 /// The next level after this one, wrapping past the top back to the default.
 ///
 /// Unset enters the ladder at its bottom rung, so tapping through visits every
 /// level and returns to leaving the choice to the model.
+///
+/// `offered` is what the current model actually takes. Cycling through levels a
+/// model does not accept is a tour of requests that will be rejected, so when
+/// the vendor published a ladder that is the one a person walks; an empty
+/// `offered` means nobody said, and then every rung is on the table.
 #[must_use]
-pub fn next_effort(effort: Option<ReasoningEffort>) -> Option<ReasoningEffort> {
+pub fn next_effort(
+    effort: Option<ReasoningEffort>,
+    offered: &[ReasoningEffort],
+) -> Option<ReasoningEffort> {
+    let rungs: &[ReasoningEffort] = if offered.is_empty() { &LADDER } else { offered };
     match effort {
-        None => Some(ReasoningEffort::Low),
-        Some(ReasoningEffort::Low) => Some(ReasoningEffort::Medium),
-        Some(ReasoningEffort::Medium) => Some(ReasoningEffort::High),
-        Some(ReasoningEffort::High) => Some(ReasoningEffort::XHigh),
-        Some(ReasoningEffort::XHigh) => Some(ReasoningEffort::Max),
-        Some(ReasoningEffort::Max) => None,
+        // Unset is a rung of its own at the bottom, so tapping through visits
+        // every level and returns to leaving the choice to the model.
+        None => rungs.first().copied(),
+        Some(current) => rungs
+            .iter()
+            .position(|rung| *rung == current)
+            .and_then(|at| rungs.get(at + 1))
+            .copied(),
     }
 }
 
@@ -340,11 +370,33 @@ mod tests {
     #[test]
     fn cycling_the_effort_returns_to_the_default() {
         let mut level = None;
-        for _ in 0..5 {
-            level = next_effort(level);
+        for _ in 0..LADDER.len() {
+            level = next_effort(level, &[]);
         }
-        assert_eq!(level, Some(ReasoningEffort::Max));
-        assert_eq!(next_effort(level), None);
+        assert_eq!(level, Some(ReasoningEffort::Ultra));
+        assert_eq!(next_effort(level, &[]), None);
+    }
+
+    /// Cycling through levels the model does not take is a tour of requests
+    /// that will be rejected.
+    #[test]
+    fn cycling_walks_the_ladder_the_model_published() {
+        let offered = [ReasoningEffort::Low, ReasoningEffort::High];
+        assert_eq!(next_effort(None, &offered), Some(ReasoningEffort::Low));
+        assert_eq!(
+            next_effort(Some(ReasoningEffort::Low), &offered),
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(next_effort(Some(ReasoningEffort::High), &offered), None);
+    }
+
+    /// A level left over from another model is not one to keep cycling from:
+    /// the next tap leaves it rather than walking on from a rung that is not
+    /// on this ladder.
+    #[test]
+    fn a_level_this_model_does_not_offer_cycles_back_to_unset() {
+        let offered = [ReasoningEffort::Low, ReasoningEffort::High];
+        assert_eq!(next_effort(Some(ReasoningEffort::Max), &offered), None);
     }
 
     #[test]

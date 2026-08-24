@@ -1,0 +1,29 @@
+[
+  {
+    "id": "grok-4.6",
+    "display_name": "Grok 4.6",
+    "description": "xAI's latest frontier model",
+    "context_window": 500000,
+    "supports_vision": false,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
+    "default_reasoning_effort": "high"
+  },
+  {
+    "id": "grok-4.5",
+    "display_name": "Grok 4.5",
+    "description": null,
+    "context_window": 500000,
+    "supports_vision": false,
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "default_reasoning_effort": "high"
+  }
+]

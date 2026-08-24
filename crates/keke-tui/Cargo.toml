@@ -12,6 +12,7 @@ keke-acp = { workspace = true }
 keke-auth-api = { workspace = true }
 keke-config-types = { workspace = true }
 keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }

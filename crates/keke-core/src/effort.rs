@@ -42,6 +42,7 @@ fn encode(effort: Option<ReasoningEffort>) -> u8 {
         Some(ReasoningEffort::High) => 3,
         Some(ReasoningEffort::XHigh) => 4,
         Some(ReasoningEffort::Max) => 5,
+        Some(ReasoningEffort::Ultra) => 6,
     }
 }
 
@@ -52,6 +53,7 @@ fn decode(value: u8) -> Option<ReasoningEffort> {
         3 => Some(ReasoningEffort::High),
         4 => Some(ReasoningEffort::XHigh),
         5 => Some(ReasoningEffort::Max),
+        6 => Some(ReasoningEffort::Ultra),
         _ => None,
     }
 }
