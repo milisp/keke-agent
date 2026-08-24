@@ -40,7 +40,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     let mut config = Config::load(workspace_root.as_path())?;
 
     // CLI flags win over every config layer, which is what makes a one-off
-    // override possible without editing a file.
+    // override possible without editing a file. Resuming needs to tell a flag
+    // typed for this run apart from the config default, so it knows not to
+    // clobber a flag with what the session logged.
+    let model_explicit = cli.model.is_some();
+    let effort_explicit = cli.reasoning_effort.is_some();
     if let Some(provider) = cli.provider {
         config.model.provider = provider;
     }
@@ -103,7 +107,19 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             )
             .await
         }
-        Command::Resume(args) => resume(args, config, composed, cwd, approvals, requests).await,
+        Command::Resume(args) => {
+            resume(
+                args,
+                config,
+                composed,
+                cwd,
+                approvals,
+                requests,
+                model_explicit,
+                effort_explicit,
+            )
+            .await
+        }
         Command::Exec(args) => exec(args, config, composed, cwd).await,
         Command::Agent { transport } => agent(transport, config, cwd).await,
         Command::Login(args) => login(args, composed).await,
@@ -244,7 +260,7 @@ impl EditorSessions {
     async fn start(
         &self,
         cwd: std::path::PathBuf,
-        resume: Option<(keke_protocol::SessionId, Vec<keke_protocol::Message>)>,
+        resume: Option<keke_core::ResumedSession>,
     ) -> Result<keke_acp::Opened> {
         let (approvals, requests) = keke_acp::approvals();
         let composed = Composed::build(
@@ -254,11 +270,23 @@ impl EditorSessions {
             self.config.model_catalog_ttl,
             Some(Arc::clone(&approvals)),
         )?;
-        let mut builder =
-            session_builder(&self.config, &composed, cwd, self.config.approval_policy).await?;
-        let history = resume.as_ref().map(|(_, history)| history.clone());
-        if let Some((id, history)) = resume {
-            builder = builder.resume(id, history);
+        // What the session was last talking to wins over the server's config
+        // default: a client reopening a session means to continue it, not to
+        // switch it back to whatever keke was started with.
+        let mut config = self.config.clone();
+        if let Some(model) = resume.as_ref().and_then(|resumed| resumed.model.clone()) {
+            config.model.model = model;
+        }
+        if let Some(effort) = resume.as_ref().and_then(|resumed| resumed.reasoning_effort) {
+            config.reasoning_effort = Some(effort);
+        }
+        if let Some(policy) = resume.as_ref().and_then(|resumed| resumed.approval_policy) {
+            config.approval_policy = policy;
+        }
+        let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+        let history = resume.as_ref().map(|resumed| resumed.history.clone());
+        if let Some(resumed) = resume {
+            builder = builder.resume(resumed.id, resumed.history);
         }
         let mut opened = keke_acp::local(builder, approvals, requests).await?;
         opened.history = history.unwrap_or_default();
@@ -354,7 +382,7 @@ impl EditorSessions {
             .cwd
             .as_ref()
             .map_or_else(|| self.rooted_at(cwd), std::path::PathBuf::from);
-        self.start(cwd, Some((resumed.id, resumed.history))).await
+        self.start(cwd, Some(resumed)).await
     }
 }
 
@@ -365,11 +393,13 @@ impl EditorSessions {
 /// to disagree about.
 async fn resume(
     args: ResumeArgs,
-    config: Config,
+    mut config: Config,
     composed: Composed,
     cwd: std::path::PathBuf,
     approvals: Arc<keke_acp::Approvals>,
     requests: keke_acp::ApprovalRequests,
+    model_explicit: bool,
+    effort_explicit: bool,
 ) -> Result<()> {
     let home = &config.home.home;
     let sessions = keke_core::list_sessions(home)?;
@@ -442,6 +472,20 @@ async fn resume(
     // a conversation about another directory and silently pointing its tools at
     // this one would be a different session wearing the same name.
     let cwd = resumed.cwd.as_ref().map_or(cwd, std::path::PathBuf::from);
+    // What the session was last talking to wins over the config default — a
+    // flag typed for this run still wins over that, since it is the more
+    // specific instruction.
+    if !model_explicit && let Some(model) = &resumed.model {
+        config.model.model = model.clone();
+    }
+    if !effort_explicit && resumed.reasoning_effort.is_some() {
+        config.reasoning_effort = resumed.reasoning_effort;
+    }
+    // No flag overrides this one yet, so what the session was last set to
+    // always wins over the config default.
+    if let Some(policy) = resumed.approval_policy {
+        config.approval_policy = policy;
+    }
     let seed = keke_tui::Resumed {
         history: resumed.history.clone(),
         usage: resumed.usage,

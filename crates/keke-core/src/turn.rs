@@ -66,6 +66,7 @@ impl Session {
         self.log(SessionEvent::TurnStart {
             turn,
             input: input.clone(),
+            approval_policy: Some(self.approval.get().as_str().to_string()),
         })
         .await?;
         self.emit(TurnUpdate::TurnStarted { turn });

@@ -34,6 +34,15 @@ pub enum SessionEvent {
     TurnStart {
         turn: TurnId,
         input: Message,
+        /// The approval policy in force for this turn, so a resumed session
+        /// picks up whatever a person last switched it to rather than
+        /// whatever the config file says. Not model-visible — it never
+        /// reaches a request — so it is carried here as a plain wire string
+        /// rather than a typed field: `keke-config-types::ApprovalPolicy`
+        /// sits above this crate and cannot be named from it.
+        /// A log written before this field existed simply has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_policy: Option<String>,
     },
     /// Context assembled and handed to the model for one step. Logged in full
     /// because it is the model-visible input.
@@ -110,6 +119,7 @@ mod tests {
             event: SessionEvent::TurnStart {
                 turn: TurnId::new(),
                 input: Message::user("hi"),
+                approval_policy: None,
             },
         };
         let json = serde_json::to_value(&envelope).expect("serialize");

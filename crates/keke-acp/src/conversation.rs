@@ -92,6 +92,9 @@ pub struct Opened {
     /// The level this session was configured with, so a client's picker starts
     /// on what is in force rather than on a guess.
     pub effort: Option<ReasoningEffort>,
+    /// The approval policy this session was configured with, so a client's
+    /// picker starts on what is in force rather than on a guess.
+    pub approval_policy: ApprovalPolicy,
     pub conversation: Arc<dyn Conversation>,
     pub updates: UnboundedReceiver<Update>,
     /// What the session was rebuilt from. Empty for a session that is new.

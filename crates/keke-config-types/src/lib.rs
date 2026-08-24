@@ -31,6 +31,34 @@ pub enum ApprovalPolicy {
     Never,
 }
 
+impl ApprovalPolicy {
+    /// The wire spelling, for anywhere that needs it outside a `serde` path —
+    /// the session log included, which is written by `keke-core` and read
+    /// back by `keke-core` too, but through `keke-protocol`'s `SessionEvent`,
+    /// a crate ranked below this one that cannot name this type directly.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OnRequest => "on-request",
+            Self::OnFailure => "on-failure",
+            Self::Never => "never",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`]. `None` for anything else, including a
+    /// spelling from a future build this one does not know — the caller
+    /// decides whether that is an error or a value to fall back from.
+    #[must_use]
+    pub fn parse(wire: &str) -> Option<Self> {
+        match wire {
+            "on-request" => Some(Self::OnRequest),
+            "on-failure" => Some(Self::OnFailure),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
 /// How tightly spawned processes are confined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

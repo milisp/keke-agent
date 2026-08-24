@@ -93,6 +93,19 @@ pub struct ResumedSession {
     /// What the session has spent so far, summed over its turns.
     pub usage: Usage,
     pub cwd: Option<String>,
+    /// The model that answered the last logged step, if the log named one.
+    /// Falls back to `SessionStart`'s model when no step did — a log written
+    /// before `ModelRequest` carried its own model still says what the
+    /// session opened with.
+    pub model: Option<String>,
+    /// How hard the model was last asked to think, from the last logged step
+    /// that said. A log with no step naming one has none: the session ran on
+    /// whatever the vendor defaults to, and resuming should too.
+    pub reasoning_effort: Option<keke_protocol::ReasoningEffort>,
+    /// The approval policy in force for the last logged turn, if the log named
+    /// one. A log written before this field existed, or with no turn yet, has
+    /// none — the caller falls back to configuration, same as it always did.
+    pub approval_policy: Option<keke_config_types::ApprovalPolicy>,
 }
 
 /// What a name a person typed matched.
@@ -205,9 +218,60 @@ pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, Rol
     Ok(ResumedSession {
         id,
         cwd: started_in(&events),
+        model: model_from_log(&events),
+        reasoning_effort: reasoning_effort_from_log(&events),
+        approval_policy: approval_policy_from_log(&events),
         history: history_from_log(&events),
         usage: usage_from_log(&events),
         path,
+    })
+}
+
+/// The model the session was last talking to.
+///
+/// The last `ModelRequest` that named one wins, because a session can switch
+/// models mid-conversation and resuming should pick up where it left off, not
+/// where it started. `SessionStart` is the fallback for a log written before
+/// `ModelRequest` carried its own model.
+fn model_from_log(events: &[SessionEvent]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            SessionEvent::ModelRequest { model, .. } => model.clone(),
+            _ => None,
+        })
+        .or_else(|| {
+            events.iter().find_map(|event| match event {
+                SessionEvent::SessionStart { model, .. } => Some(model.clone()),
+                _ => None,
+            })
+        })
+}
+
+/// How hard the model was last asked to think.
+fn reasoning_effort_from_log(events: &[SessionEvent]) -> Option<keke_protocol::ReasoningEffort> {
+    events.iter().rev().find_map(|event| match event {
+        SessionEvent::ModelRequest {
+            reasoning_effort, ..
+        } => *reasoning_effort,
+        _ => None,
+    })
+}
+
+/// The approval policy the last logged turn ran under.
+///
+/// A wire spelling this build does not recognise — an older or newer one —
+/// falls back to none rather than failing the resume: an approval mode is a
+/// convenience to restore, not a fact the session cannot continue without.
+fn approval_policy_from_log(events: &[SessionEvent]) -> Option<keke_config_types::ApprovalPolicy> {
+    events.iter().rev().find_map(|event| match event {
+        SessionEvent::TurnStart {
+            approval_policy, ..
+        } => approval_policy
+            .as_deref()
+            .and_then(keke_config_types::ApprovalPolicy::parse),
+        _ => None,
     })
 }
 
@@ -379,6 +443,7 @@ mod tests {
             SessionEvent::TurnStart {
                 turn,
                 input: Message::user("first"),
+                approval_policy: None,
             },
             SessionEvent::ModelRequest {
                 turn,
@@ -462,6 +527,7 @@ mod tests {
             SessionEvent::TurnStart {
                 turn,
                 input: Message::user("hello"),
+                approval_policy: None,
             },
             SessionEvent::Error {
                 turn: Some(turn),
@@ -486,6 +552,7 @@ mod tests {
                     event: SessionEvent::TurnStart {
                         turn: TurnId::new(),
                         input: Message::user("hi"),
+                        approval_policy: None,
                     },
                 };
                 log.push_str(&serde_json::to_string(&envelope).expect("serialize"));
@@ -563,6 +630,41 @@ mod tests {
     #[test]
     fn a_prefix_ignores_dashes_and_case() {
         assert_eq!(normalize("01A0-2D66"), "01a02d66");
+    }
+
+    /// A person switching approval modes mid-session means the switch to
+    /// survive a resume, not the mode the session opened with.
+    #[test]
+    fn the_last_turn_s_approval_policy_is_what_resume_restores() {
+        let events = vec![
+            SessionEvent::TurnStart {
+                turn: TurnId::new(),
+                input: Message::user("first"),
+                approval_policy: Some("on-request".to_string()),
+            },
+            SessionEvent::TurnStart {
+                turn: TurnId::new(),
+                input: Message::user("second"),
+                approval_policy: Some("never".to_string()),
+            },
+        ];
+        assert_eq!(
+            approval_policy_from_log(&events),
+            Some(keke_config_types::ApprovalPolicy::Never)
+        );
+    }
+
+    /// A log written before this field existed has no opinion, and resuming
+    /// it must fall back to configuration rather than defaulting silently to
+    /// one specific mode.
+    #[test]
+    fn a_log_with_no_approval_policy_restores_none() {
+        let events = vec![SessionEvent::TurnStart {
+            turn: TurnId::new(),
+            input: Message::user("hi"),
+            approval_policy: None,
+        }];
+        assert_eq!(approval_policy_from_log(&events), None);
     }
 
     #[test]

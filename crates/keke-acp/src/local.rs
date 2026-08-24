@@ -183,6 +183,7 @@ pub async fn local(
     let id = session.id().to_string();
     let cancel = session.canceller();
     let approval = session.approval_switch();
+    let configured_approval = approval.get();
     let effort = session.effort_switch();
     let configured_effort = effort.get();
     let model_switch = session.model_switch();
@@ -216,6 +217,7 @@ pub async fn local(
         // starts the session.
         models: Vec::new(),
         effort: configured_effort,
+        approval_policy: configured_approval,
         conversation: Arc::new(LocalConversation {
             commands,
             cancel: Box::new(cancel),

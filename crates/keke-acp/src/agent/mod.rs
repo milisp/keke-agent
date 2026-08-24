@@ -24,6 +24,7 @@ use std::sync::Mutex;
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectTo;
 use agent_client_protocol::Stdio;
+use keke_config_types::ApprovalPolicy;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_provider_api::ModelInfo;
@@ -103,6 +104,7 @@ fn answer_for(option_id: &str) -> PermissionAnswer {
 /// changed, so these strings are the wire contract.
 const MODEL: &str = "model";
 const REASONING_EFFORT: &str = "reasoning_effort";
+const APPROVAL_POLICY: &str = "approval_policy";
 
 /// The value that means "no level; let the model decide".
 ///
@@ -149,6 +151,7 @@ struct Entry {
 struct Selected {
     model: String,
     effort: Option<ReasoningEffort>,
+    approval_policy: ApprovalPolicy,
 }
 
 impl Entry {
@@ -162,6 +165,7 @@ impl Entry {
             .unwrap_or_else(|_| Selected {
                 model: String::new(),
                 effort: None,
+                approval_policy: ApprovalPolicy::default(),
             })
     }
 
@@ -205,6 +209,7 @@ fn enrol(
         selected: Mutex::new(Selected {
             model: opened.model.clone(),
             effort: opened.effort,
+            approval_policy: opened.approval_policy,
         }),
         outcomes: tokio::sync::Mutex::new(outcomes),
     });
@@ -221,10 +226,28 @@ fn enrol(
 /// reject is worse than no menu.
 fn choices(entry: &Entry) -> Vec<Choice> {
     let selected = entry.selected();
-    if entry.models.is_empty() {
-        return Vec::new();
-    }
     let mut choices = vec![Choice {
+        id: APPROVAL_POLICY,
+        name: "Approval mode",
+        current: policy_value(selected.approval_policy).to_string(),
+        options: [
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Never,
+        ]
+        .into_iter()
+        .map(|policy| {
+            (
+                policy_value(policy).to_string(),
+                policy_label(policy).to_string(),
+            )
+        })
+        .collect(),
+    }];
+    if entry.models.is_empty() {
+        return choices;
+    }
+    choices.push(Choice {
         id: MODEL,
         name: "Model",
         current: selected.model,
@@ -237,7 +260,7 @@ fn choices(entry: &Entry) -> Vec<Choice> {
             // a menu someone has to read.
             .map(|model| (model.id.clone(), model.display_name.clone()))
             .collect(),
-    }];
+    });
 
     let offered = entry.offered_efforts();
     if !offered.is_empty() {
@@ -262,6 +285,21 @@ fn choices(entry: &Entry) -> Vec<Choice> {
     choices
 }
 
+/// The wire value for one approval policy — `ApprovalPolicy::as_str`, the same
+/// spelling the session log uses, so a client's picker and a resumed log never
+/// disagree about what a mode is called.
+fn policy_value(policy: ApprovalPolicy) -> &'static str {
+    policy.as_str()
+}
+
+fn policy_label(policy: ApprovalPolicy) -> &'static str {
+    match policy {
+        ApprovalPolicy::OnRequest => "Ask for approval",
+        ApprovalPolicy::OnFailure => "Ask on failure",
+        ApprovalPolicy::Never => "Full access",
+    }
+}
+
 /// How a level is written in a menu. Capitalised because it sits beside model
 /// names in the same list, and `xhigh` reads as a typo next to `GPT-5.6-Sol`.
 fn effort_label(effort: ReasoningEffort) -> String {
@@ -284,6 +322,16 @@ fn effort_label(effort: ReasoningEffort) -> String {
 /// client is allowed to ask for — only about how the refusal is spelled.
 fn apply(entry: &Entry, config_id: &str, value: Option<String>) -> Result<Vec<Choice>, String> {
     match config_id {
+        APPROVAL_POLICY => {
+            let wanted = value.ok_or_else(|| "no approval mode named".to_string())?;
+            let policy = ApprovalPolicy::parse(&wanted)
+                .ok_or_else(|| "not an approval mode this session offers".to_string())?;
+            entry.conversation.set_approval_policy(policy);
+            if let Ok(mut selected) = entry.selected.lock() {
+                selected.approval_policy = policy;
+            }
+            Ok(choices(entry))
+        }
         MODEL => {
             let wanted = value.ok_or_else(|| "no model named".to_string())?;
             if !entry.models.iter().any(|model| model.id == wanted) {
@@ -366,6 +414,7 @@ mod tests {
                 selected: Mutex::new(Selected {
                     model,
                     effort: None,
+                    approval_policy: ApprovalPolicy::default(),
                 }),
                 outcomes: tokio::sync::Mutex::new(outcomes),
             },
@@ -488,11 +537,14 @@ mod tests {
         assert_eq!(scripted.efforts(), vec![Some(ReasoningEffort::Ultra), None]);
     }
 
-    /// Offering a choice keke cannot honour puts the refusal after the click
-    /// rather than before it.
+    /// Offering a model choice keke cannot honour puts the refusal after the
+    /// click rather than before it — but the approval mode is not the
+    /// provider's to serve, so it is still offered.
     #[test]
-    fn a_provider_that_could_not_be_asked_offers_no_choice() {
+    fn a_provider_that_could_not_be_asked_offers_no_model_choice() {
         let (entry, _scripted) = entry(Vec::new());
-        assert!(choices(&entry).is_empty());
+        let choices = choices(&entry);
+        assert!(option(&choices, MODEL).is_none());
+        assert!(option(&choices, APPROVAL_POLICY).is_some());
     }
 }
