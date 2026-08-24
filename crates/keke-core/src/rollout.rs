@@ -38,9 +38,13 @@ pub struct RolloutRecorder {
 }
 
 impl RolloutRecorder {
-    /// Create the log for `session` under `home`.
-    pub async fn create(home: &AbsPath, session: SessionId) -> Result<Self, RolloutError> {
-        let dir = home.as_path().join("sessions");
+    /// Create the log for `session` under `home`, in `cwd`'s project directory.
+    pub async fn create(
+        home: &AbsPath,
+        cwd: &Path,
+        session: SessionId,
+    ) -> Result<Self, RolloutError> {
+        let dir = crate::project_dir(home, cwd);
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|source| RolloutError::Io {

@@ -337,11 +337,11 @@ impl SessionBuilder {
         let id = resumed.as_ref().map_or_else(SessionId::new, |it| it.id);
         // The recorder opens for append, so a resumed session writes on past
         // the end of the log it was rebuilt from.
-        let mut recorder = RolloutRecorder::create(&config.home.home, id).await?;
         let workspace = Workspace::new(config.home.workspace_root.clone());
         let cwd = self
             .cwd
             .unwrap_or_else(|| config.home.workspace_root.as_path().to_path_buf());
+        let mut recorder = RolloutRecorder::create(&config.home.home, &cwd, id).await?;
 
         // Written again on a resume: the log then says what the continued run
         // was configured with, which may not be what the first one was.

@@ -56,6 +56,15 @@ impl Fixture {
         };
         entries
             .filter_map(|entry| Some(entry.ok()?.path()))
+            .flat_map(|path| {
+                let Ok(inner) = std::fs::read_dir(&path) else {
+                    return vec![path];
+                };
+                inner
+                    .filter_map(|entry| Some(entry.ok()?.path()))
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+                    .collect()
+            })
             .collect()
     }
 }

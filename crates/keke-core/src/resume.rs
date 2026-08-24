@@ -31,6 +31,34 @@ pub fn sessions_dir(home: &AbsPath) -> PathBuf {
     home.as_path().join("sessions")
 }
 
+/// Where one project's logs live: its rollouts and its prompt history together.
+///
+/// A session belongs to the directory it was started in, and so does the typing
+/// history, so the two live side by side under one directory named after the
+/// project rather than in two unrelated places.
+#[must_use]
+pub fn project_dir(home: &AbsPath, cwd: &Path) -> PathBuf {
+    sessions_dir(home).join(encode_path(&cwd.display().to_string()))
+}
+
+/// Percent-encode everything outside the URL unreserved set.
+///
+/// Enough to make a path one directory name on every platform keke runs on:
+/// separators, spaces, colons and non-ASCII all become escapes, and the result
+/// is still readable enough to recognise the project by eye.
+fn encode_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 /// One resumable session, as `keke resume --list` prints it.
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
@@ -138,9 +166,16 @@ pub fn list_sessions(home: &AbsPath) -> Result<Vec<SessionSummary>, RolloutError
         }
     };
 
-    let mut sessions: Vec<SessionSummary> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    let mut logs: Vec<PathBuf> = Vec::new();
+    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        let Ok(inner) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        logs.extend(inner.filter_map(Result::ok).map(|entry| entry.path()));
+    }
+
+    let mut sessions: Vec<SessionSummary> = logs
+        .into_iter()
         .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
         .filter_map(|path| summarize(&path).ok())
         .collect();
@@ -164,7 +199,7 @@ pub fn latest_session(home: &AbsPath) -> Result<Option<SessionSummary>, RolloutE
 
 /// Read one session's log and rebuild what a session needs to continue it.
 pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, RolloutError> {
-    let path = sessions_dir(home).join(format!("{id}.jsonl"));
+    let path = session_path(home, id)?;
     let envelopes = read_log(&path)?;
     let events: Vec<SessionEvent> = envelopes.into_iter().map(|line| line.event).collect();
     Ok(ResumedSession {
@@ -174,6 +209,24 @@ pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, Rol
         usage: usage_from_log(&events),
         path,
     })
+}
+
+/// Where one session's log is, in whichever project directory holds it.
+///
+/// The id does not say which project the session belongs to, so the listing is
+/// what resolves it. An id nothing on disk answers to is a missing file.
+fn session_path(home: &AbsPath, id: SessionId) -> Result<PathBuf, RolloutError> {
+    list_sessions(home)?
+        .into_iter()
+        .find(|session| session.id == id)
+        .map(|session| session.path)
+        .ok_or_else(|| RolloutError::Io {
+            path: sessions_dir(home)
+                .join(format!("{id}.jsonl"))
+                .display()
+                .to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no log for this session"),
+        })
 }
 
 fn summarize(path: &Path) -> Result<SessionSummary, RolloutError> {
@@ -438,9 +491,30 @@ mod tests {
                 log.push_str(&serde_json::to_string(&envelope).expect("serialize"));
                 log.push('\n');
             }
-            std::fs::write(sessions_dir(&home).join(format!("{id}.jsonl")), log).expect("write");
+            let dir = project_dir(&home, Path::new("/Users/x/projects/keke"));
+            std::fs::create_dir_all(&dir).expect("project dir");
+            std::fs::write(dir.join(format!("{id}.jsonl")), log).expect("write");
         }
         (dir, home)
+    }
+
+    /// A session's log sits with the typing history of the same project.
+    #[tokio::test]
+    async fn a_log_is_written_beside_the_project_prompt_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let home = AbsPath::new(root).expect("absolute");
+        let cwd = Path::new("/Users/x/projects/keke");
+        let id = SessionId::new();
+
+        let recorder = crate::RolloutRecorder::create(&home, cwd, id)
+            .await
+            .expect("creates");
+
+        assert_eq!(
+            recorder.path().parent(),
+            crate::prompt_history_path(&home, cwd).parent()
+        );
     }
 
     /// Nobody retypes a UUID, so any prefix of one resolves.

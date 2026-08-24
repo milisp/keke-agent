@@ -50,6 +50,7 @@ pub use resume::history_from_log;
 pub use resume::latest_session;
 pub use resume::list_sessions;
 pub use resume::load_session;
+pub use resume::project_dir;
 pub use resume::sessions_dir;
 pub use resume::usage_from_log;
 pub use rollout::RolloutError;

@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::RolloutError;
-use crate::resume::sessions_dir;
+use crate::resume::project_dir;
 
 /// How many past prompts a load hands back, newest last.
 ///
@@ -40,14 +40,11 @@ pub struct PromptHistoryEntry {
 
 /// Where a project's typing history lives.
 ///
-/// The directory name is the project path percent-encoded, so every project
-/// gets its own file and the name says which project it belongs to without a
-/// side table mapping hashes back to paths.
+/// Next to that project's session logs, in the directory named after the
+/// project path, so everything belonging to one directory is in one place.
 #[must_use]
 pub fn prompt_history_path(home: &AbsPath, cwd: &Path) -> PathBuf {
-    sessions_dir(home)
-        .join(encode_path(&cwd.display().to_string()))
-        .join("prompt_history.jsonl")
+    project_dir(home, cwd).join("prompt_history.jsonl")
 }
 
 /// The prompt history of one project directory.
@@ -155,24 +152,6 @@ impl PromptHistory {
     }
 }
 
-/// Percent-encode everything outside the URL unreserved set.
-///
-/// Enough to make a path one directory name on every platform keke runs on:
-/// separators, spaces, colons and non-ASCII all become escapes, and the result
-/// is still readable enough to recognise the project by eye.
-fn encode_path(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,7 +169,7 @@ mod tests {
         let (_dir, home) = home();
         let path = prompt_history_path(&home, Path::new("/Users/x/projects/keke"));
         assert!(path.ends_with("%2FUsers%2Fx%2Fprojects%2Fkeke/prompt_history.jsonl"));
-        assert!(path.starts_with(sessions_dir(&home)));
+        assert!(path.starts_with(crate::sessions_dir(&home)));
     }
 
     /// The first run in a directory has no history, which is not a failure.
