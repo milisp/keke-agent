@@ -63,11 +63,32 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
 
     let (body, menu, composer, footer) = (areas[0], areas[1], areas[2], areas[3]);
 
-    let lines = transcript::render(app.transcript.cells(), body.width, app.show_thinking());
-    app.scroll.measure(lines.len(), usize::from(body.height));
+    let rendered = transcript::render(
+        app.transcript.cells(),
+        body.width,
+        app.show_thinking(),
+        app.expanded(),
+    );
+    app.scroll
+        .measure(rendered.lines.len(), usize::from(body.height));
     let offset = app.scroll.offset();
 
-    let visible: Vec<_> = lines
+    // A header only answers a click while it is on screen, so the map is of
+    // this frame and is rebuilt whole every frame.
+    let toggles = rendered
+        .toggles
+        .iter()
+        .filter(|(line, _)| *line >= offset && *line < offset + usize::from(body.height))
+        .filter_map(|(line, key)| {
+            u16::try_from(line - offset)
+                .ok()
+                .map(|row| (body.y + row, *key))
+        })
+        .collect();
+    app.set_toggles(toggles);
+
+    let visible: Vec<_> = rendered
+        .lines
         .into_iter()
         .skip(offset)
         .take(usize::from(body.height))

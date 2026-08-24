@@ -88,6 +88,12 @@ pub struct App {
     /// arrives as a screen position and nothing else, so the only thing that
     /// can say what was clicked is the frame that drew it.
     follow_button: Option<(u16, u16, u16)>,
+    /// Which collapsed cells the reader has opened, by index into the
+    /// transcript. Cells are only ever appended, so an index stays the cell it
+    /// was; nothing a later turn adds can reopen something already closed.
+    expanded: std::collections::HashSet<usize>,
+    /// Where this frame drew each expandable header, as `(row, cell index)`.
+    toggles: Vec<(u16, usize)>,
     /// A word about something keke just did for the person at the keyboard —
     /// copied, resumed. It goes in the status bar and expires, never into
     /// the transcript: the transcript is the conversation, and a line in it
@@ -123,6 +129,8 @@ impl App {
                 show_thinking: true,
                 mouse_capture: true,
                 follow_button: None,
+                expanded: std::collections::HashSet::new(),
+                toggles: Vec::new(),
                 flash: None,
                 pending_copy: None,
                 should_quit: false,
@@ -257,6 +265,46 @@ impl App {
     /// not drawn at all.
     pub(crate) fn set_follow_button(&mut self, area: Option<(u16, u16, u16)>) {
         self.follow_button = area;
+    }
+
+    /// The cells the reader has opened.
+    pub(crate) fn expanded(&self) -> &std::collections::HashSet<usize> {
+        &self.expanded
+    }
+
+    /// Told by `draw` which rows this frame's expandable headers landed on.
+    pub(crate) fn set_toggles(&mut self, toggles: Vec<(u16, usize)>) {
+        self.toggles = toggles;
+    }
+
+    /// Open or close the header drawn at `row`, if a click landed on one.
+    ///
+    /// The whole row answers, not just the marker: a one-cell target is a
+    /// thing people miss, and there is nothing else on that row to hit.
+    pub fn toggle_at(&mut self, row: u16) -> bool {
+        let Some((_, key)) = self.toggles.iter().find(|(at, _)| *at == row).copied() else {
+            return false;
+        };
+        self.toggle_expanded(key);
+        true
+    }
+
+    /// Open or close the last thing that can be opened.
+    ///
+    /// The keyboard's answer to the click: what a person wants right after a
+    /// run of calls scrolls past is that run, not one chosen from a list.
+    pub fn toggle_last_expandable(&mut self) {
+        let Some(key) = self.transcript.last_expandable() else {
+            self.set_flash("nothing to expand");
+            return;
+        };
+        self.toggle_expanded(key);
+    }
+
+    fn toggle_expanded(&mut self, key: usize) {
+        if !self.expanded.remove(&key) {
+            self.expanded.insert(key);
+        }
     }
 
     /// Whether a click at these coordinates hit the jump-to-bottom button.
@@ -611,7 +659,10 @@ impl App {
     }
 
     fn help_text(&self) -> String {
-        let mut text = String::from("commands:");
+        let mut text = String::from(
+            "keys:\n  ctrl-o — expand or collapse the newest thought or run of calls\n  \
+             ctrl-t — show or hide reasoning\n  ctrl-y — copy the last reply\n\ncommands:",
+        );
         for entry in self.commands.entries() {
             text.push_str(&format!("\n  /{} — {}", entry.name, entry.description));
         }

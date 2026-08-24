@@ -40,6 +40,7 @@ impl App {
             KeyCode::Char('d') if control => self.quit(),
             KeyCode::Char('t') if control => self.toggle_thinking(),
             KeyCode::Char('l') if control => self.scroll.follow(),
+            KeyCode::Char('o') if control => self.toggle_last_expandable(),
             KeyCode::Char('y') if control => self.copy_last_reply(),
             KeyCode::PageUp => self.scroll.page_up(),
             KeyCode::PageDown => self.scroll.page_down(),
@@ -145,6 +146,9 @@ impl App {
                 if self.hit_follow_button(mouse.column, mouse.row) =>
             {
                 self.scroll.follow();
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.toggle_at(mouse.row);
             }
             _ => {}
         }

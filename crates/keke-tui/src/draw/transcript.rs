@@ -4,6 +4,8 @@
 //! scrollback needs a line count it can pin a viewport to, and a widget that
 //! wraps internally will not tell anyone how many lines it produced.
 
+use std::collections::HashSet;
+
 use keke_acp::PermissionAnswer;
 use keke_protocol::ToolStatus;
 use ratatui::style::Color;
@@ -16,6 +18,8 @@ use crate::transcript::CallState;
 use crate::transcript::Cell;
 use crate::transcript::PermissionCell;
 use crate::transcript::ToolCell;
+use crate::transcript::groups_with;
+use crate::transcript::verb;
 
 const USER: Color = Color::Cyan;
 const THINKING: Color = Color::DarkGray;
@@ -24,46 +28,215 @@ const FAILURE: Color = Color::Red;
 const DENIED: Color = Color::Yellow;
 const SUCCESS: Color = Color::Green;
 
-pub(crate) fn render(cells: &[Cell], width: u16, show_thinking: bool) -> Vec<Line<'static>> {
+/// A drawn transcript, plus where its expandable headers landed.
+///
+/// A click arrives as a screen position and nothing else, so the frame that
+/// drew a header is the only thing that can say which cell it belongs to.
+#[derive(Debug, Default)]
+pub(crate) struct Rendered {
+    pub lines: Vec<Line<'static>>,
+    /// `(line index, cell key)` for every row a click may expand or collapse.
+    pub toggles: Vec<(usize, usize)>,
+}
+
+/// The status a group is reported as: the worst one in it.
+///
+/// A run summarised by its first call would hide a failure behind two
+/// successes, which is the one thing a collapsed line must never do.
+fn worst(status: ToolStatus, running: ToolStatus) -> ToolStatus {
+    fn rank(status: ToolStatus) -> u8 {
+        match status {
+            ToolStatus::Ok => 0,
+            ToolStatus::Cancelled => 1,
+            ToolStatus::Denied => 2,
+            ToolStatus::Error => 3,
+        }
+    }
+    if rank(status) >= rank(running) {
+        status
+    } else {
+        running
+    }
+}
+
+pub(crate) fn render(
+    cells: &[Cell],
+    width: u16,
+    show_thinking: bool,
+    expanded: &HashSet<usize>,
+) -> Rendered {
     let width = usize::from(width.max(8));
-    let mut lines = Vec::new();
-    for cell in cells {
+    let mut out = Rendered::default();
+    let mut index = 0;
+    while index < cells.len() {
+        let cell = &cells[index];
+        let mut spaced = true;
         match cell {
             Cell::User(text) => {
-                push_block(&mut lines, "› ", text, Style::new().fg(USER), width);
+                push_block(&mut out.lines, "› ", text, Style::new().fg(USER), width);
             }
             Cell::Assistant(text) => {
-                push_block(&mut lines, "", text, Style::new(), width);
+                push_block(&mut out.lines, "", text, Style::new(), width);
             }
+            // The cell still being streamed is the one being read, so it stays
+            // open; a finished thought collapses to a line that says it
+            // happened and can be opened again.
             Cell::Thinking(text) if show_thinking => {
                 let style = Style::new().fg(THINKING).add_modifier(Modifier::ITALIC);
-                push_block(&mut lines, "  ", text, style, width);
+                let streaming = index + 1 == cells.len();
+                if streaming || expanded.contains(&index) {
+                    if !streaming {
+                        out.toggles.push((out.lines.len(), index));
+                        out.lines.push(header("✻", "Thought", "", true, style));
+                    }
+                    push_block(&mut out.lines, "  ", text, style, width);
+                } else {
+                    out.toggles.push((out.lines.len(), index));
+                    let count = text.split('\n').count();
+                    let noun = if count == 1 { "line" } else { "lines" };
+                    let summary = format!("{count} {noun}");
+                    out.lines
+                        .push(header("✻", "Thought", &summary, false, style));
+                }
             }
-            Cell::Thinking(_) => continue,
-            Cell::Tool(tool) => lines.extend(tool_lines(tool, width)),
-            Cell::Permission(prompt) => lines.extend(permission_lines(prompt, width)),
+            Cell::Thinking(_) => spaced = false,
+            Cell::Tool(tool) if matches!(tool.state, CallState::Running) => {
+                out.lines.extend(tool_lines(tool, width));
+            }
+            Cell::Tool(first) => {
+                let verb = verb(&first.name).0;
+                let end = cells[index..]
+                    .iter()
+                    .position(|cell| !groups_with(cell, verb))
+                    .map_or(cells.len(), |offset| index + offset);
+                out.toggles.push((out.lines.len(), index));
+                out.lines.extend(group_lines(
+                    &cells[index..end],
+                    expanded.contains(&index),
+                    width,
+                ));
+                index = end;
+                out.lines.push(Line::default());
+                continue;
+            }
+            Cell::Permission(prompt) => out.lines.extend(permission_lines(prompt, width)),
             Cell::Error(message) => {
                 let style = Style::new().fg(FAILURE);
-                push_block(&mut lines, "error: ", message, style, width);
+                push_block(&mut out.lines, "error: ", message, style, width);
             }
             Cell::Notice(message) => {
-                push_block(&mut lines, "· ", message, Style::new().fg(NOTICE), width);
+                push_block(
+                    &mut out.lines,
+                    "· ",
+                    message,
+                    Style::new().fg(NOTICE),
+                    width,
+                );
             }
         }
-        lines.push(Line::default());
+        if spaced {
+            out.lines.push(Line::default());
+        }
+        index += 1;
+    }
+    out
+}
+
+/// The one line a collapsed thing shows, with the marker that says which way
+/// it opens.
+fn header(marker: &str, title: &str, summary: &str, open: bool, style: Style) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(format!("{marker} "), style),
+        Span::styled(title.to_string(), style.add_modifier(Modifier::BOLD)),
+    ];
+    if !summary.is_empty() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(summary.to_string(), Style::new().fg(THINKING)));
+    }
+    spans.push(Span::styled(
+        if open { "  ▾" } else { "  ▸" }.to_string(),
+        Style::new().fg(THINKING),
+    ));
+    Line::from(spans)
+}
+
+/// One run of finished calls of the same kind, as a single header that opens.
+///
+/// Collapsed, a lone call still names what it acted on — `Read src/app.rs` —
+/// because a count of one tells a reader nothing they did not already see.
+fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
+    let tools: Vec<&ToolCell> = group
+        .iter()
+        .filter_map(|cell| match cell {
+            Cell::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .collect();
+    let Some(first) = tools.first() else {
+        return Vec::new();
+    };
+    let (verb, noun) = verb(&first.name);
+    let status = tools
+        .iter()
+        .fold(ToolStatus::Ok, |worst_so_far, tool| match tool.state {
+            CallState::Finished(status) => worst(status, worst_so_far),
+            CallState::Running => worst_so_far,
+        });
+    let (marker, style) = marker(CallState::Finished(status));
+    let summary = if tools.len() == 1 {
+        first.summary.clone()
+    } else {
+        format!("{} {noun}", tools.len())
+    };
+
+    let mut lines = Vec::new();
+    lines.push(header(marker, verb, &summary, open, style));
+    if !open {
+        return lines;
+    }
+    for tool in &tools {
+        if tools.len() > 1 {
+            let (glyph, style) = self::marker(tool.state);
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {glyph} "), style),
+                Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
+            ]));
+        }
+        if tool.arguments != tool.summary {
+            push_block(
+                &mut lines,
+                "      ",
+                &tool.arguments,
+                Style::new().fg(THINKING),
+                width,
+            );
+        }
+        if let Some(detail) = &tool.detail {
+            push_block(
+                &mut lines,
+                "      ",
+                detail,
+                Style::new().fg(THINKING),
+                width,
+            );
+        }
     }
     lines
 }
 
-fn tool_lines(tool: &ToolCell, width: usize) -> Vec<Line<'static>> {
-    let (marker, style) = match tool.state {
+/// The glyph and colour for a call's state.
+fn marker(state: CallState) -> (&'static str, Style) {
+    match state {
         CallState::Running => ("…", Style::new().fg(Color::Magenta)),
-        // A denial is a decision, not a fault: it must not read like a crash.
         CallState::Finished(ToolStatus::Ok) => ("✓", Style::new().fg(SUCCESS)),
         CallState::Finished(ToolStatus::Error) => ("✗", Style::new().fg(FAILURE)),
         CallState::Finished(ToolStatus::Denied) => ("⊘", Style::new().fg(DENIED)),
         CallState::Finished(ToolStatus::Cancelled) => ("–", Style::new().fg(THINKING)),
-    };
+    }
+}
+
+fn tool_lines(tool: &ToolCell, width: usize) -> Vec<Line<'static>> {
+    let (marker, style) = marker(tool.state);
     let mut lines = vec![Line::from(vec![
         Span::styled(format!("{marker} "), style),
         Span::styled(tool.name.clone(), style.add_modifier(Modifier::BOLD)),

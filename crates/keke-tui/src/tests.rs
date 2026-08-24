@@ -279,9 +279,10 @@ fn hiding_thinking_is_a_filter_not_a_deletion() {
     app.apply(Update::ThinkingDelta("weighing options".to_string()));
     app.apply(Update::TextDelta("the answer".to_string()));
 
-    let shown = crate::draw::transcript::render(app.transcript.cells(), 40, true);
-    let hidden = crate::draw::transcript::render(app.transcript.cells(), 40, false);
-    assert!(shown.len() > hidden.len());
+    let none = std::collections::HashSet::new();
+    let shown = crate::draw::transcript::render(app.transcript.cells(), 40, true, &none);
+    let hidden = crate::draw::transcript::render(app.transcript.cells(), 40, false, &none);
+    assert!(shown.lines.len() > hidden.lines.len());
     // The cell is still there; only the rendering changed.
     app.handle_key(control('t'));
     assert!(!app.show_thinking());
@@ -517,7 +518,7 @@ fn tool_arguments_collapse_to_one_line() {
 #[test]
 fn wrapped_text_keeps_its_block_shape() {
     let cells = vec![Cell::User("a b c d e f g h i j".to_string())];
-    let lines = crate::draw::transcript::render(&cells, 12, true);
+    let lines = crate::draw::transcript::render(&cells, 12, true, &Default::default()).lines;
     let rendered: Vec<String> = lines
         .iter()
         .map(|line| {
@@ -962,4 +963,125 @@ fn emacs_keys_move_and_delete_in_the_prompt() {
 
     app.handle_key(control('u'));
     assert!(app.input.is_empty());
+}
+
+/// Flatten a rendered transcript to plain strings.
+fn rendered(app: &App) -> Vec<String> {
+    crate::draw::transcript::render(app.transcript.cells(), 80, true, app.expanded())
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// Run `count` reads through, each on its own path, all successful.
+fn finished_reads(app: &mut App, count: usize) {
+    for index in 0..count {
+        let id = format!("c{index}");
+        app.apply(Update::ToolCallStarted(ToolCall {
+            id: ToolCallId::new(&id),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({ "path": format!("src/f{index}.rs") }),
+        }));
+        app.apply(Update::ToolCallEnded(ToolResult::ok(
+            ToolCallId::new(&id),
+            "12 lines",
+        )));
+    }
+}
+
+#[test]
+fn a_call_is_named_by_what_it_acted_on_not_by_its_argument_names() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    finished_reads(&mut app, 1);
+
+    let header = rendered(&app)
+        .into_iter()
+        .find(|line| line.contains("Read"))
+        .expect("the call must be drawn");
+    assert!(header.contains("src/f0.rs"), "{header}");
+    assert!(!header.contains("path="), "{header}");
+}
+
+#[test]
+fn a_run_of_finished_calls_collapses_to_one_countable_line() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    finished_reads(&mut app, 3);
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.contains("Read 3 files")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("src/f1.rs")),
+        "a collapsed run must not still list its calls: {lines:?}"
+    );
+}
+
+#[test]
+fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    finished_reads(&mut app, 3);
+    // The map of what is on screen is a frame's, so draw one first.
+    crate::draw::transcript::render(app.transcript.cells(), 80, true, app.expanded());
+    app.toggle_last_expandable();
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.contains("src/f2.rs")),
+        "{lines:?}"
+    );
+    app.toggle_last_expandable();
+    assert!(
+        !rendered(&app).iter().any(|line| line.contains("src/f2.rs")),
+        "expanding must be reversible"
+    );
+}
+
+#[test]
+fn a_failure_in_a_run_is_visible_without_expanding_it() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    finished_reads(&mut app, 2);
+    app.apply(Update::ToolCallStarted(call("bad", "read_file")));
+    app.apply(Update::ToolCallEnded(ToolResult {
+        id: ToolCallId::new("bad"),
+        status: ToolStatus::Error,
+        content: Vec::new(),
+        value: None,
+    }));
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.starts_with('✗')),
+        "a collapsed run reports the worst status in it: {lines:?}"
+    );
+}
+
+#[test]
+fn a_finished_thought_collapses_while_the_one_still_arriving_stays_open() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ThinkingDelta("weighing options".to_string()));
+    assert!(
+        rendered(&app)
+            .iter()
+            .any(|line| line.contains("weighing options")),
+        "the thought being streamed is the one being read"
+    );
+
+    app.apply(Update::TextDelta("the answer".to_string()));
+    let lines = rendered(&app);
+    assert!(
+        !lines.iter().any(|line| line.contains("weighing options")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("Thought")),
+        "{lines:?}"
+    );
 }

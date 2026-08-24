@@ -27,8 +27,11 @@ pub enum CallState {
 pub struct ToolCell {
     pub id: ToolCallId,
     pub name: String,
-    /// One line describing the arguments, for the collapsed view.
+    /// The one thing worth reading in the arguments — a path, a command.
+    /// This is the collapsed view: `read src/app.rs`, not `read path=…`.
     pub summary: String,
+    /// Every argument as `key=value`, for the expanded view.
+    pub arguments: String,
     pub state: CallState,
     /// First line of the result, so success is confirmable without expanding.
     pub detail: Option<String>,
@@ -127,7 +130,8 @@ impl Transcript {
         self.cells.push(Cell::Tool(ToolCell {
             id: call.id.clone(),
             name: call.name.clone(),
-            summary: summarize_arguments(&call.arguments),
+            summary: headline(&call.arguments),
+            arguments: summarize_arguments(&call.arguments),
             state: CallState::Running,
             detail: None,
         }));
@@ -153,7 +157,7 @@ impl Transcript {
         self.cells.push(Cell::Permission(PermissionCell {
             id,
             name: call.name.clone(),
-            summary: summarize_arguments(&call.arguments),
+            summary: headline(&call.arguments),
             reason,
             answer: None,
         }));
@@ -220,6 +224,31 @@ impl Transcript {
         self.seal();
     }
 
+    /// The newest thing on screen that can be opened, if there is one.
+    ///
+    /// The keyboard's answer to a click: after a run of calls scrolls past,
+    /// what a person reaches for is that run — not one picked from a list.
+    pub fn last_expandable(&self) -> Option<usize> {
+        let last = self.cells.len().saturating_sub(1);
+        self.cells
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, cell)| match cell {
+                // The thought still arriving is drawn open already.
+                Cell::Thinking(_) if index != last => Some(index),
+                Cell::Tool(tool) if !matches!(tool.state, CallState::Running) => {
+                    let verb = verb(&tool.name).0;
+                    // Only the first call of a run carries the header.
+                    match index.checked_sub(1).map(|before| &self.cells[before]) {
+                        Some(before) if groups_with(before, verb) => None,
+                        _ => Some(index),
+                    }
+                }
+                _ => None,
+            })
+    }
+
     /// Mark every still-running call cancelled.
     ///
     /// A cancelled turn may never deliver `ToolCallEnded`, and a spinner that
@@ -233,6 +262,53 @@ impl Transcript {
             }
         }
     }
+}
+
+/// Whether a finished call belongs in the run being gathered.
+pub(crate) fn groups_with(cell: &Cell, run: &str) -> bool {
+    matches!(cell, Cell::Tool(tool)
+        if !matches!(tool.state, CallState::Running) && verb(&tool.name).0 == run)
+}
+
+/// Past tense and the plural noun for a tool, so a run of calls reads as one
+/// sentence: `Read 3 files`, `Ran 2 commands`.
+///
+/// Keyed on the tool's own name, which is what a tool declares about itself;
+/// an unknown tool still groups, under its own name.
+pub(crate) fn verb(name: &str) -> (&str, &str) {
+    match name {
+        "read_file" => ("Read", "files"),
+        "write_file" => ("Wrote", "files"),
+        "list_dir" => ("Listed", "directories"),
+        "grep" => ("Searched", "patterns"),
+        "bash" => ("Ran", "commands"),
+        other => (other, "calls"),
+    }
+}
+
+/// The fields worth showing alone, in the order a reader would want them.
+///
+/// A call is nearly always about one thing — the file, the command — and the
+/// rest is machinery. Naming that field is what turns `read path=src/app.rs`
+/// into `read src/app.rs`; everything else waits behind an expand.
+const SALIENT: [&str; 6] = ["command", "path", "file_path", "pattern", "query", "url"];
+
+/// One line for the collapsed view of a call.
+///
+/// Falls back to the full `key=value` form when no field stands out, so a tool
+/// keke has never heard of still shows something rather than nothing. Nothing
+/// here is keyed on a vendor: these are argument names, not tool identities.
+pub(crate) fn headline(arguments: &serde_json::Value) -> String {
+    if let serde_json::Value::Object(fields) = arguments {
+        for key in SALIENT {
+            if let Some(serde_json::Value::String(text)) = fields.get(key)
+                && !text.trim().is_empty()
+            {
+                return one_line(text, 120);
+            }
+        }
+    }
+    summarize_arguments(arguments)
 }
 
 /// Collapse tool arguments to one line.
