@@ -354,11 +354,26 @@ fn a_long_prompt_keeps_its_cursor_on_screen() {
     assert!(row >= visible, "the cursor is past the bottom of the box");
 }
 
-/// The wheel reaches keke as arrow keys — that is what alternate scroll mode
-/// does — so an empty composer has to give them to the transcript.
+/// With the mouse captured (the default), the wheel reaches keke as its own
+/// event rather than a faked arrow key, so an empty composer is free to give
+/// plain Up/Down to history recall — what most people reach for first.
 #[test]
-fn the_arrows_scroll_the_conversation_when_nothing_is_typed() {
+fn the_arrows_recall_history_when_nothing_is_typed_and_the_mouse_is_captured() {
+    let (app, _scripted, _updates, _local) = app_with(Vec::new());
+    let mut app = app.with_prompt_history(crate::PromptHistory::new(vec!["old".to_string()]));
+    assert!(app.mouse_capture());
+
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.input.text(), "old");
+}
+
+/// Once the mouse is handed back with `/mouse`, a terminal not in
+/// mouse-reporting mode turns the wheel into arrow keys, so an empty composer
+/// has to give plain Up/Down to the transcript instead.
+#[test]
+fn the_arrows_scroll_the_conversation_when_the_mouse_is_released() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.toggle_mouse_capture();
     app.scroll.measure(100, 10);
 
     app.handle_key(key(KeyCode::Up));

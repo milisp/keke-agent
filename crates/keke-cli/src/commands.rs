@@ -468,10 +468,9 @@ async fn tui(
     seed: keke_tui::Resumed,
     resume: Option<(keke_protocol::SessionId, Vec<keke_protocol::Message>)>,
 ) -> Result<()> {
-    // Read before the session moves `cwd`: the typing history belongs to the
-    // directory being worked in, which for a resumed session is the one it was
-    // started in rather than wherever keke was invoked.
-    let prompts = prompt_history(&config.home.home, &cwd, resume.as_ref().map(|(id, _)| *id));
+    // The directory the typing history belongs to: for a resumed session, the
+    // one it was started in rather than wherever keke was invoked.
+    let history_cwd = cwd.clone();
     let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
     if let Some((id, history)) = resume {
         builder = builder.resume(id, history);
@@ -493,6 +492,15 @@ async fn tui(
     // the compiled-in vendors cache what they serve between runs.
     let models = models_for(&composed, &config.model.provider).await;
     let opened = keke_acp::local(builder, approvals, requests).await?;
+    // Read only once the session has an id: a fresh session's id is minted
+    // inside `session_builder`/`local`, and every recorded prompt should carry
+    // the session it was actually typed in, not none at all.
+    let session_id = opened
+        .id
+        .parse::<uuid::Uuid>()
+        .map(keke_protocol::SessionId::from)
+        .ok();
+    let prompts = prompt_history(&config.home.home, &history_cwd, session_id);
     let (conversation, updates) = (opened.conversation, opened.updates);
     keke_tui::run(
         conversation,

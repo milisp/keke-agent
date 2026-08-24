@@ -103,14 +103,20 @@ impl App {
     /// from the top line, so the arrow keys never yank away text somebody is
     /// still editing further down.
     ///
-    /// With nothing typed the arrows belong to the transcript instead. That is
-    /// not a preference: a terminal in the alternate screen turns the wheel
-    /// into arrow keys, so an empty composer that answered them with history
-    /// recall meant scrolling the conversation moved the prompt box. Recall is
-    /// on Ctrl-P and Ctrl-N, where a terminal person already expects it.
+    /// With nothing typed, an empty composer recalls history too — that is
+    /// what most people reach for first. It only gives the arrows to the
+    /// transcript instead while the mouse has been handed back with `/mouse`:
+    /// a terminal not in mouse-reporting mode turns the wheel into arrow keys,
+    /// and with mouse capture on (the default) that fallback never fires, so
+    /// there is no wheel event for recall to steal. Ctrl-P and Ctrl-N still
+    /// recall regardless, for a terminal person who already expects them.
     fn move_up(&mut self) {
         if self.input.is_empty() {
-            self.scroll.scroll_up(1);
+            if self.mouse_capture() {
+                self.recall_older();
+            } else {
+                self.scroll.scroll_up(1);
+            }
             return;
         }
         if self.input.cursor().0 > 0 {
@@ -124,7 +130,11 @@ impl App {
     /// whatever draft was interrupted, but only from the last line.
     fn move_down(&mut self) {
         if self.input.is_empty() {
-            self.scroll.scroll_down(1);
+            if self.mouse_capture() {
+                self.recall_newer();
+            } else {
+                self.scroll.scroll_down(1);
+            }
             return;
         }
         if self.input.cursor().0 + 1 < self.input.rows() {
