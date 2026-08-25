@@ -14,12 +14,20 @@ GUI（编辑器、Zed 之类）都能像终端一样驱动它。如果想在脚�
 
 ## 安装
 
+### 脚本安装（推荐）
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/install.sh | sh
 ```
 
 该脚本会为你的平台下载最新的预编译二进制文件到 `~/.local/bin`
 （可通过 `KEKE_INSTALL_DIR` 覆盖）。
+
+### npm 安装
+
+```sh
+npm install -g @milisp/keke
+```
 
 你也可以直接从 [latest release](https://github.com/milisp/keke-agent/releases/latest)
 下载预编译二进制文件，或者用 `cargo build --release` 从源码构建。

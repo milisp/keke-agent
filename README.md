@@ -16,12 +16,20 @@ Works with subscriptions you already have, standard API keys, or self-hosted loc
 
 ## Install
 
+### Shell (recommended)
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/install.sh | sh
 ```
 
 This downloads the latest prebuilt binary for your platform into
 `~/.local/bin` (override with `KEKE_INSTALL_DIR`).
+
+### npm
+
+```sh
+npm install -g @milisp/keke
+```
 
 You can also grab a binary directly from the
 [latest release](https://github.com/milisp/keke-agent/releases/latest), or build
