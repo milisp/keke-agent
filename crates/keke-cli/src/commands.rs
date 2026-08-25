@@ -203,6 +203,24 @@ fn provider_for(composed: &Composed, route: &str) -> Result<keke_provider_api::A
     })
 }
 
+/// The env key a route needs but has no usable credential for, when it has
+/// no login flow to ask `auth_for` about instead.
+///
+/// `None` covers two different truths callers must not conflate: the route
+/// takes no credential at all (a local server), or it has one and the
+/// credential store can resolve it. Either way there is nothing to report.
+fn unusable_key(composed: &Composed, info: &keke_provider_api::ProviderInfo) -> Option<String> {
+    let env_key = info.env_key.as_deref()?;
+    let reference = CredentialRef::new(env_key).ok()?;
+    let resolved = composed
+        .credentials
+        .load(&reference)
+        .ok()
+        .flatten()
+        .is_some();
+    (!resolved).then(|| env_key.to_string())
+}
+
 /// Assemble the session every surface runs on.
 ///
 /// Shared so the interface and `exec` cannot drift into offering different
@@ -219,11 +237,24 @@ async fn session_builder(
 
     // Checked before the turn starts: discovering this after a rollout log has
     // been opened and a request built is a worse experience than one line here.
+    //
+    // `auth_for` only answers for a route with a registered login flow
+    // (`ProviderInfo::auth_id`); a route backed by a plain API key — like
+    // `anthropic`, or any declared endpoint with `env_key` set — registers no
+    // entry there, so `auth` is `None` for it and this `if` alone would let a
+    // session open with no credential at all, to fail only once a request
+    // goes out. `unusable_key` covers that second path the same way
+    // `first_run::unusable` does for the interactive picker.
     if auth
         .as_ref()
         .is_some_and(|auth| !auth.has_usable_credential())
     {
         bail!("not signed in to `{route}`; run `keke login {route}`");
+    }
+    if auth.is_none()
+        && let Some(env_key) = unusable_key(composed, provider.info())
+    {
+        bail!("no {env_key} stored for `{route}`; export it, or set it in the client's login");
     }
 
     let mut builder = SessionBuilder::new()
@@ -261,7 +292,11 @@ async fn agent(
     cwd: std::path::PathBuf,
 ) -> Result<()> {
     let crate::cli::AgentTransport::Stdio = transport;
-    let factory = Arc::new(EditorSessions { config, cwd });
+    let factory = Arc::new(EditorSessions {
+        config,
+        cwd,
+        route: std::sync::Mutex::new(None),
+    });
     keke_acp::serve_stdio(factory)
         .await
         .map_err(|error| anyhow::anyhow!("the ACP connection failed: {error}"))
@@ -275,6 +310,14 @@ async fn agent(
 struct EditorSessions {
     config: Config,
     cwd: std::path::PathBuf,
+    /// The route `authenticate` last signed the client in to, overriding
+    /// `config.model.provider` for every session opened afterward on this
+    /// connection.
+    ///
+    /// Behind a lock because `authenticate` and `session/new` are separate
+    /// RPCs on the same connection: the client authenticates once, then opens
+    /// however many sessions follow, and each must see the same answer.
+    route: std::sync::Mutex<Option<String>>,
 }
 
 impl EditorSessions {
@@ -290,13 +333,56 @@ impl EditorSessions {
         }
     }
 
+    /// The route to open a session against: what `authenticate` last chose,
+    /// or the server's own configured default.
+    fn active_route(&self) -> String {
+        self.route
+            .lock()
+            .ok()
+            .and_then(|route| route.clone())
+            .unwrap_or_else(|| self.config.model.provider.clone())
+    }
+
+    /// Write the chosen route to `$KEKE_HOME/config.toml`, the way the TUI
+    /// persists `/model`.
+    ///
+    /// Without this, signing in over ACP lasts exactly as long as the
+    /// connection: a client that reconnects — for a new working directory, or
+    /// because the person reloaded a page — lands back on the configured
+    /// default route and is told to sign in to a vendor it already has
+    /// credentials for.
+    ///
+    /// The model travels with the route. A model name belongs to one vendor,
+    /// so carrying the old one over would persist a pairing that cannot serve
+    /// a single request; the route's own first model is a wrong-but-working
+    /// starting point the client can then change, and the effort goes with it
+    /// because a ladder is a property of the model that named it.
+    ///
+    /// Best-effort throughout: a home that cannot be written is a worse
+    /// session next time, not a failed login now.
+    async fn remember_route(&self, composed: &Composed, route: &str) {
+        let models = models_for(composed, route).await;
+        let replacement = (!models.iter().any(|model| model.id == self.config.model.model))
+            .then(|| models.first().map(|model| model.id.clone()))
+            .flatten();
+        if let Err(error) = keke_config::persist_user_override(&self.config.home.home, |file| {
+            file.provider = Some(route.to_string());
+            if let Some(model) = replacement {
+                file.model = Some(model);
+                file.reasoning_effort = None;
+            }
+        }) {
+            tracing::warn!(%route, %error, "could not persist the route to config.toml");
+        }
+    }
+
     /// What the session's provider serves, for the client to choose between.
     ///
     /// A provider that cannot be asked leaves the list empty rather than
     /// failing the session: not being able to switch models is a smaller loss
     /// than not being able to open the conversation at all.
-    async fn models(&self, composed: &Composed) -> Vec<keke_provider_api::ModelInfo> {
-        models_for(composed, &self.config.model.provider).await
+    async fn models(&self, composed: &Composed, route: &str) -> Vec<keke_provider_api::ModelInfo> {
+        models_for(composed, route).await
     }
 
     /// Build one session, new or continuing, and start it.
@@ -317,6 +403,7 @@ impl EditorSessions {
         // default: a client reopening a session means to continue it, not to
         // switch it back to whatever keke was started with.
         let mut config = self.config.clone();
+        config.model.provider = self.active_route();
         if let Some(model) = resume.as_ref().and_then(|resumed| resumed.model.clone()) {
             config.model.model = model;
         }
@@ -333,7 +420,7 @@ impl EditorSessions {
         }
         let mut opened = keke_acp::local(builder, approvals, requests).await?;
         opened.history = history.unwrap_or_default();
-        opened.models = self.models(&composed).await;
+        opened.models = self.models(&composed, &config.model.provider).await;
         // The same resolved list the TUI would complete against, so an ACP
         // editor's own autocomplete offers exactly what keke's own interface
         // would — see `slash_commands`.
@@ -352,6 +439,159 @@ impl keke_acp::SessionFactory for EditorSessions {
             self.start(self.rooted_at(cwd), None)
                 .await
                 .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))
+        })
+    }
+
+    /// Every route there is to authenticate to, not only the ones with a
+    /// login flow — a route wanting an API key, or wanting nothing at all
+    /// (a local server), is just as much an answer to "how do I sign in?" as
+    /// one with OAuth behind it. Mirrors the three-way split
+    /// `first_run::pick` offers interactively, minus the local-server presets
+    /// that only exist once someone has declared them.
+    fn auth_methods(&self) -> Vec<keke_acp::AuthMethodDescriptor> {
+        let Ok(composed) = Composed::build(
+            &self.config.home,
+            &self.config.providers,
+            self.config.plugins,
+            self.config.model_catalog_ttl,
+            None,
+        ) else {
+            return Vec::new();
+        };
+        composed
+            .providers
+            .routes()
+            .filter_map(|route| {
+                let handle = composed.providers.get(route).ok()?;
+                let info = handle.info();
+                // The same three-way split the description makes, answered
+                // for the credential that is actually there: a client showing
+                // a sign-in menu has to be able to tell "sign in" from
+                // "already signed in, through this".
+                let (signed_in, source, description) = match composed.auth_for(route) {
+                    Some(auth) if auth.has_usable_credential() => {
+                        let source = auth.snapshot().source;
+                        (
+                            true,
+                            Some(source.clone()),
+                            format!("Signed in with {} ({source})", info.display_name),
+                        )
+                    }
+                    Some(_) => (false, None, format!("Sign in with {}", info.display_name)),
+                    None => match info.env_key.as_deref() {
+                        Some(env_key) => {
+                            let stored = unusable_key(&composed, info).is_none();
+                            (
+                                stored,
+                                stored.then(|| env_key.to_string()),
+                                if stored {
+                                    format!("API key ({env_key}) is set")
+                                } else {
+                                    format!("API key ({env_key})")
+                                },
+                            )
+                        }
+                        // Takes no credential at all (a local server): usable
+                        // by definition, so it is signed in by definition.
+                        None => (true, None, "No credential needed".to_string()),
+                    },
+                };
+                Some(keke_acp::AuthMethodDescriptor {
+                    id: route.to_string(),
+                    name: info.display_name.clone(),
+                    description: Some(description),
+                    signed_in,
+                    source,
+                })
+            })
+            .collect()
+    }
+
+    /// Settle one route's credential, then make it the route new sessions
+    /// open against — on this connection, and on the next one.
+    ///
+    /// `meta.apiKey` lets a client that collected a key itself hand it
+    /// straight over — the same act as `keke login`'s key prompt, just spoken
+    /// over ACP instead of a terminal — but is never required: a route whose
+    /// credential is already resolvable (stored, or in the environment) or
+    /// that needs none at all succeeds without it.
+    ///
+    /// `meta.force` re-runs the login flow even then. A stored credential is
+    /// only ever known to be *present*, never to be *good* — an expired
+    /// token, or a key some other tool left behind — so a person who asks to
+    /// sign in again must get a login rather than a silent success that
+    /// leaves the bad credential in place.
+    fn authenticate(
+        &self,
+        method_id: &str,
+        meta: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> keke_acp::ConversationFuture<'_, Result<(), keke_acp::ConversationError>> {
+        let method_id = method_id.to_string();
+        let pasted_key = meta
+            .as_ref()
+            .and_then(|meta| meta.get("apiKey"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let force = meta
+            .as_ref()
+            .and_then(|meta| meta.get("force"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Box::pin(async move {
+            let composed = Composed::build(
+                &self.config.home,
+                &self.config.providers,
+                self.config.plugins,
+                self.config.model_catalog_ttl,
+                None,
+            )
+            .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+            let provider = composed.providers.get(&method_id).map_err(|_| {
+                keke_acp::ConversationError::Agent(format!(
+                    "unknown authentication method `{method_id}`"
+                ))
+            })?;
+
+            if let Some(auth) = composed.auth_for(&method_id) {
+                if force || !auth.has_usable_credential() {
+                    auth.login(Arc::new(crate::ui::AcpLoginUi))
+                        .await
+                        .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+                }
+            } else if let Some(env_key) = provider.info().env_key.clone() {
+                let reference = CredentialRef::new(env_key.clone())
+                    .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+                let already_usable = composed
+                    .credentials
+                    .load(&reference)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if let Some(key) = pasted_key {
+                    composed
+                        .credentials
+                        .save(&reference, &key)
+                        .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
+                } else if force || !already_usable {
+                    let stored = if already_usable {
+                        format!("the stored {env_key} was not replaced")
+                    } else {
+                        format!("no {env_key} stored")
+                    };
+                    return Err(keke_acp::ConversationError::Agent(format!(
+                        "{stored}; pass one in `authenticate`'s `apiKey` field, \
+                         or export {env_key} and try again"
+                    )));
+                }
+            }
+            // Neither branch: the route takes no credential (a local server),
+            // and is usable by definition.
+
+            if let Ok(mut route) = self.route.lock() {
+                *route = Some(method_id.clone());
+            }
+            self.remember_route(&composed, &method_id).await;
+            Ok(())
         })
     }
 

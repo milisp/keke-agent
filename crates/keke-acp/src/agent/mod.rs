@@ -30,6 +30,7 @@ use keke_protocol::StopReason;
 use keke_provider_api::ModelInfo;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use crate::AuthMethodDescriptor;
 use crate::Conversation;
 use crate::ConversationError;
 use crate::ConversationFuture;
@@ -65,6 +66,46 @@ pub trait SessionFactory: Send + Sync + 'static {
         id: String,
         cwd: PathBuf,
     ) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
+
+    /// Authentication methods to offer before any session exists.
+    ///
+    /// Empty by default: a factory with no login flow to offer need not name
+    /// one, and `initialize` must not advertise `authMethods` a client would
+    /// then be entitled to call. Each descriptor carries whether that route
+    /// already holds a credential, so a client can show what is signed in
+    /// rather than offering every login as if none had happened.
+    fn auth_methods(&self) -> Vec<AuthMethodDescriptor> {
+        Vec::new()
+    }
+
+    /// Run one auth method's login flow.
+    ///
+    /// Only ever called with an id `auth_methods` advertised. `meta` is
+    /// whatever the client attached to the request under ACP's own
+    /// extensibility mechanism — a pasted API key, for the methods that take
+    /// one — and is a client convenience, not a substitute for it: a method
+    /// that needs a key and got none still resolves it the way `keke login`
+    /// does (the environment, or a prior `keke login`), and fails only if
+    /// neither produced one.
+    ///
+    /// `meta.force` asks for the login flow itself even when the route
+    /// already resolves a credential — what a person clicking "sign in"
+    /// again means, and the only way past a credential that is present but
+    /// no longer good.
+    ///
+    /// The default implementation refuses everything, which is correct for a
+    /// factory that also advertises no auth methods — keeping refusal paired
+    /// with the lookup here is what stops the two from drifting apart.
+    fn authenticate(
+        &self,
+        method_id: &str,
+        meta: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> ConversationFuture<'_, Result<(), ConversationError>> {
+        let _ = meta;
+        let error =
+            ConversationError::Agent(format!("unknown authentication method `{method_id}`"));
+        Box::pin(async move { Err(error) })
+    }
 }
 
 /// Serve the ACP protocol on stdin and stdout until the client disconnects.
@@ -266,7 +307,7 @@ fn choices(entry: &Entry) -> Vec<Choice> {
     if !offered.is_empty() {
         let mut options = vec![(
             DEFAULT_EFFORT.to_string(),
-            "Default (let the model decide)".to_string(),
+            "Auto".to_string(),
         )];
         options.extend(
             offered

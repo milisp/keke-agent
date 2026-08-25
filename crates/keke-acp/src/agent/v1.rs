@@ -12,6 +12,10 @@ use std::sync::Arc;
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectionTo;
 use agent_client_protocol::schema::v1::AgentCapabilities;
+use agent_client_protocol::schema::v1::AuthMethod;
+use agent_client_protocol::schema::v1::AuthMethodAgent;
+use agent_client_protocol::schema::v1::AuthenticateRequest;
+use agent_client_protocol::schema::v1::AuthenticateResponse;
 use agent_client_protocol::schema::v1::AvailableCommand;
 use agent_client_protocol::schema::v1::AvailableCommandsUpdate;
 use agent_client_protocol::schema::v1::CancelNotification;
@@ -81,6 +85,30 @@ fn permission_options() -> Vec<PermissionOption> {
     ]
 }
 
+/// Render the factory's auth methods in this wire's terms.
+///
+/// Credential state rides in `_meta`: ACP has no field for "already signed
+/// in", but a client that shows a sign-in menu needs it to avoid offering a
+/// login for a route that has one.
+fn auth_methods(factory: &dyn SessionFactory) -> Vec<AuthMethod> {
+    factory
+        .auth_methods()
+        .into_iter()
+        .map(|method| {
+            let mut meta = serde_json::Map::new();
+            meta.insert("signedIn".to_string(), method.signed_in.into());
+            if let Some(source) = method.source {
+                meta.insert("credentialSource".to_string(), source.into());
+            }
+            AuthMethod::Agent(
+                AuthMethodAgent::new(method.id, method.name)
+                    .description(method.description)
+                    .meta(meta),
+            )
+        })
+        .collect()
+}
+
 /// The v1 implementation, for the router to hand a v1 client to.
 pub(super) fn agent(
     factory: Arc<dyn SessionFactory>,
@@ -91,23 +119,40 @@ pub(super) fn agent(
         .builder()
         .name("keke")
         .on_receive_request(
-            async move |request: InitializeRequest, responder, _cx| {
-                responder.respond(
-                    InitializeResponse::new(request.protocol_version)
-                        .agent_capabilities(
-                            AgentCapabilities::new()
-                                // `loadSession` is v1's way of saying the
-                                // transcript can be replayed; v2 says it with
-                                // a `replayFrom` cursor instead.
-                                .load_session(true)
-                                .session_capabilities(
-                                    SessionCapabilities::new()
-                                        .list(SessionListCapabilities::new())
-                                        .resume(SessionResumeCapabilities::new()),
-                                ),
-                        )
-                        .agent_info(Implementation::new("keke", env!("CARGO_PKG_VERSION"))),
-                )
+            {
+                let factory = Arc::clone(&factory);
+                async move |request: InitializeRequest, responder, _cx| {
+                    responder.respond(
+                        InitializeResponse::new(request.protocol_version)
+                            .agent_capabilities(
+                                AgentCapabilities::new()
+                                    // `loadSession` is v1's way of saying the
+                                    // transcript can be replayed; v2 says it
+                                    // with a `replayFrom` cursor instead.
+                                    .load_session(true)
+                                    .session_capabilities(
+                                        SessionCapabilities::new()
+                                            .list(SessionListCapabilities::new())
+                                            .resume(SessionResumeCapabilities::new()),
+                                    ),
+                            )
+                            .agent_info(Implementation::new("keke", env!("CARGO_PKG_VERSION")))
+                            .auth_methods(auth_methods(factory.as_ref())),
+                    )
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let factory = Arc::clone(&factory);
+                async move |request: AuthenticateRequest, responder, _cx| {
+                    factory
+                        .authenticate(request.method_id.0.as_ref(), request.meta)
+                        .await
+                        .map_err(agent_client_protocol::Error::into_internal_error)?;
+                    responder.respond(AuthenticateResponse::new())
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )

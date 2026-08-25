@@ -30,6 +30,28 @@ impl LoginUi for TerminalLoginUi {
     }
 }
 
+/// Drives a login flow from behind an ACP connection.
+///
+/// stdout is the protocol wire there — writing a notice to it the way
+/// [`TerminalLoginUi`] does would corrupt the stream a client is parsing as
+/// JSON-RPC, so this reports to stderr instead.
+pub(crate) struct AcpLoginUi;
+
+impl LoginUi for AcpLoginUi {
+    fn open_browser(&self, url: &str) {
+        eprintln!("Opening your browser to authenticate:\n  {url}\n");
+        let _ = open_in_browser(url);
+    }
+
+    fn show_device_code(&self, code: &str, verification_uri: &str) {
+        eprintln!("To authenticate, visit:\n  {verification_uri}\nand enter the code:\n  {code}\n");
+    }
+
+    fn notice(&self, message: &str) {
+        eprintln!("{message}");
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn open_in_browser(url: &str) -> std::io::Result<()> {
     std::process::Command::new("open")

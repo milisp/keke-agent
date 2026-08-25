@@ -14,6 +14,8 @@ use agent_client_protocol::ConnectionTo;
 use agent_client_protocol::schema::v2::AbsolutePath;
 use agent_client_protocol::schema::v2::AgentCapabilities;
 use agent_client_protocol::schema::v2::AgentMessage;
+use agent_client_protocol::schema::v2::AuthMethod;
+use agent_client_protocol::schema::v2::AuthMethodAgent;
 use agent_client_protocol::schema::v2::AvailableCommand;
 use agent_client_protocol::schema::v2::AvailableCommandsUpdate;
 use agent_client_protocol::schema::v2::CancelSessionNotification;
@@ -25,6 +27,8 @@ use agent_client_protocol::schema::v2::InitializeRequest;
 use agent_client_protocol::schema::v2::InitializeResponse;
 use agent_client_protocol::schema::v2::ListSessionsRequest;
 use agent_client_protocol::schema::v2::ListSessionsResponse;
+use agent_client_protocol::schema::v2::LoginAuthRequest;
+use agent_client_protocol::schema::v2::LoginAuthResponse;
 use agent_client_protocol::schema::v2::MessageId;
 use agent_client_protocol::schema::v2::NewSessionRequest;
 use agent_client_protocol::schema::v2::NewSessionResponse;
@@ -73,6 +77,30 @@ use crate::PermissionAnswer;
 use crate::SessionListing;
 use crate::Update;
 
+/// Render the factory's auth methods in this wire's terms.
+///
+/// Credential state rides in `_meta`: ACP has no field for "already signed
+/// in", but a client that shows a sign-in menu needs it to avoid offering a
+/// login for a route that has one.
+fn auth_methods(factory: &dyn SessionFactory) -> Vec<AuthMethod> {
+    factory
+        .auth_methods()
+        .into_iter()
+        .map(|method| {
+            let mut meta = serde_json::Map::new();
+            meta.insert("signedIn".to_string(), method.signed_in.into());
+            if let Some(source) = method.source {
+                meta.insert("credentialSource".to_string(), source.into());
+            }
+            AuthMethod::Agent(
+                AuthMethodAgent::new(method.id, method.name)
+                    .description(method.description)
+                    .meta(meta),
+            )
+        })
+        .collect()
+}
+
 fn permission_options() -> Vec<PermissionOption> {
     vec![
         PermissionOption::new(super::ALLOW, "Allow once", PermissionOptionKind::AllowOnce),
@@ -99,17 +127,34 @@ pub(super) fn agent(
         .v2()
         .name("keke")
         .on_receive_request(
-            async move |request: InitializeRequest, responder, _cx| {
-                responder.respond(
-                    InitializeResponse::new(
-                        request.protocol_version,
-                        Implementation::new("keke", env!("CARGO_PKG_VERSION")),
+            {
+                let factory = Arc::clone(&factory);
+                async move |request: InitializeRequest, responder, _cx| {
+                    responder.respond(
+                        InitializeResponse::new(
+                            request.protocol_version,
+                            Implementation::new("keke", env!("CARGO_PKG_VERSION")),
+                        )
+                        // `session` present at all is what says keke speaks the
+                        // session surface; `session/list` and `session/resume`
+                        // are part of it rather than capabilities of their own.
+                        .capabilities(AgentCapabilities::new().session(SessionCapabilities::new()))
+                        .auth_methods(auth_methods(factory.as_ref())),
                     )
-                    // `session` present at all is what says keke speaks the
-                    // session surface; `session/list` and `session/resume` are
-                    // part of it rather than capabilities of their own.
-                    .capabilities(AgentCapabilities::new().session(SessionCapabilities::new())),
-                )
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let factory = Arc::clone(&factory);
+                async move |request: LoginAuthRequest, responder, _cx| {
+                    factory
+                        .authenticate(request.method_id.0.as_ref(), request.meta)
+                        .await
+                        .map_err(agent_client_protocol::Error::into_internal_error)?;
+                    responder.respond(LoginAuthResponse::new())
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )

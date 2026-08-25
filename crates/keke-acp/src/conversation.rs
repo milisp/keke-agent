@@ -137,6 +137,26 @@ pub struct SessionListing {
     pub updated_at: String,
 }
 
+/// One authentication method the agent offers before any session exists.
+///
+/// Vendor-agnostic: the id is a route name (`"codex"`, `"grok"`, ...), never a
+/// wire concept, so the ACP layer can describe it without knowing what vendor
+/// is behind it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthMethodDescriptor {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Whether this route already resolves a credential, so a client can say
+    /// "signed in" instead of offering a login that would no-op. Advertised
+    /// rather than inferred: only the factory can see the credential stores.
+    pub signed_in: bool,
+    /// Where that credential came from (`"oauth"`, `"env"`, another CLI's
+    /// file, ...), for a client that wants to name it. `None` when the route
+    /// is not signed in.
+    pub source: Option<String>,
+}
+
 /// Identifies one outstanding permission request.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PermissionId(pub String);
