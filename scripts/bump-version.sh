@@ -20,12 +20,16 @@ git diff --quiet --exit-code || {
   exit 1
 }
 
-# Bump the workspace version and every workspace.dependencies path version
-# (crates/*/Cargo.toml pull their version from workspace.package, so they
-# don't need editing individually).
-sed -i.bak -E "0,/^version = \".*\"/s//version = \"${VERSION}\"/" Cargo.toml
-sed -i.bak -E "s/(keke-[a-z-]+ = \{ path = \"crates\/[a-z-]+\", version = \")[^\"]+(\" \})/\1${VERSION}\2/" Cargo.toml
-rm -f Cargo.toml.bak
+# Bump the workspace version (crates/*/Cargo.toml pull their version from
+# workspace.package, so they don't need editing individually).
+# Uses awk instead of `sed -E "0,/re/s//../"` because that range form is a
+# GNU extension: on macOS's BSD sed it's silently accepted but never matches,
+# so the version (and everything downstream) never actually changes.
+awk -v ver="$VERSION" '
+  !done && /^version = "/ { sub(/^version = ".*"/, "version = \"" ver "\""); done = 1 }
+  { print }
+' Cargo.toml > Cargo.toml.tmp
+mv Cargo.toml.tmp Cargo.toml
 
 cargo update --workspace
 

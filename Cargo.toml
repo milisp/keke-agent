@@ -11,36 +11,36 @@ repository = "https://github.com/milisp/keke-agent"
 
 [workspace.dependencies]
 # --- tier 0: contract crates (keep these dependency-light) ---
-keke-auth-api = { path = "crates/keke-auth-api", version = "0.1.3" }
-keke-config-types = { path = "crates/keke-config-types", version = "0.1.3" }
-keke-paths = { path = "crates/keke-paths", version = "0.1.3" }
-keke-plugin-api = { path = "crates/keke-plugin-api", version = "0.1.3" }
-keke-protocol = { path = "crates/keke-protocol", version = "0.1.3" }
-keke-provider-api = { path = "crates/keke-provider-api", version = "0.1.3" }
-keke-tool = { path = "crates/keke-tool", version = "0.1.3" }
-keke-wire = { path = "crates/keke-wire", version = "0.1.3" }
-keke-catalog = { path = "crates/keke-catalog", version = "0.1.3" }
-keke-fuzzy-file-search = { path = "crates/keke-fuzzy-file-search", version = "0.1.3" }
+keke-auth-api = { path = "crates/keke-auth-api" }
+keke-config-types = { path = "crates/keke-config-types" }
+keke-paths = { path = "crates/keke-paths" }
+keke-plugin-api = { path = "crates/keke-plugin-api" }
+keke-protocol = { path = "crates/keke-protocol" }
+keke-provider-api = { path = "crates/keke-provider-api" }
+keke-tool = { path = "crates/keke-tool" }
+keke-wire = { path = "crates/keke-wire" }
+keke-catalog = { path = "crates/keke-catalog" }
+keke-fuzzy-file-search = { path = "crates/keke-fuzzy-file-search" }
 
 # --- tier 1: engine ---
-keke-acp = { path = "crates/keke-acp", version = "0.1.3" }
-keke-config = { path = "crates/keke-config", version = "0.1.3" }
-keke-core = { path = "crates/keke-core", version = "0.1.3" }
-keke-credentials = { path = "crates/keke-credentials", version = "0.1.3" }
-keke-workspace = { path = "crates/keke-workspace", version = "0.1.3" }
+keke-acp = { path = "crates/keke-acp" }
+keke-config = { path = "crates/keke-config" }
+keke-core = { path = "crates/keke-core" }
+keke-credentials = { path = "crates/keke-credentials" }
+keke-workspace = { path = "crates/keke-workspace" }
 
 # --- tier 2: plugins ---
-keke-auth-codex = { path = "crates/keke-auth-codex", version = "0.1.3" }
-keke-hooks = { path = "crates/keke-hooks", version = "0.1.3" }
-keke-mcp = { path = "crates/keke-mcp", version = "0.1.3" }
-keke-skills = { path = "crates/keke-skills", version = "0.1.3" }
-keke-auth-grok = { path = "crates/keke-auth-grok", version = "0.1.3" }
-keke-plugin = { path = "crates/keke-plugin", version = "0.1.3" }
-keke-provider-codex = { path = "crates/keke-provider-codex", version = "0.1.3" }
-keke-provider-grok = { path = "crates/keke-provider-grok", version = "0.1.3" }
-keke-test-support = { path = "crates/keke-test-support", version = "0.1.3" }
-keke-tools = { path = "crates/keke-tools", version = "0.1.3" }
-keke-tui = { path = "crates/keke-tui", version = "0.1.3" }
+keke-auth-codex = { path = "crates/keke-auth-codex" }
+keke-hooks = { path = "crates/keke-hooks" }
+keke-mcp = { path = "crates/keke-mcp" }
+keke-skills = { path = "crates/keke-skills" }
+keke-auth-grok = { path = "crates/keke-auth-grok" }
+keke-plugin = { path = "crates/keke-plugin" }
+keke-provider-codex = { path = "crates/keke-provider-codex" }
+keke-provider-grok = { path = "crates/keke-provider-grok" }
+keke-test-support = { path = "crates/keke-test-support" }
+keke-tools = { path = "crates/keke-tools" }
+keke-tui = { path = "crates/keke-tui" }
 
 # --- third-party ---
 # `unstable_protocol_v2` for `session/resume`'s `replayFrom`: v2 folded v1's
@@ -49,7 +49,6 @@ keke-tui = { path = "crates/keke-tui", version = "0.1.3" }
 agent-client-protocol = { version = "2", features = ["unstable_protocol_v2"] }
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
-async-trait = "0.1"
 base64 = "0.22"
 crossterm = "0.29"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
