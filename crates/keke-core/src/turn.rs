@@ -324,6 +324,13 @@ impl Session {
         let mut assembler = MessageAssembler::default();
 
         while let Some(chunk) = stream.next().await {
+            // Checked per chunk, not just between steps: a cancel raised while
+            // the model is still streaming text has no tool dispatch to catch
+            // it at, and would otherwise run the stream to completion in the
+            // background while the UI already reads as idle.
+            if self.is_cancelled() {
+                return Ok((assembler.finish(), StopReason::Cancelled, assembler.usage));
+            }
             match chunk? {
                 StreamChunk::TextDelta(delta) => {
                     self.emit(TurnUpdate::TextDelta {

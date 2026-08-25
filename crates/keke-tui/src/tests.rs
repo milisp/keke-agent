@@ -264,6 +264,18 @@ fn ctrl_c_cancels_a_turn_before_it_quits() {
 }
 
 #[test]
+fn esc_cancels_a_turn_while_busy() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::TurnStarted);
+    app.apply(Update::ToolCallStarted(call("c1", "bash")));
+
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(scripted.cancel_count(), 1);
+    assert_eq!(app.turn(), Turn::Idle);
+    assert!(!app.should_quit());
+}
+
+#[test]
 fn a_cancelled_turn_stops_every_running_spinner() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::TurnStarted);

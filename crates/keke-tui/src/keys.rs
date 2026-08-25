@@ -51,6 +51,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
+            KeyCode::Esc if self.turn().is_busy() => self.interrupt(),
             KeyCode::Char('d') if control => self.quit(),
             KeyCode::Char('t') if control => self.toggle_thinking(),
             KeyCode::Char('l') if control => self.scroll.follow(),
