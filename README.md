@@ -78,6 +78,29 @@ wire = "messages"
 `wire` picks the request format — `chat-completions` (the default),
 `responses`, or `messages` — so a new endpoint is a config entry rather than a release.
 
+Behind a corporate proxy or a TLS-intercepting gateway, a declared provider
+can also carry a CA certificate, a proxy, and headers your gateway wants for
+routing or audit:
+
+```toml
+[providers.internal-gateway]
+base-url = "https://gateway.corp.internal/v1"
+env-key = "INTERNAL_GATEWAY_API_KEY"
+ca-cert-path = "/etc/ssl/certs/corp-root-ca.pem"
+proxy = "http://proxy.corp.internal:8080"
+proxy-username = "svc-keke"
+proxy-password-env-key = "CORP_PROXY_PASSWORD"
+
+[providers.internal-gateway.headers]
+X-Department-Token = "env:DEPT_TOKEN"
+X-Company-User-Id = "color-clock"
+```
+
+A header value written as `env:VAR_NAME` is resolved from the environment
+rather than taken literally, so a secret header need not sit in the config
+file in the clear. `authorization` is reserved for the provider's own
+credential and cannot be set here.
+
 ## Status
 
 Usable day to day. `keke exec`, the TUI, and the ACP server all run real

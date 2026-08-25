@@ -1706,6 +1706,7 @@ dependencies = [
  "keke-tui",
  "keke-wire",
  "keke-workspace",
+ "reqwest",
  "serde_json",
  "tempfile",
  "thiserror",

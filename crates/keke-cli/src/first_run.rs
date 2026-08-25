@@ -442,6 +442,11 @@ fn pick_local(routes: &[Route]) -> Result<Option<Picked>> {
             wire: DeclaredWireApi::ChatCompletions,
             env_key: None,
             default_model: None,
+            ca_cert_path: None,
+            proxy: None,
+            proxy_username: None,
+            proxy_password_env_key: None,
+            headers: Default::default(),
         }),
     }))
 }
@@ -592,6 +597,11 @@ fn declare(taken: &[Route]) -> Result<Option<ProviderDeclaration>> {
         wire,
         env_key: env_key.map(|reference| reference.to_string()),
         default_model: (!default_model.is_empty()).then_some(default_model),
+        ca_cert_path: None,
+        proxy: None,
+        proxy_username: None,
+        proxy_password_env_key: None,
+        headers: Default::default(),
     }))
 }
 
@@ -718,6 +728,11 @@ mod tests {
             wire: DeclaredWireApi::ChatCompletions,
             env_key: Some("NVIDIA_API_KEY".to_string()),
             default_model: Some("qwen3-coder".to_string()),
+            ca_cert_path: None,
+            proxy: None,
+            proxy_username: None,
+            proxy_password_env_key: None,
+            headers: Default::default(),
         };
         let table = toml::to_string(&declared).expect("renders");
         let document = format!("provider = \"nvidia\"\n\n[providers.nvidia]\n{table}");

@@ -33,6 +33,40 @@ pub(crate) enum DeclarationError {
     /// the environment, so it would silently never authenticate.
     #[error("provider `{route}`: `{key}` is not a usable credential name")]
     BadCredentialName { route: String, key: String },
+    /// `ca-cert-path` did not name a readable, parseable PEM file.
+    #[error("provider `{route}`: could not load CA certificate `{path}`: {error}")]
+    BadCaCert {
+        route: String,
+        path: String,
+        error: String,
+    },
+    /// `proxy` was not a usable proxy URL.
+    #[error("provider `{route}`: invalid proxy `{proxy}`: {error}")]
+    BadProxy {
+        route: String,
+        proxy: String,
+        error: String,
+    },
+    /// The HTTP client for this provider could not be built from its
+    /// configured CA certificate and proxy.
+    #[error("provider `{route}`: could not build an HTTP client: {error}")]
+    BadHttpClient { route: String, error: String },
+    /// `headers` named `authorization`, which is reserved for the provider's
+    /// own credential — a custom header can never be allowed to shadow it.
+    #[error(
+        "provider `{route}`: `headers` may not set `{header}`, which is reserved for the provider's credential"
+    )]
+    ReservedHeader { route: String, header: String },
+    /// A header value of the form `env:VAR_NAME` named an environment
+    /// variable that is not set.
+    #[error(
+        "provider `{route}`: header `{header}` names environment variable `{key}`, which is not set"
+    )]
+    MissingHeaderEnv {
+        route: String,
+        header: String,
+        key: String,
+    },
 }
 
 /// A provider assembled from configuration.
@@ -105,20 +139,103 @@ pub(crate) fn provider_for(
         }
     };
 
-    Ok(wire_provider(
-        ProviderInfo {
+    let info = ProviderInfo {
+        route: declaration.route.clone(),
+        display_name: declaration
+            .display_name
+            .clone()
+            .unwrap_or_else(|| declaration.route.clone()),
+        base_url: declaration.base_url.clone(),
+        wire_api: wire_api(declaration.wire),
+        auth_id: None,
+        env_key: declaration.env_key.clone(),
+    };
+
+    let http = build_http_client(declaration)?;
+    let extra_headers = extra_headers(declaration)?;
+    let api = info.wire_api;
+    let client = WireClient::with_http_client(info.base_url.clone(), auth, http)
+        .with_extra_headers(extra_headers);
+    Ok(Arc::new(DeclaredProvider { info, api, client }))
+}
+
+/// Build the `reqwest::Client` for one declaration, applying its CA
+/// certificate and proxy — the two settings that decide whether a declared
+/// endpoint is reachable at all from behind a corporate network.
+fn build_http_client(
+    declaration: &ProviderDeclaration,
+) -> Result<reqwest::Client, DeclarationError> {
+    let mut builder = reqwest::Client::builder();
+
+    if let Some(path) = &declaration.ca_cert_path {
+        let pem = std::fs::read(path).map_err(|error| DeclarationError::BadCaCert {
             route: declaration.route.clone(),
-            display_name: declaration
-                .display_name
-                .clone()
-                .unwrap_or_else(|| declaration.route.clone()),
-            base_url: declaration.base_url.clone(),
-            wire_api: wire_api(declaration.wire),
-            auth_id: None,
-            env_key: declaration.env_key.clone(),
-        },
-        auth,
-    ))
+            path: path.clone(),
+            error: error.to_string(),
+        })?;
+        let cert =
+            reqwest::Certificate::from_pem(&pem).map_err(|error| DeclarationError::BadCaCert {
+                route: declaration.route.clone(),
+                path: path.clone(),
+                error: error.to_string(),
+            })?;
+        builder = builder.add_root_certificate(cert);
+    }
+
+    if let Some(proxy_url) = &declaration.proxy {
+        let mut proxy =
+            reqwest::Proxy::all(proxy_url).map_err(|error| DeclarationError::BadProxy {
+                route: declaration.route.clone(),
+                proxy: proxy_url.clone(),
+                error: error.to_string(),
+            })?;
+        if let Some(username) = &declaration.proxy_username {
+            let password = match &declaration.proxy_password_env_key {
+                Some(key) => std::env::var(key).unwrap_or_default(),
+                None => String::new(),
+            };
+            proxy = proxy.basic_auth(username, &password);
+        }
+        builder = builder.proxy(proxy);
+    }
+
+    builder
+        .build()
+        .map_err(|error| DeclarationError::BadHttpClient {
+            route: declaration.route.clone(),
+            error: error.to_string(),
+        })
+}
+
+/// Resolve a declaration's custom headers, expanding an `env:VAR_NAME` value
+/// from the environment so a header carrying a secret need not sit in the
+/// config file in the clear.
+fn extra_headers(
+    declaration: &ProviderDeclaration,
+) -> Result<Vec<(String, String)>, DeclarationError> {
+    declaration
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            if name.eq_ignore_ascii_case("authorization") {
+                return Err(DeclarationError::ReservedHeader {
+                    route: declaration.route.clone(),
+                    header: name.clone(),
+                });
+            }
+            let resolved = match value.strip_prefix("env:") {
+                Some(key) => {
+                    std::env::var(key).map_err(|_| DeclarationError::MissingHeaderEnv {
+                        route: declaration.route.clone(),
+                        header: name.clone(),
+                        key: key.to_string(),
+                    })?
+                }
+                None => value.clone(),
+            };
+            Ok((name.clone(), resolved))
+        })
+        .collect()
 }
 
 /// Config states its own format enum so `keke-config-types` need not depend on
@@ -128,5 +245,86 @@ fn wire_api(declared: DeclaredWireApi) -> WireApi {
         DeclaredWireApi::ChatCompletions => WireApi::ChatCompletions,
         DeclaredWireApi::Responses => WireApi::Responses,
         DeclaredWireApi::Messages => WireApi::Messages,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn declaration(headers: BTreeMap<String, String>) -> ProviderDeclaration {
+        ProviderDeclaration {
+            route: "gateway".to_string(),
+            display_name: None,
+            base_url: "https://gateway.example/v1".to_string(),
+            wire: DeclaredWireApi::ChatCompletions,
+            env_key: None,
+            default_model: None,
+            ca_cert_path: None,
+            proxy: None,
+            proxy_username: None,
+            proxy_password_env_key: None,
+            headers,
+        }
+    }
+
+    #[test]
+    fn a_literal_header_is_sent_as_written() {
+        let declared = declaration(BTreeMap::from([(
+            "X-Company-User-Id".to_string(),
+            "color-clock".to_string(),
+        )]));
+        let headers = extra_headers(&declared).expect("resolves");
+        assert_eq!(
+            headers,
+            vec![("X-Company-User-Id".to_string(), "color-clock".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_env_header_is_resolved_from_the_environment() {
+        // `PATH` is set in every test process, so this exercises the `env:`
+        // prefix without mutating shared process state.
+        let declared = declaration(BTreeMap::from([(
+            "X-Forwarded-Path".to_string(),
+            "env:PATH".to_string(),
+        )]));
+        let headers = extra_headers(&declared).expect("resolves");
+        let expected = std::env::var("PATH").expect("set in test process");
+        assert_eq!(headers, vec![("X-Forwarded-Path".to_string(), expected)]);
+    }
+
+    #[test]
+    fn a_missing_env_header_is_an_error_not_an_empty_header() {
+        let declared = declaration(BTreeMap::from([(
+            "X-Department-Token".to_string(),
+            "env:KEKE_TEST_DEFINITELY_UNSET".to_string(),
+        )]));
+        assert!(matches!(
+            extra_headers(&declared),
+            Err(DeclarationError::MissingHeaderEnv { .. })
+        ));
+    }
+
+    #[test]
+    fn authorization_cannot_be_set_as_a_custom_header() {
+        let declared = declaration(BTreeMap::from([(
+            "Authorization".to_string(),
+            "Bearer forged".to_string(),
+        )]));
+        assert!(matches!(
+            extra_headers(&declared),
+            Err(DeclarationError::ReservedHeader { .. })
+        ));
+    }
+
+    #[test]
+    fn a_missing_ca_cert_file_is_reported_by_route() {
+        let mut declared = declaration(BTreeMap::new());
+        declared.ca_cert_path = Some("/nonexistent/path/to/ca.pem".to_string());
+        let error = build_http_client(&declared).expect_err("no such file");
+        assert!(matches!(error, DeclarationError::BadCaCert { .. }));
     }
 }

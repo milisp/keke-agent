@@ -108,6 +108,36 @@ pub struct ProviderDeclaration {
     /// The model used when none is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// Path to a PEM-encoded CA certificate trusted in addition to the system
+    /// roots, for an endpoint behind a corporate TLS-intercepting gateway or
+    /// serving a self-signed certificate. Without this, such an endpoint is
+    /// simply unreachable — this is the field that decides whether keke runs
+    /// on a locked-down corporate network at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
+    /// Outbound proxy this provider's requests are sent through, e.g.
+    /// `http://proxy.internal:8080`. Unset means whatever `reqwest` picks up
+    /// from the environment on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+    /// Basic-auth username for `proxy`, if it requires one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_username: Option<String>,
+    /// Environment variable holding the basic-auth password for `proxy`. An
+    /// env-key indirection rather than a literal field, matching `env_key`:
+    /// a proxy credential is a secret and does not belong in a config file
+    /// either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_password_env_key: Option<String>,
+    /// Extra HTTP headers sent with every request to this provider, e.g. for
+    /// a gateway that identifies the caller for quota or audit purposes
+    /// (`X-Company-User-Id`, `X-Department-Token`). A value of the form
+    /// `env:VAR_NAME` is resolved from the environment at startup rather
+    /// than taken literally, so a header carrying a secret need not be
+    /// written into the config file in the clear. `authorization` is
+    /// reserved for the provider's own credential and may not be set here.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 /// The wire format a declared provider speaks.

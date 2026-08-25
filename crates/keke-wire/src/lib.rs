@@ -65,6 +65,11 @@ pub struct WireClient {
     /// pay-per-token API of the same shape accepts both. Which kind an address
     /// is cannot be read off the wire format, so the composition root says.
     sampling_is_fixed: bool,
+    /// Static headers sent with every request, e.g. a gateway's
+    /// caller-identification header. Applied before the credential's own
+    /// headers, so a request never loses its authorization to a
+    /// misconfigured extra one.
+    extra_headers: Vec<(String, String)>,
 }
 
 impl WireClient {
@@ -77,6 +82,7 @@ impl WireClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             auth,
             sampling_is_fixed: false,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -85,6 +91,14 @@ impl WireClient {
     #[must_use]
     pub fn with_fixed_sampling(mut self) -> Self {
         self.sampling_is_fixed = true;
+        self
+    }
+
+    /// Attach static headers sent with every request — see
+    /// [`WireClient::extra_headers`].
+    #[must_use]
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
         self
     }
 
@@ -101,6 +115,7 @@ impl WireClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             auth,
             sampling_is_fixed: false,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -214,6 +229,12 @@ impl WireClient {
         &self,
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let builder = self
+            .extra_headers
+            .iter()
+            .fold(builder, |builder, (name, value)| {
+                builder.header(name, value)
+            });
         let headers = self
             .auth
             .headers()
