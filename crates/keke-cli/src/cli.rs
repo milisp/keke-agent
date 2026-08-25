@@ -149,6 +149,24 @@ pub(crate) struct ExecArgs {
     /// person.
     #[arg(long, value_parser = parse_approval)]
     pub approval: Option<keke_config_types::ApprovalPolicy>,
+
+    /// Output format: `text` (default) or `json`.
+    ///
+    /// `json` emits a single JSON object on stdout with the fields `text`,
+    /// `stopReason`, and `usage`. Progress lines always go to stderr so a
+    /// caller can separate them from the machine-readable result.
+    #[arg(long, visible_alias = "output-format", value_enum, default_value_t)]
+    pub format: ExecFormat,
+}
+
+/// How `keke exec` presents its output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ExecFormat {
+    /// Human-readable text, optionally streamed when connected to a terminal.
+    #[default]
+    Text,
+    /// A single JSON object written to stdout after the turn completes.
+    Json,
 }
 
 /// Parse an approval policy without making the contract crate depend on clap.

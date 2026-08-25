@@ -227,3 +227,91 @@ fn doctor_reports_what_was_resolved() {
         "an unauthenticated provider must say how to fix it: {stdout}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_format_json_emits_a_json_object() {
+    let fixture = Fixture::new().await;
+
+    fixture.server.script(
+        Endpoint::ChatCompletions,
+        Reply::text("done").with_usage(10, 5),
+    );
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let output = fixture
+        .keke()
+        .args(["-C", &workspace.path().display().to_string()])
+        .args(["exec", "--format", "json", "say done"])
+        .output()
+        .expect("runs");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output must be valid JSON");
+
+    assert_eq!(
+        parsed["text"], "done",
+        "text field must hold the model reply"
+    );
+    assert_eq!(
+        parsed["stopReason"], "end_turn",
+        "stopReason must be camelCase snake wire token"
+    );
+    assert!(
+        parsed["usage"]["inputTokens"].is_number(),
+        "usage.inputTokens must be present"
+    );
+    assert!(
+        parsed["usage"]["outputTokens"].is_number(),
+        "usage.outputTokens must be present"
+    );
+    // `log` is absent unless --print-log-path is given.
+    assert!(
+        parsed.get("log").is_none(),
+        "log must not appear without --print-log-path"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_format_json_with_print_log_path_includes_log_field() {
+    let fixture = Fixture::new().await;
+
+    fixture.server.script(
+        Endpoint::ChatCompletions,
+        Reply::text("hello").with_usage(5, 2),
+    );
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let output = fixture
+        .keke()
+        .args(["-C", &workspace.path().display().to_string()])
+        .args(["exec", "--format", "json", "--print-log-path", "say hello"])
+        .output()
+        .expect("runs");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("output must be valid JSON");
+
+    assert_eq!(parsed["text"], "hello");
+    assert!(
+        parsed["log"].is_string(),
+        "log field must be present when --print-log-path is supplied"
+    );
+    let log_path = parsed["log"].as_str().expect("log path str");
+    assert!(log_path.ends_with(".jsonl"));
+}
