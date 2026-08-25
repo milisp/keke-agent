@@ -99,6 +99,26 @@ pub struct Opened {
     pub updates: UnboundedReceiver<Update>,
     /// What the session was rebuilt from. Empty for a session that is new.
     pub history: Vec<Message>,
+    /// Plugin-contributed commands, already named for the shared namespace.
+    ///
+    /// The composition root resolves name collisions once — the same rule
+    /// `keke_tui::slash::SlashCommands` applies for the TUI's own completion —
+    /// so this is the result, not raw plugin contributions. Advertised to the
+    /// client as an `AvailableCommandsUpdate` so an editor's own autocomplete
+    /// can offer them, the same list keke's own TUI would show.
+    pub commands: Vec<PluginCommand>,
+}
+
+/// A plugin-contributed command, ready to show a client.
+///
+/// Flat strings rather than the plugin's own contribution type: this crosses
+/// the seam from whoever composed the plugins to the protocol, and the ACP
+/// layer only ever echoes the name and description — it does not resolve or
+/// run the command itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginCommand {
+    pub name: String,
+    pub description: String,
 }
 
 /// One previous session, as `session/list` reports it.

@@ -230,6 +230,9 @@ pub async fn local(
         // Whoever rebuilt the history is the one that has it; `local` only
         // starts what the builder was already told to continue.
         history: Vec::new(),
+        // Same as `models`: the composition root knows what the plugins
+        // contributed, `local` only starts the session.
+        commands: Vec::new(),
     })
 }
 

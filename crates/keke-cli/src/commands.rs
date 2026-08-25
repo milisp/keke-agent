@@ -149,6 +149,48 @@ async fn models_for(composed: &Composed, route: &str) -> Vec<keke_provider_api::
     }
 }
 
+/// The command list a person completes against, wherever the interface is.
+///
+/// Built once here so the TUI's own completion and the list an ACP client is
+/// told about (`EditorSessions::start`) always agree — a name only ever gets
+/// resolved once, not separately by two callers that could disagree about
+/// which plugin won a collision.
+fn slash_commands(composed: &Composed) -> keke_tui::SlashCommands {
+    let commands = composed
+        .commands
+        .iter()
+        .map(|command| {
+            keke_tui::SlashCommand::prompt(
+                &command.plugin,
+                &command.name,
+                &command.description,
+                command.path.as_path(),
+            )
+        })
+        .collect();
+    keke_tui::SlashCommands::new(commands)
+}
+
+/// The plugin-contributed subset of `commands`, for an ACP client's own
+/// autocomplete.
+///
+/// Builtins (`/quit`, `/copy`, ...) are TUI behavior with no ACP equivalent —
+/// an editor has its own UI for clearing a transcript — so only what a plugin
+/// actually contributed is advertised.
+fn plugin_commands(commands: &keke_tui::SlashCommands) -> Vec<keke_acp::PluginCommand> {
+    commands
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.action {
+            keke_tui::slash::SlashAction::Prompt(_) => Some(keke_acp::PluginCommand {
+                name: entry.name.clone(),
+                description: entry.description.clone(),
+            }),
+            keke_tui::slash::SlashAction::Builtin(_) => None,
+        })
+        .collect()
+}
+
 /// Resolve the provider for `route`, failing with what is actually available.
 fn provider_for(composed: &Composed, route: &str) -> Result<keke_provider_api::ArcProvider> {
     // `context` would make the hint the headline and the failure the cause,
@@ -292,6 +334,10 @@ impl EditorSessions {
         let mut opened = keke_acp::local(builder, approvals, requests).await?;
         opened.history = history.unwrap_or_default();
         opened.models = self.models(&composed).await;
+        // The same resolved list the TUI would complete against, so an ACP
+        // editor's own autocomplete offers exactly what keke's own interface
+        // would — see `slash_commands`.
+        opened.commands = plugin_commands(&slash_commands(&composed));
         Ok(opened)
     }
 }
@@ -520,18 +566,7 @@ async fn tui(
     if let Some((id, history)) = resume {
         builder = builder.resume(id, history);
     }
-    let commands = composed
-        .commands
-        .iter()
-        .map(|command| {
-            keke_tui::SlashCommand::prompt(
-                &command.plugin,
-                &command.name,
-                &command.description,
-                command.path.as_path(),
-            )
-        })
-        .collect();
+    let commands = slash_commands(&composed);
     // Asked before the interface opens so `/model` can answer without a round
     // trip mid-conversation. It costs at most one request, and usually none:
     // the compiled-in vendors cache what they serve between runs.
@@ -550,7 +585,7 @@ async fn tui(
     keke_tui::run(
         conversation,
         updates,
-        keke_tui::SlashCommands::new(commands),
+        commands,
         keke_tui::SessionDefaults {
             approval: config.approval_policy,
             effort: config.reasoning_effort,

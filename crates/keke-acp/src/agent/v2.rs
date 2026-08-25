@@ -14,6 +14,8 @@ use agent_client_protocol::ConnectionTo;
 use agent_client_protocol::schema::v2::AbsolutePath;
 use agent_client_protocol::schema::v2::AgentCapabilities;
 use agent_client_protocol::schema::v2::AgentMessage;
+use agent_client_protocol::schema::v2::AvailableCommand;
+use agent_client_protocol::schema::v2::AvailableCommandsUpdate;
 use agent_client_protocol::schema::v2::CancelSessionNotification;
 use agent_client_protocol::schema::v2::ContentBlock;
 use agent_client_protocol::schema::v2::ContentChunk;
@@ -251,6 +253,7 @@ fn start(
     // The id is the one the session is logged under, not one invented here:
     // what a client resumes must be what `session/list` showed it.
     let id = SessionId::new(opened.id.clone());
+    let commands = opened.commands.clone();
     let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
     let entry = enrol(sessions, &opened, outcome_rx);
     let options = rendered(&choices(&entry));
@@ -263,7 +266,22 @@ fn start(
         outcome_tx,
         cx.clone(),
     ))?;
+    // Sent even when empty is skipped: a client that never hears about
+    // commands assumes it has none, same as one keke never told.
+    if !commands.is_empty() {
+        notify(cx, &id, available_commands_update(&commands))?;
+    }
     Ok((id, options))
+}
+
+/// What a plugin contributes, in the client's own autocomplete.
+fn available_commands_update(commands: &[crate::PluginCommand]) -> SessionUpdate {
+    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+        commands
+            .iter()
+            .map(|command| AvailableCommand::new(command.name.clone(), command.description.clone()))
+            .collect(),
+    ))
 }
 
 /// Render keke's config options in this protocol version's types.
