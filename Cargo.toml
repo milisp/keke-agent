@@ -20,6 +20,7 @@ keke-provider-api = { path = "crates/keke-provider-api", version = "0.1.3" }
 keke-tool = { path = "crates/keke-tool", version = "0.1.3" }
 keke-wire = { path = "crates/keke-wire", version = "0.1.3" }
 keke-catalog = { path = "crates/keke-catalog", version = "0.1.3" }
+keke-fuzzy-file-search = { path = "crates/keke-fuzzy-file-search", version = "0.1.3" }
 
 # --- tier 1: engine ---
 keke-acp = { path = "crates/keke-acp", version = "0.1.3" }

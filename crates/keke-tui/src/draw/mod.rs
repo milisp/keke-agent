@@ -1,3 +1,4 @@
+pub(crate) mod file_search;
 pub(crate) mod input;
 pub(crate) mod menu;
 pub(crate) mod status;
@@ -55,7 +56,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
-            Constraint::Length(menu::rows(app)),
+            // The slash-command menu and the `@`-completion dropdown never
+            // open together (one needs the line to start with `/`, the other
+            // needs an `@` with no preceding word character), so they share
+            // one row of layout.
+            Constraint::Length(menu::rows(app).max(file_search::rows(app))),
             Constraint::Length(input::rows(app)),
             Constraint::Length(1),
         ])
@@ -111,6 +116,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     below(frame, body, app);
 
     menu::draw(frame, menu, app);
+    file_search::draw(frame, menu, app);
     input::draw(frame, composer, app);
     status::draw(frame, footer, app);
 }

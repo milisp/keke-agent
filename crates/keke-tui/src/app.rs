@@ -4,6 +4,7 @@
 //! denial looks like, when Ctrl-C quits, whether new output moves the view —
 //! is assertable without a backend.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -19,6 +20,7 @@ use keke_protocol::Usage;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::file_search::FileSearchState;
 use crate::history::PromptHistory;
 use crate::input::InputBox;
 use crate::login::Notice;
@@ -56,6 +58,8 @@ pub struct App {
     pub input: InputBox,
     pub scroll: Scrollback,
     pub commands: SlashCommands,
+    /// `@`-completion: fuzzy file/folder search over the current line.
+    pub file_search: FileSearchState,
     /// What was typed in this project before, and where the arrow keys are
     /// within it.
     pub history: PromptHistory,
@@ -132,6 +136,9 @@ impl App {
                 input: InputBox::default(),
                 scroll: Scrollback::default(),
                 commands: SlashCommands::default(),
+                file_search: FileSearchState::new(
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                ),
                 history: PromptHistory::default(),
                 completion: 0,
                 approval: ApprovalPolicy::default(),
@@ -256,7 +263,7 @@ impl App {
     /// while it is live: an expired one must not keep an idle interface
     /// redrawing forever.
     pub fn is_timing(&self) -> bool {
-        self.started.is_some() || self.flash().is_some()
+        self.started.is_some() || self.flash().is_some() || self.file_search.is_open()
     }
 
     /// How long a flash stays up. Long enough to read, short enough that it is
@@ -537,6 +544,22 @@ impl App {
         self.transcript.answer_permission(&id, answer);
         // Denial ends nothing by itself: the agent decides what to do next.
         self.turn = Turn::Running;
+    }
+
+    /// Recompute `@`-completion from the current line and cursor. Called
+    /// after every edit that could have typed, or typed past, an `@`-token.
+    pub(crate) fn sync_file_search(&mut self) {
+        let cursor = self.input.cursor_byte();
+        let line = self.input.current_line().to_string();
+        self.file_search.update(&line, cursor);
+    }
+
+    /// Poll the fuzzy daemon; called on every timer tick. Returns whether the
+    /// dropdown's contents changed, so the caller knows to redraw — though the
+    /// event loop redraws every tick regardless, so the return value is
+    /// informational only.
+    pub(crate) fn tick_file_search(&mut self) -> bool {
+        self.file_search.poll()
     }
 
     /// The completions for what is being typed, or nothing.

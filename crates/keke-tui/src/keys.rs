@@ -37,6 +37,7 @@ impl App {
             return;
         }
         self.input.insert_str(text);
+        self.sync_file_search();
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -84,6 +85,12 @@ impl App {
             _ if !self.completions().is_empty() && menu_key(key.code) => {
                 self.handle_completion_key(key);
             }
+            // Same rule for the `@`-file dropdown. Esc closes it even before
+            // any results have arrived, which is why this checks `is_open`
+            // rather than whether there is something on screen yet.
+            _ if self.file_search.is_open() && menu_key(key.code) => {
+                self.handle_file_search_key(key);
+            }
             KeyCode::Enter => self.submit(),
             _ if self.open_permission_id().is_some() => self.handle_permission_key(key),
             KeyCode::Char(ch) if !control => self.input.insert_char(ch),
@@ -97,6 +104,7 @@ impl App {
             KeyCode::End => self.input.move_end(),
             _ => {}
         }
+        self.sync_file_search();
     }
 
     /// Up moves within a multi-line prompt first and recalls a past one only
@@ -211,6 +219,24 @@ impl App {
                 self.submit();
             }
             KeyCode::Esc => self.input.clear(),
+            _ => {}
+        }
+    }
+
+    /// While the `@`-file dropdown is open, these keys drive it instead of
+    /// editing the composer.
+    fn handle_file_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.file_search.move_selection(-1),
+            KeyCode::Down => self.file_search.move_selection(1),
+            KeyCode::Tab | KeyCode::Enter => {
+                if let Some(replacement) = self.file_search.accept() {
+                    self.input
+                        .replace_line_range(replacement.range, &replacement.text);
+                }
+                self.file_search.clear();
+            }
+            KeyCode::Esc => self.file_search.clear(),
             _ => {}
         }
     }

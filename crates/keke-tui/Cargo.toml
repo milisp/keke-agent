@@ -12,6 +12,7 @@ keke-acp = { workspace = true }
 keke-auth-api = { workspace = true }
 keke-config = { workspace = true }
 keke-config-types = { workspace = true }
+keke-fuzzy-file-search = { workspace = true }
 keke-paths = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
@@ -26,6 +27,7 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
+nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "5b74652" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

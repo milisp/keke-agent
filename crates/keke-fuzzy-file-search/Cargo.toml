@@ -1,0 +1,20 @@
+[package]
+name = "keke-fuzzy-file-search"
+description = "Fuzzy file search over a directory tree: an ignore-aware walker feeding a nucleo matcher, plus a background daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ignore = { workspace = true }
+nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "5b74652" }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

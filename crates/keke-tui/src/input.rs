@@ -76,6 +76,26 @@ impl InputBox {
         self.lines.join("\n")
     }
 
+    /// The line the cursor is on — where `@`-completion looks for a token.
+    pub fn current_line(&self) -> &str {
+        self.line()
+    }
+
+    /// The cursor's byte offset within [`Self::current_line`].
+    pub fn cursor_byte(&self) -> usize {
+        byte_index(self.line(), self.column)
+    }
+
+    /// Replace a byte range of the current line and put the cursor just past
+    /// the inserted text (in bytes, converted back to the char index the rest
+    /// of `InputBox` works in).
+    pub fn replace_line_range(&mut self, range: std::ops::Range<usize>, text: &str) {
+        let cursor_at = range.start + text.len();
+        let line = self.line_mut();
+        line.replace_range(range, text);
+        self.column = line[..cursor_at].chars().count();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.lines.iter().all(String::is_empty)
     }

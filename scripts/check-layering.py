@@ -34,6 +34,10 @@ RANK = {
     # speaks in `ModelInfo`, below the vendor plugins because each of them
     # caches what it serves through it
     "keke-catalog": 6,
+    # a standalone directory-walk + fuzzy-match utility with no keke
+    # dependencies of its own; ranked with the other tier-0.5 utilities so any
+    # surface may use it
+    "keke-fuzzy-file-search": 7,
     # tier 1 - engine
     "keke-config": 10,
     "keke-credentials": 10,

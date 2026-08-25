@@ -9,10 +9,12 @@
 mod app;
 mod clipboard;
 pub(crate) mod draw;
+mod file_search;
 mod history;
 mod input;
 mod keys;
 mod login;
+mod ported;
 mod scroll;
 mod selection;
 pub mod slash;
@@ -212,7 +214,7 @@ async fn event_loop(
             }
         };
         tokio::select! {
-            () = tick => {}
+            () = tick => { app.tick_file_search(); }
             Some(update) = updates.recv() => app.apply(update),
             Some(update) = local.recv() => app.apply(update),
             event = input.next() => match event {
