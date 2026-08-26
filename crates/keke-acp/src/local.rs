@@ -149,23 +149,42 @@ enum Command {
         text: String,
         done: oneshot::Sender<Result<(), String>>,
     },
+    /// Replace the running session with a fresh one built from `recipe`.
+    NewSession {
+        done: oneshot::Sender<Result<Switches, String>>,
+    },
+}
+
+/// The live switches a rebuilt session hands back, so [`LocalConversation`]
+/// can point its own handles — the ones `set_model`, `set_reasoning_effort`
+/// and `set_approval_policy` write through, and the one `cancel` calls — at
+/// the session actually running instead of the one it replaced.
+struct Switches {
+    cancel: Box<dyn Fn() + Send + Sync>,
+    approval: Arc<ApprovalSwitch>,
+    effort: Arc<EffortSwitch>,
+    model: Arc<ModelSwitch>,
 }
 
 /// A conversation with a session running in this process.
 pub struct LocalConversation {
     commands: UnboundedSender<Command>,
-    cancel: Box<dyn Fn() + Send + Sync>,
+    /// Behind a lock rather than fixed at construction: `new_session` swaps it
+    /// for the replacement session's own canceller, so a Ctrl-C reaches
+    /// whichever session is actually running.
+    cancel: Mutex<Box<dyn Fn() + Send + Sync>>,
     approvals: Arc<Approvals>,
     /// Held rather than sent as a command: the session task is busy for as long
     /// as a turn runs, so a queued mode change would arrive after the calls it
-    /// was meant to govern.
-    approval: Arc<ApprovalSwitch>,
+    /// was meant to govern. Behind a lock for the same reason `cancel` is: a
+    /// fresh session from `new_session` has its own switch to write through.
+    approval: Mutex<Arc<ApprovalSwitch>>,
     /// Held for the same reason as `approval`: a queued effort change would
     /// arrive after the steps it was meant to govern.
-    effort: Arc<EffortSwitch>,
+    effort: Mutex<Arc<EffortSwitch>>,
     /// Held for the same reason again: a model change queued behind a running
     /// turn would take effect an answer too late.
-    model: Arc<ModelSwitch>,
+    model: Mutex<Arc<ModelSwitch>>,
 }
 
 /// Start a session and hand back the conversation and its updates.
@@ -179,7 +198,12 @@ pub async fn local(
     requests: ApprovalRequests,
 ) -> Result<Opened, CoreError> {
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut session = builder.updates(turn_tx).build().await?;
+    let with_updates = builder.updates(turn_tx);
+    // Cloned before the resume this build may carry is consumed: `new_session`
+    // rebuilds from this recipe, and a session started fresh must not silently
+    // resume the log the first one did.
+    let recipe = with_updates.clone().fresh();
+    let mut session = with_updates.build().await?;
     let id = session.id().to_string();
     let cancel = session.canceller();
     let approval = session.approval_switch();
@@ -194,19 +218,42 @@ pub async fn local(
 
     let (commands, mut inbox) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
-        while let Some(Command::Prompt { text, done }) = inbox.recv().await {
-            let outcome = session.run_turn(Message::user(text)).await;
-            let answer = match outcome {
-                Ok(_) => Ok(()),
-                Err(error) => {
-                    // Reported on the update stream too: a surface renders the
-                    // failure from there, and the caller of `prompt` may have
-                    // stopped listening.
-                    let _ = updates.send(Update::Failed(error.to_string()));
-                    Err(error.to_string())
+        while let Some(command) = inbox.recv().await {
+            match command {
+                Command::Prompt { text, done } => {
+                    let outcome = session.run_turn(Message::user(text)).await;
+                    let answer = match outcome {
+                        Ok(_) => Ok(()),
+                        Err(error) => {
+                            // Reported on the update stream too: a surface
+                            // renders the failure from there, and the caller
+                            // of `prompt` may have stopped listening.
+                            let _ = updates.send(Update::Failed(error.to_string()));
+                            Err(error.to_string())
+                        }
+                    };
+                    let _ = done.send(answer);
                 }
-            };
-            let _ = done.send(answer);
+                Command::NewSession { done } => match recipe.clone().build().await {
+                    Ok(fresh) => {
+                        let switches = Switches {
+                            cancel: Box::new(fresh.canceller()),
+                            approval: fresh.approval_switch(),
+                            effort: fresh.effort_switch(),
+                            model: fresh.model_switch(),
+                        };
+                        session = fresh;
+                        // `new_session` only swaps what a surface writes
+                        // through; without this, nothing ever tells it the
+                        // swap happened, so what it draws never changes.
+                        let _ = updates.send(Update::SessionReset);
+                        let _ = done.send(Ok(switches));
+                    }
+                    Err(error) => {
+                        let _ = done.send(Err(error.to_string()));
+                    }
+                },
+            }
         }
     });
 
@@ -220,11 +267,11 @@ pub async fn local(
         approval_policy: configured_approval,
         conversation: Arc::new(LocalConversation {
             commands,
-            cancel: Box::new(cancel),
+            cancel: Mutex::new(Box::new(cancel)),
             approvals,
-            approval,
-            effort,
-            model: model_switch,
+            approval: Mutex::new(approval),
+            effort: Mutex::new(effort),
+            model: Mutex::new(model_switch),
         }),
         updates: update_rx,
         // Whoever rebuilt the history is the one that has it; `local` only
@@ -293,7 +340,9 @@ impl Conversation for LocalConversation {
     }
 
     fn cancel(&self) {
-        (self.cancel)();
+        if let Ok(cancel) = self.cancel.lock() {
+            (cancel)();
+        }
         // Order matters: the flag is set first, so a turn released from its
         // prompt finds the cancel already in place and stops instead of
         // carrying on with the next tool.
@@ -305,15 +354,52 @@ impl Conversation for LocalConversation {
     }
 
     fn set_approval_policy(&self, policy: ApprovalPolicy) {
-        self.approval.set(policy);
+        if let Ok(approval) = self.approval.lock() {
+            approval.set(policy);
+        }
     }
 
     fn set_model(&self, model: String) {
-        self.model.set(model.as_str());
+        if let Ok(switch) = self.model.lock() {
+            switch.set(model.as_str());
+        }
     }
 
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
-        self.effort.set(effort);
+        if let Ok(switch) = self.effort.lock() {
+            switch.set(effort);
+        }
+    }
+
+    fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::NewSession { done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            let switches = answer
+                .await
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
+                .map_err(ConversationError::Agent)?;
+            // A turn that was still running against the old session is now
+            // parked on a prompt or a cancel flag nobody will ever check
+            // again — withdraw it before this conversation starts pointing at
+            // a different session entirely.
+            self.approvals.withdraw_all();
+            if let Ok(mut cancel) = self.cancel.lock() {
+                *cancel = switches.cancel;
+            }
+            if let Ok(mut approval) = self.approval.lock() {
+                *approval = switches.approval;
+            }
+            if let Ok(mut effort) = self.effort.lock() {
+                *effort = switches.effort;
+            }
+            if let Ok(mut model) = self.model.lock() {
+                *model = switches.model;
+            }
+            Ok(())
+        })
     }
 }
 

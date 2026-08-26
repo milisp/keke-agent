@@ -70,6 +70,9 @@ pub enum Update {
     TurnEnded(StopReason),
     /// The turn failed. The conversation stays usable.
     Failed(String),
+    /// [`Conversation::new_session`] finished: history and usage are gone,
+    /// and whatever the surface shows for either should go back to nothing.
+    SessionReset,
 }
 
 /// A conversation that is open and ready to be prompted.
@@ -206,6 +209,16 @@ pub trait Conversation: Send + Sync {
     /// Naming a model the provider does not serve is the provider's to refuse,
     /// not this seam's to guess at.
     fn set_model(&self, model: String);
+
+    /// Retire this conversation's history and start over, as if the process
+    /// had just been launched again: empty history, usage back to zero, the
+    /// same model/effort/approval a fresh launch would start with.
+    ///
+    /// Distinct from clearing a surface's own transcript: that is a view
+    /// changing what it shows of a conversation the agent still remembers.
+    /// This is the agent itself forgetting, which is why it is on the seam
+    /// rather than left to a surface to fake by discarding what it drew.
+    fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>>;
 }
 
 /// A conversation that replays a prepared script.
@@ -223,6 +236,7 @@ pub struct ScriptedConversation {
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
     efforts: Arc<Mutex<Vec<Option<ReasoningEffort>>>>,
     models: Arc<Mutex<Vec<String>>>,
+    new_sessions: Arc<Mutex<usize>>,
 }
 
 impl ScriptedConversation {
@@ -240,9 +254,17 @@ impl ScriptedConversation {
                 policies: Arc::new(Mutex::new(Vec::new())),
                 efforts: Arc::new(Mutex::new(Vec::new())),
                 models: Arc::new(Mutex::new(Vec::new())),
+                new_sessions: Arc::new(Mutex::new(0)),
             },
             receiver,
         )
+    }
+
+    /// How many times `new_session` was called, so a test can assert a
+    /// person's `/new` actually reached the conversation.
+    #[must_use]
+    pub fn new_session_count(&self) -> usize {
+        self.new_sessions.lock().map(|count| *count).unwrap_or(0)
     }
 
     #[must_use]
@@ -349,6 +371,16 @@ impl Conversation for ScriptedConversation {
         if let Ok(mut seen) = self.models.lock() {
             seen.push(model);
         }
+    }
+
+    fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>> {
+        Box::pin(async move {
+            if let Ok(mut count) = self.new_sessions.lock() {
+                *count += 1;
+            }
+            let _ = self.updates.send(Update::SessionReset);
+            Ok(())
+        })
     }
 }
 

@@ -466,6 +466,11 @@ impl App {
                 self.end_turn();
                 self.transcript.push(Cell::Error(message));
             }
+            Update::SessionReset => {
+                self.transcript = Transcript::default();
+                self.scroll.follow();
+                self.usage = Usage::default();
+            }
         }
     }
 
@@ -500,6 +505,22 @@ impl App {
         let local = self.local.clone();
         tokio::spawn(async move {
             if let Err(error) = conversation.prompt(text).await {
+                let _ = local.send(Update::Failed(error.to_string()));
+            }
+        });
+    }
+
+    /// Retire the conversation the agent is holding and start a fresh one.
+    ///
+    /// Unlike `/clear`, this reaches the agent: history and usage go to zero
+    /// there too, not just on this surface's own transcript. Spawned for the
+    /// same reason `submit` is — rebuilding a session can mean a network
+    /// round trip, and that must not stop the interface from redrawing.
+    fn start_new_session(&mut self) {
+        let conversation = Arc::clone(&self.conversation);
+        let local = self.local.clone();
+        tokio::spawn(async move {
+            if let Err(error) = conversation.new_session().await {
                 let _ = local.send(Update::Failed(error.to_string()));
             }
         });
@@ -876,6 +897,7 @@ impl App {
                 self.transcript = Transcript::default();
                 self.scroll.follow();
             }
+            SlashAction::Builtin(Builtin::New) => self.start_new_session(),
             SlashAction::Builtin(Builtin::Quit) => self.should_quit = true,
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
             SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {

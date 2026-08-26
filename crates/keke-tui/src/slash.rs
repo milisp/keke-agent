@@ -27,6 +27,9 @@ pub enum SlashAction {
 pub enum Builtin {
     Help,
     Clear,
+    /// Retires the conversation the agent is holding and starts a fresh one:
+    /// history and usage go to zero, not just what is drawn on screen.
+    New,
     Quit,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
@@ -140,11 +143,11 @@ fn builtins() -> Vec<SlashCommand> {
     [
         (Builtin::Help, "help", "list the commands"),
         (Builtin::Clear, "clear", "clear the transcript on screen"),
-        // The same thing under the name people reach for first. Two names for
-        // one behavior rather than a second behavior: keke has one conversation
-        // per process, so "new" cannot mean a fresh session here without the
-        // word meaning something different from what it did a moment ago.
-        (Builtin::Clear, "new", "clear the transcript on screen"),
+        (
+            Builtin::New,
+            "new",
+            "start a new session — history, usage, and the transcript all reset",
+        ),
         (
             Builtin::Effort,
             "effort",

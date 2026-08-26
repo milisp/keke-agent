@@ -252,7 +252,7 @@ impl Session {
 /// A builder rather than a wide constructor because the required pieces come
 /// from different places — config from disk, the provider from the registry,
 /// extensions from the composition root — and a missing one should name itself.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SessionBuilder {
     config: Option<SessionConfig>,
     provider: Option<ArcProvider>,
@@ -264,6 +264,7 @@ pub struct SessionBuilder {
 }
 
 /// The session a build continues instead of starting.
+#[derive(Clone)]
 struct Resumed {
     id: SessionId,
     history: Vec<Message>,
@@ -317,6 +318,18 @@ impl SessionBuilder {
     #[must_use]
     pub fn resume(mut self, id: SessionId, history: Vec<Message>) -> Self {
         self.resume = Some(Resumed { id, history });
+        self
+    }
+
+    /// Discard any resume this builder carries.
+    ///
+    /// Lets a caller keep a builder around as a recipe — same config,
+    /// provider, extensions, cwd — and reuse it to start a genuinely new
+    /// session later, even though the builder it was cloned from was itself
+    /// continuing a previous log.
+    #[must_use]
+    pub fn fresh(mut self) -> Self {
+        self.resume = None;
         self
     }
 

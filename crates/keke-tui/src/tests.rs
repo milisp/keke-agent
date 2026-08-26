@@ -804,15 +804,27 @@ async fn the_effort_command_names_a_level_and_refuses_a_typo() {
 
 /// `/new` is the name people reach for; it does what `/clear` does.
 #[tokio::test]
-async fn new_clears_the_screen_like_clear() {
-    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+async fn new_reaches_the_agent_and_resets_usage_too() {
+    let (mut app, scripted, mut updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(Update::TextDelta("some output".to_string()));
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 100,
+        ..keke_protocol::Usage::default()
+    }));
     assert!(!app.transcript.is_empty());
+    assert!(app.usage().total() > 0);
 
     type_text(&mut app, "/new");
     app.handle_key(key(KeyCode::Enter));
+    drain(&mut app, &mut updates, 1).await;
 
+    assert_eq!(
+        scripted.new_session_count(),
+        1,
+        "unlike /clear, /new must tell the agent to forget too"
+    );
     assert!(app.transcript.is_empty(), "{:?}", app.transcript.cells());
+    assert_eq!(app.usage().total(), 0);
 }
 
 /// A person watching a turn wants the clock and the cost, and wants the clock

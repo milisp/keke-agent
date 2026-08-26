@@ -525,6 +525,10 @@ async fn pump(
                 )?;
                 let _ = outcomes.send(StopReason::Refusal { message });
             }
+            // A remote client starts over with `session/new`, which already
+            // gives it a session with nothing in it; this is only a signal an
+            // in-process surface uses to reset what it has drawn.
+            Update::SessionReset => {}
         }
     }
     Ok(())
