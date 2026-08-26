@@ -362,9 +362,11 @@ impl EditorSessions {
     /// session next time, not a failed login now.
     async fn remember_route(&self, composed: &Composed, route: &str) {
         let models = models_for(composed, route).await;
-        let replacement = (!models.iter().any(|model| model.id == self.config.model.model))
-            .then(|| models.first().map(|model| model.id.clone()))
-            .flatten();
+        let replacement = (!models
+            .iter()
+            .any(|model| model.id == self.config.model.model))
+        .then(|| models.first().map(|model| model.id.clone()))
+        .flatten();
         if let Err(error) = keke_config::persist_user_override(&self.config.home.home, |file| {
             file.provider = Some(route.to_string());
             if let Some(model) = replacement {

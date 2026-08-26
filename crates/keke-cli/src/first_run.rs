@@ -112,6 +112,21 @@ struct Picked {
     declaration: Option<ProviderDeclaration>,
 }
 
+/// Whether the endpoint being described is reached with a credential.
+///
+/// The answer is already known before the questions start — it is the branch
+/// the person took at the first prompt — so a blank credential name under
+/// "API key" is a contradiction rather than a choice, and asking it as one
+/// writes a declaration that authenticates with nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CredentialNeed {
+    /// A local server: no credential, and demanding one would make the
+    /// commonest declared provider unconfigurable here.
+    None,
+    /// An API key was the answer to "how do you want to authenticate?".
+    Required,
+}
+
 /// Ask how to authenticate, which endpoint, which model, and how hard it
 /// thinks, then persist all of it — but only on a fresh install's first
 /// interactive run.
@@ -405,7 +420,7 @@ fn pick_local(routes: &[Route]) -> Result<Option<Picked>> {
     };
 
     if index == LOCAL_PRESETS.len() {
-        let Some(declared) = declare(routes)? else {
+        let Some(declared) = declare(routes, CredentialNeed::None)? else {
             return Ok(None);
         };
         return Ok(Some(Picked {
@@ -487,7 +502,7 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
     };
 
     if index == keyed.len() {
-        let Some(declared) = declare(routes)? else {
+        let Some(declared) = declare(routes, CredentialNeed::Required)? else {
             return Ok(None);
         };
         // Stored now so the key is in place before the rebuilt registry reads
@@ -532,7 +547,7 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
 /// The result is exactly a `[providers.<route>]` table, so what this writes is
 /// what the documentation tells a person to write by hand — the picker is a
 /// convenience over that file, never a second way of configuring keke.
-fn declare(taken: &[Route]) -> Result<Option<ProviderDeclaration>> {
+fn declare(taken: &[Route], need: CredentialNeed) -> Result<Option<ProviderDeclaration>> {
     println!();
     let route = loop {
         let Some(route) = ask("Short name (e.g. `nvidia`, `ollama`)", "") else {
@@ -572,15 +587,31 @@ fn declare(taken: &[Route]) -> Result<Option<ProviderDeclaration>> {
         return Ok(None);
     };
 
-    // Local endpoints take no credential at all, and demanding one would make
-    // the most common declared provider unconfigurable here.
-    println!("\nLeave blank if this endpoint needs no credential.");
+    // A declaration with no credential name sends no `authorization` header at
+    // all, and the endpoint's answer to that is a 401 whose body is the only
+    // explanation the person gets. So it is refused where a key was the stated
+    // answer, and offered only where none is wanted.
+    let suggested = match need {
+        CredentialNeed::None => String::new(),
+        CredentialNeed::Required => suggested_env_key(&route),
+    };
+    if need == CredentialNeed::None {
+        println!("\nLeave blank if this endpoint needs no credential.");
+    } else {
+        println!("\nThe variable your key is read from — it is not stored in config.toml.");
+    }
     let env_key = loop {
-        let Some(name) = ask("Credential variable (e.g. `NVIDIA_API_KEY`)", "") else {
+        let Some(name) = ask("Credential variable (e.g. `NVIDIA_API_KEY`)", &suggested) else {
             return Ok(None);
         };
         if name.is_empty() {
-            break None;
+            if need == CredentialNeed::None {
+                break None;
+            }
+            println!(
+                "This endpoint is reached with an API key, so it needs a variable to read it from."
+            );
+            continue;
         }
         match CredentialRef::new(name.clone()) {
             Ok(reference) => break Some(reference),
@@ -603,6 +634,23 @@ fn declare(taken: &[Route]) -> Result<Option<ProviderDeclaration>> {
         proxy_password_env_key: None,
         headers: Default::default(),
     }))
+}
+
+/// The variable name offered for a keyed endpoint, derived from its route —
+/// `nvidia` becomes `NVIDIA_API_KEY`, which is what the vendor's own
+/// documentation tells a person to export.
+fn suggested_env_key(route: &str) -> String {
+    let stem: String = route
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{stem}_API_KEY")
 }
 
 /// The model offered by default for `provider`.
@@ -742,5 +790,21 @@ mod tests {
         assert_eq!(parsed.base_url, declared.base_url);
         assert_eq!(parsed.env_key, declared.env_key);
         assert_eq!(parsed.default_model, declared.default_model);
+    }
+
+    /// A route whose declaration names no variable authenticates with nothing,
+    /// so the suggestion offered under "API key" must be a name the credential
+    /// reference accepts — one refused there would leave the person re-typing.
+    #[test]
+    fn a_suggested_credential_name_is_one_a_reference_accepts() {
+        for route in ["nvidia", "my-gateway", "openrouter"] {
+            let suggested = suggested_env_key(route);
+            assert!(
+                CredentialRef::new(suggested.clone()).is_ok(),
+                "{suggested} is not a usable credential name"
+            );
+        }
+        assert_eq!(suggested_env_key("nvidia"), "NVIDIA_API_KEY");
+        assert_eq!(suggested_env_key("my-gateway"), "MY_GATEWAY_API_KEY");
     }
 }

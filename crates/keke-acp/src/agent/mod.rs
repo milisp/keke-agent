@@ -305,10 +305,7 @@ fn choices(entry: &Entry) -> Vec<Choice> {
 
     let offered = entry.offered_efforts();
     if !offered.is_empty() {
-        let mut options = vec![(
-            DEFAULT_EFFORT.to_string(),
-            "Auto".to_string(),
-        )];
+        let mut options = vec![(DEFAULT_EFFORT.to_string(), "Auto".to_string())];
         options.extend(
             offered
                 .iter()
