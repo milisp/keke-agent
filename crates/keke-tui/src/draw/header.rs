@@ -40,7 +40,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let used = app.context_input();
     let right = match (used > 0, app.context_window()) {
         (true, Some(window)) => format!("{}/{}", tokens(used), tokens(window)),
-        (true, None) => format!("{}", tokens(used)),
+        (true, None) => tokens(used).to_string(),
         (false, Some(window)) => format!("0/{}", tokens(window)),
         (false, None) => String::new(),
     };
