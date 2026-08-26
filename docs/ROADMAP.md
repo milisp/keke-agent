@@ -11,7 +11,7 @@ drift the way the README status line did.
   `keke-core` turn loop, session event log.
 - **`keke exec`** — a turn runs end to end, tools execute, the session is
   replayable from `SessionEvent`s.
-- **Wire formats** — chat-completions, responses, and messages implemented
+- **Wire formats** — chat_completions, responses, and messages implemented
   once in `keke-wire`; config-declared providers pick one via `wire = ...`.
 - **Auth** — API-key auth for config-declared endpoints, credential storage
   independent of the machine keyring in tests, `keke doctor` reports
@@ -31,7 +31,7 @@ drift the way the README status line did.
   keyed to their contents, not their path (invariant 12).
 - **Reasoning effort** — one neutral ladder (`low`/`medium`/`high`/`xhigh`/
   `max`) in `keke-protocol`, logged on `SessionEvent::ModelRequest`, set by
-  `reasoning-effort` in config or `--reasoning-effort`, translated per wire:
+  `reasoning_effort` in config or `--reasoning-effort`, translated per wire:
   an effort word on the two OpenAI formats, a capped `thinking.budget_tokens`
   on Anthropic's.
 - **MCP** — `keke-mcp` speaks both the old and modern MCP transport eras.

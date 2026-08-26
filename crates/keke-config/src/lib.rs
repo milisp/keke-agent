@@ -84,7 +84,7 @@ pub struct Config {
 /// overrides, and the merge below is a field-wise override rather than a
 /// whole-document replacement.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct ConfigFile {
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -108,7 +108,7 @@ pub struct ConfigFile {
 
 /// The compaction section, separated so a layer can override one field of it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct CompactionFile {
     pub trigger_percent: Option<u8>,
     pub keep_recent_messages: Option<usize>,
@@ -117,7 +117,7 @@ pub struct CompactionFile {
 
 /// The plugins section, separated so a layer can override one field of it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct PluginsFile {
     pub hook_timeout_millis: Option<u64>,
     pub mcp_startup_timeout_millis: Option<u64>,
@@ -384,9 +384,9 @@ mod tests {
         let layers = vec![
             layer(
                 "user",
-                "[compaction]\ntrigger-percent = 70\nkeep-recent-messages = 8\n",
+                "[compaction]\ntrigger_percent = 70\nkeep_recent_messages = 8\n",
             ),
-            layer("project", "[compaction]\ntrigger-percent = 60\n"),
+            layer("project", "[compaction]\ntrigger_percent = 60\n"),
         ];
         let config = Config::from_layers(home(), &layers).expect("merges");
 
@@ -405,8 +405,8 @@ mod tests {
     #[test]
     fn an_effort_is_read_and_overridden_like_any_other_field() {
         let layers = vec![
-            layer("user", "reasoning-effort = \"low\"\n"),
-            layer("project", "reasoning-effort = \"xhigh\"\n"),
+            layer("user", "reasoning_effort = \"low\"\n"),
+            layer("project", "reasoning_effort = \"xhigh\"\n"),
         ];
         let config = Config::from_layers(home(), &layers).expect("merges");
         assert_eq!(config.reasoning_effort, Some(ReasoningEffort::XHigh));
@@ -423,7 +423,7 @@ mod tests {
     /// alternative is a setting that silently did nothing all session.
     #[test]
     fn a_misspelled_effort_fails_at_load() {
-        let layers = vec![layer("user", "reasoning-effort = \"maximum\"\n")];
+        let layers = vec![layer("user", "reasoning_effort = \"maximum\"\n")];
         let error = Config::from_layers(home(), &layers).expect_err("rejected");
         assert!(
             error.to_string().contains("low, medium, high, xhigh, max"),
@@ -436,11 +436,11 @@ mod tests {
         let layers = vec![
             layer(
                 "user",
-                "[providers.nvidia]\nbase-url = \"https://integrate.api.nvidia.com/v1\"\nenv-key = \"NVIDIA_API_KEY\"\n",
+                "[providers.nvidia]\nbase_url = \"https://integrate.api.nvidia.com/v1\"\nenv_key = \"NVIDIA_API_KEY\"\n",
             ),
             layer(
                 "project",
-                "[providers.ollama]\nbase-url = \"http://localhost:11434/v1\"\n",
+                "[providers.ollama]\nbase_url = \"http://localhost:11434/v1\"\n",
             ),
         ];
         let config = Config::from_layers(home(), &layers).expect("merges");
@@ -461,11 +461,11 @@ mod tests {
         let layers = vec![
             layer(
                 "user",
-                "[providers.nvidia]\nbase-url = \"https://integrate.api.nvidia.com/v1\"\n\n[providers.ollama]\nbase-url = \"http://localhost:11434/v1\"\n",
+                "[providers.nvidia]\nbase_url = \"https://integrate.api.nvidia.com/v1\"\n\n[providers.ollama]\nbase_url = \"http://localhost:11434/v1\"\n",
             ),
             layer(
                 "project",
-                "[providers.ollama]\nbase-url = \"http://gpu-box:11434/v1\"\nwire = \"responses\"\n",
+                "[providers.ollama]\nbase_url = \"http://gpu-box:11434/v1\"\nwire = \"responses\"\n",
             ),
         ];
         let config = Config::from_layers(home(), &layers).expect("merges");
@@ -492,18 +492,18 @@ mod tests {
 
     #[test]
     fn a_configured_output_budget_is_validated_at_load() {
-        let layers = vec![layer("user", "max-output-tokens = 16000\n")];
+        let layers = vec![layer("user", "max_output_tokens = 16000\n")];
         let config = Config::from_layers(home(), &layers).expect("merges");
         assert_eq!(config.max_output_tokens.get(), 16_000);
 
-        let layers = vec![layer("user", "max-output-tokens = 12\n")];
+        let layers = vec![layer("user", "max_output_tokens = 12\n")];
         let error = Config::from_layers(home(), &layers).expect_err("too small");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
 
     #[test]
     fn an_out_of_range_value_fails_at_load() {
-        let layers = vec![layer("user", "[compaction]\ntrigger-percent = 0\n")];
+        let layers = vec![layer("user", "[compaction]\ntrigger_percent = 0\n")];
         let error = Config::from_layers(home(), &layers).expect_err("rejected");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
@@ -512,7 +512,7 @@ mod tests {
     fn a_deployment_can_set_what_a_plugins_program_may_hold_up_a_turn_for() {
         let layers = vec![layer(
             "user",
-            "[plugins]\nhook-timeout-millis = 5000\nmcp-call-timeout-millis = 300000\n",
+            "[plugins]\nhook_timeout_millis = 5000\nmcp_call_timeout_millis = 300000\n",
         )];
         let config = Config::from_layers(home(), &layers).expect("merges");
         assert_eq!(config.plugins.hook_millis, 5_000);
@@ -523,7 +523,7 @@ mod tests {
             PluginTimeouts::default().mcp_startup_millis
         );
 
-        let layers = vec![layer("user", "[plugins]\nhook-timeout-millis = 30\n")];
+        let layers = vec![layer("user", "[plugins]\nhook_timeout_millis = 30\n")];
         let error = Config::from_layers(home(), &layers).expect_err("too short");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }

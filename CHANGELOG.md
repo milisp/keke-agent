@@ -109,7 +109,7 @@ Foundational engine, TUI, provider wiring, and plugin system:
   ACP server over stdio so editors can drive keke directly.
 - TUI features: slash commands, live approval mode, session resume with
   elapsed time and running cost, readline-style input editing, and
-  mid-conversation reasoning-effort control.
+  mid-conversation reasoning_effort control.
 - History summarization to keep long sessions inside the context window.
 - `docs/PROGRESS.md` / `docs/ROADMAP.md` tracking crate status and next steps.
 

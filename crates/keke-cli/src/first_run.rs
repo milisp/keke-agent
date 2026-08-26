@@ -76,7 +76,7 @@ const FALLBACK_EFFORTS: &[ReasoningEffort] = &[
 const WIRES: &[(DeclaredWireApi, &str)] = &[
     (
         DeclaredWireApi::ChatCompletions,
-        "chat-completions (OpenAI-compatible: Ollama, vLLM, most gateways)",
+        "chat_completions (OpenAI-compatible: Ollama, vLLM, most gateways)",
     ),
     (DeclaredWireApi::Responses, "responses (OpenAI)"),
     (DeclaredWireApi::Messages, "messages (Anthropic)"),
@@ -580,7 +580,7 @@ fn declare(taken: &[Route], need: CredentialNeed) -> Result<Option<ProviderDecla
     let Some(wire) = choose(
         "Wire format",
         WIRES.len(),
-        "chat-completions",
+        "chat_completions",
         |index| WIRES[index].0,
         || DeclaredWireApi::ChatCompletions,
     ) else {
@@ -749,7 +749,7 @@ fn persist(config: &Config, declared: Option<&ProviderDeclaration>) -> Result<()
         config.model.provider, config.model.model
     );
     if let Some(effort) = config.reasoning_effort {
-        contents.push_str(&format!("reasoning-effort = \"{}\"\n", effort.as_str()));
+        contents.push_str(&format!("reasoning_effort = \"{}\"\n", effort.as_str()));
     }
     if let Some(declared) = declared {
         let table = toml::to_string(declared).context("rendering the declared provider")?;

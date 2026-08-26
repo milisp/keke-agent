@@ -111,12 +111,12 @@ name, and a format needs no crate:
 
 ```toml
 [providers.ollama]
-base-url = "http://localhost:11434/v1"
-default-model = "gpt-oss:20b-cloud"
+base_url = "http://localhost:11434/v1"
+default_model = "gpt-oss:20b-cloud"
 
 [providers.nvidia]
-base-url = "https://integrate.api.nvidia.com/v1"
-env-key = "NVIDIA_API_KEY"
+base_url = "https://integrate.api.nvidia.com/v1"
+env_key = "NVIDIA_API_KEY"
 wire = "responses"
 ```
 

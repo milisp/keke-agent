@@ -54,24 +54,24 @@ keke doctor                              # 查看哪些 provider 和登录能解
 | --- | --- | --- |
 | OpenAI / ChatGPT | `keke login codex`，或 `OPENAI_API_KEY` | OAuth 流程从 codex 移植而来 |
 | xAI Grok | `keke login grok`，或 `XAI_API_KEY` | 内置，默认 provider |
-| Anthropic | `config.toml` 中的 `env-key` | 声明时用 `wire = "messages"` |
+| Anthropic | `config.toml` 中的 `env_key` | 声明时用 `wire = "messages"` |
 | 本地模型（Ollama、vLLM 等） | 无需认证 | 代码不会离开这台机器 |
-| 任意 OpenAI 兼容网关 | `config.toml` 中的 `env-key` | 公司代理、NVIDIA NIM、路由器等 |
+| 任意 OpenAI 兼容网关 | `config.toml` 中的 `env_key` | 公司代理、NVIDIA NIM、路由器等 |
 
 内置支持之外的服务，只需要在 `$KEKE_HOME/config.toml` 里加几行，不需要改代码：
 
 ```toml
 [providers.ollama]
-base-url = "http://localhost:11434/v1"
-default-model = "gpt-oss:20b"
+base_url = "http://localhost:11434/v1"
+default_model = "gpt-oss:20b"
 
 [providers.anthropic]
-base-url = "https://api.anthropic.com"
-env-key = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com"
+env_key = "ANTHROPIC_API_KEY"
 wire = "messages"
 ```
 
-`wire` 决定请求格式——`chat-completions`（默认）、`responses`，或
+`wire` 决定请求格式——`chat_completions`（默认）、`responses`，或
 `messages`——所以接入新接口只是一条配置，而不是一次发版。
 
 ## 现状

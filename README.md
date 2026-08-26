@@ -59,23 +59,23 @@ keke doctor                              # which providers and logins resolve
 | Anthropic Claude | `ANTHROPIC_API_KEY` | Built in; the default provider. API key only — no subscription login |
 | xAI Grok | `keke login grok`, or `XAI_API_KEY` | Built in |
 | Local (Ollama, vLLM, …) | none | Your code never leaves the machine |
-| Any OpenAI-compatible gateway | `env-key` in `config.toml` | Company proxies, NVIDIA NIM, routers |
+| Any OpenAI-compatible gateway | `env_key` in `config.toml` | Company proxies, NVIDIA NIM, routers |
 
 Anything not built in is a few lines of `$KEKE_HOME/config.toml`, not a code
 change:
 
 ```toml
 [providers.ollama]
-base-url = "http://localhost:11434/v1"
-default-model = "gpt-oss:20b"
+base_url = "http://localhost:11434/v1"
+default_model = "gpt-oss:20b"
 
 [providers.anthropic]
-base-url = "https://api.anthropic.com"
-env-key = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com"
+env_key = "ANTHROPIC_API_KEY"
 wire = "messages"
 ```
 
-`wire` picks the request format — `chat-completions` (the default),
+`wire` picks the request format — `chat_completions` (the default),
 `responses`, or `messages` — so a new endpoint is a config entry rather than a release.
 
 Behind a corporate proxy or a TLS-intercepting gateway, a declared provider
@@ -84,16 +84,16 @@ routing or audit:
 
 ```toml
 [providers.internal-gateway]
-base-url = "https://gateway.corp.internal/v1"
-env-key = "INTERNAL_GATEWAY_API_KEY"
-ca-cert-path = "/etc/ssl/certs/corp-root-ca.pem"
+base_url = "https://gateway.corp.internal/v1"
+env_key = "INTERNAL_GATEWAY_API_KEY"
+ca_cert_path = "/etc/ssl/certs/corp-root-ca.pem"
 proxy = "http://proxy.corp.internal:8080"
-proxy-username = "svc-keke"
-proxy-password-env-key = "CORP_PROXY_PASSWORD"
+proxy_username = "svc-keke"
+proxy_password_env_key = "CORP_PROXY_PASSWORD"
 
 [providers.internal-gateway.headers]
 X-Department-Token = "env:DEPT_TOKEN"
-X-Company-User-Id = "color-clock"
+X-Company-User-Id = "milisp-labs"
 ```
 
 A header value written as `env:VAR_NAME` is resolved from the environment

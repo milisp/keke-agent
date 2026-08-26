@@ -59,7 +59,7 @@ const MIN_THINKING_BUDGET: u32 = 1024;
 /// translation has to name numbers. They live here, next to the format that
 /// needs them, for the same reason [`UNSET_MAX_OUTPUT_TOKENS`] does: they are
 /// how one wire spells a setting, not a setting of their own. The knob a
-/// deployment turns is `reasoning-effort`.
+/// deployment turns is `reasoning_effort`.
 fn thinking_budget(effort: ReasoningEffort) -> u32 {
     match effort {
         ReasoningEffort::Low => 4_096,

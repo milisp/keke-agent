@@ -1,4 +1,4 @@
-//! The live reasoning-effort setting.
+//! The live reasoning_effort setting.
 
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;

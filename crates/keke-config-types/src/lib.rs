@@ -20,7 +20,7 @@ pub use keke_protocol::ReasoningEffort;
 
 /// How much the harness may do without asking.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum ApprovalPolicy {
     /// Ask before anything with an effect outside the workspace.
     #[default]
@@ -61,7 +61,7 @@ impl ApprovalPolicy {
 
 /// How tightly spawned processes are confined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
     /// No filesystem writes outside the workspace, no network.
     #[default]
@@ -89,7 +89,7 @@ pub struct ModelSelection {
 /// flow, a non-standard error shape); everything else can be declared here, and
 /// a person can add an endpoint keke has never heard of without rebuilding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct ProviderDeclaration {
     /// The route key, which is what `--provider` and `keke login` name. Comes
     /// from the table key in configuration, not from a field.
@@ -124,7 +124,7 @@ pub struct ProviderDeclaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_username: Option<String>,
     /// Environment variable holding the basic-auth password for `proxy`. An
-    /// env-key indirection rather than a literal field, matching `env_key`:
+    /// env_key indirection rather than a literal field, matching `env_key`:
     /// a proxy credential is a secret and does not belong in a config file
     /// either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,7 +146,7 @@ pub struct ProviderDeclaration {
 /// need not depend on the provider contract — a config value type must not drag
 /// in the runtime that consumes it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum DeclaredWireApi {
     #[default]
     ChatCompletions,

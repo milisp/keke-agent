@@ -82,7 +82,7 @@ pub(crate) enum ReplyBody {
 /// One scripted reply, expressible in every wire format the mock serves.
 ///
 /// A `Reply` describes *intent* — this text, then this tool call, ending here —
-/// and the server renders it as chat-completions deltas, Responses typed
+/// and the server renders it as chat_completions deltas, Responses typed
 /// events, or Messages typed events depending on which endpoint receives it.
 /// That is the crate's reason to exist: one script, three wire formats, so a
 /// cross-vendor test asserts on behavior instead of on transcripts.

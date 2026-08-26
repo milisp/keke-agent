@@ -1,0 +1,113 @@
+# Configuration
+
+keke is configured through a TOML file at `$KEKE_HOME/config.toml` (defaults to `~/.keke/config.toml`). All settings are optional — built-in providers work without any configuration.
+
+## Provider Declaration
+
+Any OpenAI-compatible endpoint can be added by declaring a provider. This is how you use company proxies, NVIDIA NIM, Ollama, vLLM, or any custom gateway without rebuilding keke.
+
+```toml
+[providers.my-gateway]
+base_url = "https://gateway.example.com/v1"
+default_model = "gpt-4o"
+env_key = "MY_GATEWAY_API_KEY"
+wire = "chat_completions"  # or "responses", "messages"
+```
+
+### Provider Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `base_url` | Yes | Base URL of the API endpoint |
+| `default_model` | No | Model used when none is specified |
+| `env_key` | No | Environment variable holding the API key (e.g., `NVIDIA_API_KEY`) |
+| `wire` | No | Wire format: `chat_completions` (default), `responses`, or `messages` |
+| `ca_cert_path` | No | Path to PEM-encoded CA certificate for corporate TLS-intercepting gateways |
+| `proxy` | No | Outbound proxy URL (e.g., `http://proxy.internal:8080`) |
+| `proxy_username` | No | Basic-auth username for the proxy |
+| `proxy_password_env_key` | No | Environment variable holding the proxy password |
+| `headers` | No | Extra HTTP headers sent with every request |
+
+### Header Values
+
+Header values can be literal strings or environment variable references:
+
+```toml
+[providers.internal-gateway.headers]
+X-Department-Token = "env:DEPT_TOKEN"
+X-Company-User-Id = "milisp-labs"
+```
+
+A value of the form `env:VAR_NAME` is resolved from the environment at startup rather than taken literally, so a secret header need not sit in the config file in the clear. `authorization` is reserved for the provider's own credential and cannot be set here.
+
+## Complete Example
+
+```toml
+# Local Ollama
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+default_model = "gpt-oss:20b"
+
+# NVIDIA NIM
+[providers.nvidia]
+base_url = "https://integrate.api.nvidia.com/v1"
+env_key = "NVIDIA_API_KEY"
+wire = "responses"
+
+# Corporate gateway with TLS interception and proxy
+[providers.internal-gateway]
+base_url = "https://gateway.corp.internal/v1"
+env_key = "INTERNAL_GATEWAY_API_KEY"
+ca_cert_path = "/etc/ssl/certs/corp-root-ca.pem"
+proxy = "http://proxy.corp.internal:8080"
+proxy_username = "svc-keke"
+proxy_password_env_key = "CORP_PROXY_PASSWORD"
+
+[providers.internal-gateway.headers]
+X-Department-Token = "env:DEPT_TOKEN"
+X-Company-User-Id = "milisp-labs"
+```
+
+## Core Settings
+
+These settings live at the top level of `config.toml`:
+
+```toml
+# Approval policy: "on_request" (default), "on_failure", "never"
+approval_policy = "on_request"
+
+# Sandbox mode: "workspace_write" (default), "read_only", "danger_full_access"
+sandbox_mode = "workspace_write"
+
+# Reasoning effort: "low", "medium", "high", "xhigh", "max" (default: "medium")
+reasoning_effort = "medium"
+
+# Maximum output tokens per model reply (256-200000)
+max_output_tokens = 8192
+
+# Compaction configuration
+[compaction]
+trigger_percent = 80          # Percentage of context window at which compaction triggers
+keep_recent_messages = 4      # Messages at the tail always kept verbatim
+context_window = 128000       # Context window size compaction measures against
+
+# Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
+model_catalog_ttl_seconds = 21600  # 6 hours default
+
+# Plugin timeouts in milliseconds
+[plugins]
+hook_millis = 30000       # Hook timeout (100-3600000)
+mcp_startup_millis = 15000  # MCP server startup timeout
+mcp_call_millis = 120000    # Single MCP tools/call timeout
+```
+
+## Config Layers
+
+Configuration is loaded from multiple layers, with later layers overriding earlier ones:
+
+1. **Built-in defaults** (compiled in)
+2. **User config** — `$KEKE_HOME/config.toml` or `~/.keke/config.toml`
+3. **Project config** — `.keke/config.toml` in the workspace root
+4. **Environment variables** — `KEKE_*` prefixed (e.g., `KEKE_APPROVAL_POLICY=never`)
+
+Provider declarations accumulate across layers and are keyed by route, so redeclaring a provider replaces that entry rather than the whole set.

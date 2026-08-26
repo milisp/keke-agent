@@ -10,7 +10,7 @@ pub struct SseFrame {
 }
 
 impl SseFrame {
-    /// A frame with a `data:` payload only, as chat-completions uses.
+    /// A frame with a `data:` payload only, as chat_completions uses.
     pub fn data(data: impl Into<String>) -> Self {
         Self {
             event: None,

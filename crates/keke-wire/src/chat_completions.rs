@@ -318,7 +318,7 @@ impl WireDecoder for Decoder {
         let chunk: ChatChunk = match serde_json::from_str(data) {
             Ok(chunk) => chunk,
             Err(error) => {
-                out.fail(format!("undecodable chat-completions frame: {error}"));
+                out.fail(format!("undecodable chat_completions frame: {error}"));
                 return;
             }
         };
@@ -338,7 +338,7 @@ impl WireDecoder for Decoder {
     fn on_end(&mut self, out: &mut Sink) {
         match self.stop.take() {
             Some(stop) => out.finish(stop),
-            None => out.truncated("the chat-completions stream ended without a finish_reason"),
+            None => out.truncated("the chat_completions stream ended without a finish_reason"),
         }
     }
 }

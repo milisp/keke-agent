@@ -33,7 +33,7 @@ pub(crate) enum DeclarationError {
     /// the environment, so it would silently never authenticate.
     #[error("provider `{route}`: `{key}` is not a usable credential name")]
     BadCredentialName { route: String, key: String },
-    /// `ca-cert-path` did not name a readable, parseable PEM file.
+    /// `ca_cert_path` did not name a readable, parseable PEM file.
     #[error("provider `{route}`: could not load CA certificate `{path}`: {error}")]
     BadCaCert {
         route: String,
@@ -274,12 +274,12 @@ mod tests {
     fn a_literal_header_is_sent_as_written() {
         let declared = declaration(BTreeMap::from([(
             "X-Company-User-Id".to_string(),
-            "color-clock".to_string(),
+            "milisp-labs".to_string(),
         )]));
         let headers = extra_headers(&declared).expect("resolves");
         assert_eq!(
             headers,
-            vec![("X-Company-User-Id".to_string(), "color-clock".to_string())]
+            vec![("X-Company-User-Id".to_string(), "milisp-labs".to_string())]
         );
     }
 
