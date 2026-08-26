@@ -85,7 +85,7 @@ impl GrokProvider {
         Self {
             info: ProviderInfo {
                 route: ROUTE.to_string(),
-                display_name: "xAI Grok".to_string(),
+                display_name: "Grok".to_string(),
                 base_url: wire.base_url().to_string(),
                 wire_api: endpoint.wire_api,
                 auth_id: Some(ROUTE.to_string()),

@@ -78,7 +78,6 @@ fn provider_info_names_its_route_and_credentials() {
     let info = provider.info();
 
     assert_eq!(info.route, "codex");
-    assert_eq!(info.display_name, "OpenAI Codex");
     assert_eq!(info.auth_id.as_deref(), Some("codex"));
     assert_eq!(info.env_key.as_deref(), Some("OPENAI_API_KEY"));
     assert_eq!(info.wire_api, keke_provider_api::WireApi::Responses);

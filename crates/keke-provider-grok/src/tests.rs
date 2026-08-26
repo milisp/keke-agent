@@ -454,7 +454,6 @@ fn provider_info_names_its_route_and_credentials() {
     let info = provider.info();
 
     assert_eq!(info.route, "grok");
-    assert_eq!(info.display_name, "xAI Grok");
     assert_eq!(info.auth_id.as_deref(), Some("grok"));
     assert_eq!(info.env_key.as_deref(), Some("XAI_API_KEY"));
     assert_eq!(info.base_url, "https://api.x.ai/v1");

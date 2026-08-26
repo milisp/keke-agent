@@ -66,7 +66,7 @@ impl CodexProvider {
         Self {
             info: ProviderInfo {
                 route: ROUTE.to_string(),
-                display_name: "OpenAI Codex".to_string(),
+                display_name: "ChatGPT".to_string(),
                 base_url: wire.base_url().to_string(),
                 wire_api: WireApi::Responses,
                 auth_id: Some(ROUTE.to_string()),
