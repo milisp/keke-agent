@@ -25,10 +25,10 @@ fn duration(elapsed: std::time::Duration) -> String {
 
 /// `842`, `12.3k`, `1.2M`. Thousands once past four digits, so the number keeps
 /// a stable width while a turn runs and does not jitter the bar around it.
-fn tokens(count: u64) -> String {
+pub(crate) fn tokens(count: u64) -> String {
     match count {
         0..10_000 => count.to_string(),
-        10_000..10_000_000 => format!("{:.1}k", count as f64 / 1_000.0),
+        10_000..1_000_000 => format!("{:.1}k", count as f64 / 1_000.0),
         _ => format!("{:.1}M", count as f64 / 1_000_000.0),
     }
 }
@@ -127,6 +127,7 @@ mod tests {
     fn tokens_stay_exact_until_the_column_would_jitter() {
         assert_eq!(tokens(842), "842");
         assert_eq!(tokens(12_345), "12.3k");
+        assert_eq!(tokens(1_234_567), "1.2M");
         assert_eq!(tokens(12_345_678), "12.3M");
     }
 }

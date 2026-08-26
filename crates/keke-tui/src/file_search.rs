@@ -181,6 +181,13 @@ impl FileSearchState {
     }
 }
 
+impl FileSearchState {
+    /// The directory the session was launched from, for the header bar.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

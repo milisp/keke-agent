@@ -709,6 +709,21 @@ impl App {
         &self.model
     }
 
+    /// The directory the session was launched from, for the header bar.
+    #[must_use]
+    pub fn cwd(&self) -> &std::path::Path {
+        self.file_search.root()
+    }
+
+    /// The context window of the model in force, when its provider said.
+    #[must_use]
+    pub fn context_window(&self) -> Option<u64> {
+        self.models
+            .iter()
+            .find(|model| model.id == self.model)
+            .and_then(|model| model.context_window)
+    }
+
     /// What this session's provider serves.
     #[must_use]
     pub fn models(&self) -> &[keke_provider_api::ModelInfo] {

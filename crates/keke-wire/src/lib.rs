@@ -206,6 +206,29 @@ impl WireClient {
         self.fetch_with(WireApi::ChatCompletions, path).await
     }
 
+    /// `POST` a JSON body to `path`, returning the response as text.
+    ///
+    /// Exposed for the same reason as [`WireClient::fetch`]: an endpoint whose
+    /// details live behind a `GET`-shaped listing asks about individual models
+    /// with a POST (Ollama's `/api/show`), and the endpoint, the credential,
+    /// and the retry behaviour still belong to the shared client even though
+    /// the path is the caller's.
+    pub async fn post(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<String, ProviderError> {
+        let builder = self
+            .authorize(self.http.post(self.url(path)).json(body))
+            .await?;
+        let response = builder.send().await.map_err(http::transport_error)?;
+        http::check_status(response)
+            .await?
+            .text()
+            .await
+            .map_err(|error| ProviderError::Protocol(error.to_string()))
+    }
+
     /// [`WireClient::fetch`] for an endpoint whose wire format asks for headers
     /// of its own on every request, `GET`s included: Anthropic rejects a
     /// `/models` call that does not name a version, so a listing that omitted
@@ -279,6 +302,9 @@ struct WireModel {
     display_name: Option<String>,
     #[serde(default)]
     context_window: Option<u64>,
+    /// OpenRouter names the field this instead of the OpenAI one.
+    #[serde(default)]
+    context_length: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<u64>,
     /// Present on richer listings; absent on the plain OpenAI one.
@@ -296,7 +322,7 @@ impl From<WireModel> for ModelInfo {
         if let Some(name) = wire.display_name {
             model.display_name = name;
         }
-        model.context_window = wire.context_window;
+        model.context_window = wire.context_window.or(wire.context_length);
         model.max_output_tokens = wire.max_output_tokens;
         model.supports_vision = supports_vision;
         // The plain listing says nothing about reasoning levels, so this

@@ -1,4 +1,5 @@
 pub(crate) mod file_search;
+pub(crate) mod header;
 pub(crate) mod input;
 pub(crate) mod menu;
 pub(crate) mod picker;
@@ -56,6 +57,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Min(1),
             // The slash-command menu and the `@`-completion dropdown never
             // open together (one needs the line to start with `/`, the other
@@ -67,7 +69,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    let (body, menu, composer, footer) = (areas[0], areas[1], areas[2], areas[3]);
+    let (header, body, menu, composer, footer) = (areas[0], areas[1], areas[2], areas[3], areas[4]);
 
     let rendered = transcript::render(
         app.transcript.cells(),
@@ -119,6 +121,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     menu::draw(frame, menu, app);
     file_search::draw(frame, menu, app);
     input::draw(frame, composer, app);
+    header::draw(frame, header, app);
     status::draw(frame, footer, app);
     // Last: the overlay holds the keyboard, so nothing may be drawn over it.
     picker::draw(frame, app);
