@@ -37,10 +37,10 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     // constrains. Without a known window there is no fraction worth showing,
     // so usage alone; with neither, nothing — an empty right side says more
     // than a pair of zeros would.
-    let used = app.usage().input_tokens;
+    let used = app.context_input();
     let right = match (used > 0, app.context_window()) {
         (true, Some(window)) => format!("{}/{}", tokens(used), tokens(window)),
-        (true, None) => format!("{} in", tokens(used)),
+        (true, None) => format!("{}", tokens(used)),
         (false, Some(window)) => format!("0/{}", tokens(window)),
         (false, None) => String::new(),
     };
@@ -57,7 +57,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             "…{}",
             cwd.chars()
                 .rev()
-                .take(left_budget - 1)
+                .take(left_budget.saturating_sub(1))
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
@@ -90,7 +90,7 @@ mod tests {
                 "…{}",
                 cwd.chars()
                     .rev()
-                    .take(left_budget - 1)
+                    .take(left_budget.saturating_sub(1))
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
@@ -107,6 +107,12 @@ mod tests {
             truncate("/very/long/prefix/keke", 20, "gpt-5"),
             "…efix/keke"
         );
+    }
+
+    #[test]
+    fn a_narrow_bar_with_a_wide_right_side_truncates_to_nothing_without_panicking() {
+        // left_budget hits zero; the ellipsis-only result must not underflow.
+        assert_eq!(truncate("/keke", 10, "12345678"), "…");
     }
 
     #[test]

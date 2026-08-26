@@ -853,6 +853,25 @@ async fn a_turn_is_timed_and_its_tokens_are_counted() {
     assert_eq!(app.usage().total(), 125);
 }
 
+/// Each request resends the whole conversation, so a step's input tokens are
+/// the context size, not an increment: the context figure must track the most
+/// recent step, while the cumulative total keeps adding.
+#[test]
+fn the_context_figure_is_the_latest_step_not_a_running_total() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 100,
+        output_tokens: 20,
+        ..keke_protocol::Usage::default()
+    }));
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 5,
+        ..keke_protocol::Usage::default()
+    }));
+    assert_eq!(app.context_input(), 5);
+    assert_eq!(app.usage().total(), 125);
+}
+
 /// A resumed session shows what was said, so the screen and the next request
 /// agree about the conversation.
 #[tokio::test]
@@ -878,9 +897,11 @@ async fn a_resumed_history_is_replayed_onto_the_screen() {
     ];
 
     let (scripted, _updates) = ScriptedConversation::new(Vec::new());
-    let app = App::new(Arc::new(scripted) as Arc<_>)
-        .0
-        .with_history(&history, keke_protocol::Usage::default());
+    let app = App::new(Arc::new(scripted) as Arc<_>).0.with_history(
+        &history,
+        keke_protocol::Usage::default(),
+        0,
+    );
 
     let cells = app.transcript.cells();
     assert!(matches!(&cells[0], Cell::User(text) if text == "read it"));

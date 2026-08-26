@@ -12,17 +12,6 @@ use ratatui::widgets::Paragraph;
 use crate::app::App;
 use crate::app::Turn;
 
-/// `12s`, `1m20s`, `1h02m`. Seconds until a minute, then minutes, because past
-/// an hour the seconds are noise and the column would keep changing width.
-fn duration(elapsed: std::time::Duration) -> String {
-    let seconds = elapsed.as_secs();
-    match seconds {
-        0..60 => format!("{seconds}s"),
-        60..3600 => format!("{}m{:02}s", seconds / 60, seconds % 60),
-        _ => format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60),
-    }
-}
-
 /// `842`, `12.3k`, `1.2M`. Thousands once past four digits, so the number keeps
 /// a stable width while a turn runs and does not jitter the bar around it.
 pub(crate) fn tokens(count: u64) -> String {
@@ -72,27 +61,6 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Blue),
         ));
     }
-    // The two live numbers: how long this has been going, and what it has
-    // cost. Shown while the turn runs — after it ends they answer "how long did
-    // that take", which is the question a person asks once the answer is up.
-    if let Some(elapsed) = app.elapsed() {
-        let label = if app.turn().is_busy() {
-            duration(elapsed)
-        } else {
-            format!("worked for {}", duration(elapsed))
-        };
-        spans.push(Span::styled(
-            format!("· {label} "),
-            Style::new().fg(Color::DarkGray),
-        ));
-    }
-    let used = app.usage().total();
-    if used > 0 {
-        spans.push(Span::styled(
-            format!("· {} tokens ", tokens(used)),
-            Style::new().fg(Color::DarkGray),
-        ));
-    }
     if !app.show_thinking() {
         spans.push(Span::styled(
             "· thinking hidden ",
@@ -112,16 +80,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
-
-    #[test]
-    fn a_duration_drops_seconds_once_it_stops_being_about_seconds() {
-        assert_eq!(duration(Duration::from_secs(9)), "9s");
-        assert_eq!(duration(Duration::from_secs(80)), "1m20s");
-        assert_eq!(duration(Duration::from_secs(3_720)), "1h02m");
-    }
 
     #[test]
     fn tokens_stay_exact_until_the_column_would_jitter() {

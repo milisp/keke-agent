@@ -90,6 +90,10 @@ pub struct App {
     /// Tokens this session has spent, including whatever a resumed log already
     /// accounted for.
     usage: Usage,
+    /// The input tokens of the most recent model step. Unlike the additive
+    /// `usage`, each request resends the whole conversation, so a step's
+    /// `input_tokens` is not an increment — it *is* the current context size.
+    context_input: u64,
     show_thinking: bool,
     /// Whether keke is asking the terminal for mouse events. On, because the
     /// wheel and the jump-to-bottom button need them. The terminal's own
@@ -153,6 +157,7 @@ impl App {
                 started: None,
                 last_turn: None,
                 usage: Usage::default(),
+                context_input: 0,
                 show_thinking: true,
                 mouse_capture: true,
                 follow_button: None,
@@ -233,9 +238,15 @@ impl App {
     /// so what a person reads on screen is what the model is about to be sent —
     /// a summary written separately would be free to drift from it.
     #[must_use]
-    pub fn with_history(mut self, history: &[keke_protocol::Message], usage: Usage) -> Self {
+    pub fn with_history(
+        mut self,
+        history: &[keke_protocol::Message],
+        usage: Usage,
+        context_input: u64,
+    ) -> Self {
         self.transcript.replay(history);
         self.usage = usage;
+        self.context_input = context_input;
         self
     }
 
@@ -250,6 +261,12 @@ impl App {
     /// What this session has spent so far.
     pub fn usage(&self) -> Usage {
         self.usage
+    }
+
+    /// Input tokens of the most recent model call: how full the context
+    /// window is right now, not what the session has cumulatively spent.
+    pub fn context_input(&self) -> u64 {
+        self.context_input
     }
 
     /// How long the current turn has been running, or how long the last one
@@ -447,7 +464,10 @@ impl App {
                     )));
                 }
             }
-            Update::TokensUsed(usage) => self.usage.add(usage),
+            Update::TokensUsed(usage) => {
+                self.usage.add(usage);
+                self.context_input = usage.input_tokens;
+            }
             Update::PermissionRequested { id, call, reason } => {
                 self.turn = Turn::AwaitingPermission;
                 self.transcript.request_permission(id, &call, reason);
@@ -470,6 +490,7 @@ impl App {
                 self.transcript = Transcript::default();
                 self.scroll.follow();
                 self.usage = Usage::default();
+                self.context_input = 0;
             }
         }
     }

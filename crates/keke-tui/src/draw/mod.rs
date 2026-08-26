@@ -5,6 +5,7 @@ pub(crate) mod menu;
 pub(crate) mod picker;
 pub(crate) mod status;
 pub(crate) mod transcript;
+pub(crate) mod turn_status;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -64,12 +65,16 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // needs an `@` with no preceding word character), so they share
             // one row of layout.
             Constraint::Length(menu::rows(app).max(file_search::rows(app))),
+            // The turn-status row appears above the composer only while a
+            // turn runs, and collapses to nothing when idle.
+            Constraint::Length(turn_status::rows(app)),
             Constraint::Length(input::rows(app)),
             Constraint::Length(1),
         ])
         .split(frame.area());
 
-    let (header, body, menu, composer, footer) = (areas[0], areas[1], areas[2], areas[3], areas[4]);
+    let (header, body, menu, turn, composer, footer) =
+        (areas[0], areas[1], areas[2], areas[3], areas[4], areas[5]);
 
     let rendered = transcript::render(
         app.transcript.cells(),
@@ -121,6 +126,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     menu::draw(frame, menu, app);
     file_search::draw(frame, menu, app);
     input::draw(frame, composer, app);
+    turn_status::draw(frame, turn, app);
     header::draw(frame, header, app);
     status::draw(frame, footer, app);
     // Last: the overlay holds the keyboard, so nothing may be drawn over it.

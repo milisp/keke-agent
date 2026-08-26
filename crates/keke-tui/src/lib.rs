@@ -81,6 +81,10 @@ pub struct Models {
 pub struct Resumed {
     pub history: Vec<keke_protocol::Message>,
     pub usage: keke_protocol::Usage,
+    /// Input tokens of the session's last model step: how full the context
+    /// window is on resume. The additive `usage` cannot say this, because
+    /// each request resends the whole conversation.
+    pub context_input: u64,
 }
 
 /// The values the session was configured with, plus where to write them back
@@ -120,7 +124,7 @@ pub async fn run(
         .with_prompt_history(history)
         .with_config_home(defaults.config_home);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {
-        app = app.with_history(&resumed.history, resumed.usage);
+        app = app.with_history(&resumed.history, resumed.usage, resumed.context_input);
     }
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no

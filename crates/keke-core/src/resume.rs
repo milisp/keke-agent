@@ -92,6 +92,11 @@ pub struct ResumedSession {
     pub history: Vec<Message>,
     /// What the session has spent so far, summed over its turns.
     pub usage: Usage,
+    /// Input tokens of the last logged model step. Each request resends the
+    /// whole conversation, so a step's `input_tokens` is the context size, not
+    /// an increment — this is how full the window is on resume. Distinct from
+    /// `usage`, whose additive inputs answer "what did it cost", not "how full".
+    pub context_input: u64,
     pub cwd: Option<String>,
     /// The model that answered the last logged step, if the log named one.
     /// Falls back to `SessionStart`'s model when no step did — a log written
@@ -223,6 +228,7 @@ pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, Rol
         approval_policy: approval_policy_from_log(&events),
         history: history_from_log(&events),
         usage: usage_from_log(&events),
+        context_input: context_input_from_log(&events),
         path,
     })
 }
@@ -409,6 +415,27 @@ pub fn usage_from_log(events: &[SessionEvent]) -> Usage {
         }
     }
     total
+}
+
+/// The latest request's context size, which the summed `TurnEnd` figures
+/// cannot say. Prefers the last single step; some providers report nothing per
+/// step and only account at turn end, in which case that turn's figure is the
+/// best on record — a coarse sum of the turn's requests beats reporting zero.
+#[must_use]
+pub(crate) fn context_input_from_log(events: &[SessionEvent]) -> u64 {
+    let mut fallback = 0;
+    for event in events.iter().rev() {
+        match event {
+            SessionEvent::ModelResponse { usage, .. } if usage.input_tokens > 0 => {
+                return usage.input_tokens;
+            }
+            SessionEvent::TurnEnd { usage, .. } if usage.input_tokens > 0 => {
+                fallback = usage.input_tokens;
+            }
+            _ => {}
+        }
+    }
+    fallback
 }
 
 fn one_line(text: &str) -> String {
@@ -665,6 +692,50 @@ mod tests {
             approval_policy: None,
         }];
         assert_eq!(approval_policy_from_log(&events), None);
+    }
+
+    /// The summed turn figures answer "what did it cost"; the context window
+    /// question needs the last single step, whose input is the whole context.
+    #[test]
+    fn the_context_figure_is_the_last_step_not_the_sum() {
+        let step = Usage {
+            input_tokens: 254_935,
+            output_tokens: 1_188,
+            ..Usage::default()
+        };
+        let earlier = Usage {
+            input_tokens: 900_000,
+            ..Usage::default()
+        };
+        let events = vec![
+            SessionEvent::TurnEnd {
+                turn: TurnId::new(),
+                stop_reason: StopReason::EndTurn,
+                usage: earlier,
+            },
+            SessionEvent::ModelResponse {
+                turn: TurnId::new(),
+                message: Message::assistant("latest"),
+                stop_reason: StopReason::EndTurn,
+                usage: step,
+            },
+            SessionEvent::TurnEnd {
+                turn: TurnId::new(),
+                stop_reason: StopReason::Cancelled,
+                usage: step,
+            },
+        ];
+        assert_eq!(context_input_from_log(&events), 254_935);
+        assert_eq!(usage_from_log(&events).input_tokens, 1_154_935);
+
+        // A provider that accounts only at turn end still gets a figure.
+        let silent = [SessionEvent::TurnEnd {
+            turn: TurnId::new(),
+            stop_reason: StopReason::Cancelled,
+            usage: step,
+        }];
+        assert_eq!(context_input_from_log(&silent), 254_935);
+        assert_eq!(context_input_from_log(&[]), 0);
     }
 
     #[test]

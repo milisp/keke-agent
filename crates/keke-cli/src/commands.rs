@@ -793,6 +793,7 @@ async fn resume(
     let seed = keke_tui::Resumed {
         history: resumed.history.clone(),
         usage: resumed.usage,
+        context_input: resumed.context_input,
     };
     tui(
         config,
