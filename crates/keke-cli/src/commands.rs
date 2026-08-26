@@ -47,6 +47,15 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     let model_explicit = cli.model.is_some();
     let effort_explicit = cli.reasoning_effort.is_some();
     if let Some(provider) = cli.provider {
+        // A `model` left over from config.toml names a model on whatever route
+        // was last used, not this one — sending it to a different provider is
+        // a combination no run ever chose. Dropping it lets `session_builder`
+        // fall through to the new route's declared `default_model`, or its
+        // model list, the same as a bare `keke --provider <x>` with no prior
+        // config should behave.
+        if provider != config.model.provider {
+            config.model.model.clear();
+        }
         config.model.provider = provider;
     }
     if let Some(model) = cli.model {
@@ -261,13 +270,21 @@ async fn session_builder(
     // asked what it serves rather than a constant being guessed at. A vendor
     // that publishes no list leaves nothing to fall back on, and saying so
     // here beats sending an empty model id and reading the vendor's rejection.
+    // Before asking the vendor, honor what this deployment already decided:
+    // a declared provider's `default_model` is the person's own answer to "what
+    // should this route serve", so it beats whatever heads the model list.
     let model = match config.model.model.trim() {
-        "" => match provider.list_models().await {
-            Ok(models) if !models.is_empty() => models[0].id.clone(),
-            Ok(_) => bail!(
-                "no model set and `{route}` publishes no model list — set `model` in config.toml or pass --model"
-            ),
-            Err(error) => bail!("no model set and `{route}` could not be asked for one: {error}"),
+        "" => match declared_default_model(config, &route) {
+            Some(model) => model,
+            None => match provider.list_models().await {
+                Ok(models) if !models.is_empty() => models[0].id.clone(),
+                Ok(_) => bail!(
+                    "no model set and `{route}` publishes no model list — set `model` in config.toml or pass --model"
+                ),
+                Err(error) => {
+                    bail!("no model set and `{route}` could not be asked for one: {error}")
+                }
+            },
         },
         chosen => chosen.to_string(),
     };
@@ -850,6 +867,7 @@ async fn tui(
             config_home: config.home.home.clone(),
         },
         keke_tui::Models {
+            provider: config.model.provider.clone(),
             current: opened.model,
             available: models,
         },
@@ -1609,4 +1627,65 @@ fn update_plugins(
         println!("nothing to update");
     }
     Ok(())
+}
+
+/// The model a declared provider says it serves when nothing else chose one.
+///
+/// `[providers.<route>] default_model` is this deployment's own answer to that
+/// question — first_run asks for it and stores it — so it outranks whatever
+/// happens to head the vendor's model list.
+fn declared_default_model(config: &Config, route: &str) -> Option<String> {
+    config
+        .providers
+        .iter()
+        .find(|declared| declared.route == route)
+        .and_then(|declared| declared.default_model.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(route: &str, default_model: Option<&str>) -> Config {
+        let layer = keke_config::ConfigLayer::parse(
+            keke_config::LayerSource::Inline("test".to_string()),
+            &format!(
+                "[providers.{route}]\nbase_url = \"https://gw.example/v1\"\n{}",
+                match default_model {
+                    Some(model) => format!("default_model = \"{model}\"\n"),
+                    None => String::new(),
+                }
+            ),
+        )
+        .expect("parses");
+        Config::from_layers(
+            HomeLayout {
+                home: keke_paths::AbsPath::new("/home").expect("abs"),
+                workspace_root: keke_paths::AbsPath::new("/ws").expect("abs"),
+            },
+            &[layer],
+        )
+        .expect("merges")
+    }
+
+    #[test]
+    fn a_declared_providers_default_model_is_found_by_route() {
+        let config = config_with("openrouter", Some("anthropic/claude-sonnet-4"));
+        assert_eq!(
+            declared_default_model(&config, "openrouter").as_deref(),
+            Some("anthropic/claude-sonnet-4")
+        );
+    }
+
+    #[test]
+    fn an_undeclared_or_unspecified_route_has_no_default() {
+        assert_eq!(
+            declared_default_model(&config_with("openrouter", None), "openrouter"),
+            None
+        );
+        assert_eq!(
+            declared_default_model(&config_with("openrouter", Some("m/a")), "nvidia"),
+            None
+        );
+    }
 }

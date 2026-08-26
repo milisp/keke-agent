@@ -68,6 +68,12 @@ pub use transcript::Transcript;
 /// list without a current one has nothing to mark.
 #[derive(Debug, Default)]
 pub struct Models {
+    /// The route serving `current`. Held alongside it because `/model` can
+    /// only switch within this route, so persisting the model means
+    /// persisting the pair — a model id alone in config.toml would be read
+    /// next launch with whatever provider the last config layer named, and
+    /// that pair may never have existed.
+    pub provider: String,
     pub current: String,
     /// Empty when the provider could not be asked and had nothing to fall back
     /// on. The surface then offers no choice rather than a wrong one.
@@ -120,7 +126,7 @@ pub async fn run(
         .with_commands(commands)
         .with_approval_policy(defaults.approval)
         .with_reasoning_effort(defaults.effort)
-        .with_models(models.current, models.available)
+        .with_models(models.provider, models.current, models.available)
         .with_prompt_history(history)
         .with_config_home(defaults.config_home);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {

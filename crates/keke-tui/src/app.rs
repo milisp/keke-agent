@@ -79,6 +79,9 @@ pub struct App {
     /// nothing to fall back on; `/model` then says so rather than showing an
     /// empty menu.
     model: String,
+    /// The route serving `model`. Persisted with it so config.toml always
+    /// holds a pair that existed.
+    provider: Option<String>,
     models: Vec<keke_provider_api::ModelInfo>,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
@@ -152,6 +155,7 @@ impl App {
                 approval: ApprovalPolicy::default(),
                 effort: None,
                 model: String::new(),
+                provider: None,
                 models: Vec::new(),
                 turn: Turn::Idle,
                 started: None,
@@ -223,9 +227,11 @@ impl App {
     #[must_use]
     pub fn with_models(
         mut self,
+        provider: impl Into<String>,
         model: impl Into<String>,
         models: Vec<keke_provider_api::ModelInfo>,
     ) -> Self {
+        self.provider = Some(provider.into());
         self.model = model.into();
         self.models = models;
         self
@@ -779,9 +785,16 @@ impl App {
         }
         self.model = wanted.to_string();
         self.conversation.set_model(wanted.to_string());
-        self.persist_override(|file| {
-            file.model = Some(wanted.to_string());
-        });
+        // The pair or nothing: a model written under the previous launch's
+        // provider is a combination no run ever used, and it fails on the next
+        // bare `keke`.
+        if let Some(provider) = &self.provider {
+            let provider = provider.clone();
+            self.persist_override(move |file| {
+                file.provider = Some(provider);
+                file.model = Some(wanted.to_string());
+            });
+        }
 
         // A level the new model does not take would be sent anyway and
         // rejected, so it is dropped here where the cause is still on screen.

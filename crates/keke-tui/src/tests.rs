@@ -1262,6 +1262,7 @@ fn app_with_models() -> (
     let (app, scripted, updates, local) = app_with_commands(Vec::new(), Vec::new());
     (
         app.with_models(
+            "test-provider",
             "gpt-5.6-sol",
             vec![
                 served(
@@ -1367,7 +1368,7 @@ async fn a_picker_matching_nothing_accepts_nothing() {
 #[tokio::test]
 async fn the_model_command_without_a_list_says_so() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_models("some-model", Vec::new());
+    let mut app = app.with_models("test-provider", "some-model", Vec::new());
 
     type_text(&mut app, "/model");
     app.handle_key(key(KeyCode::Enter));
