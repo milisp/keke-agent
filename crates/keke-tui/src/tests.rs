@@ -1249,24 +1249,101 @@ fn app_with_models() -> (
     )
 }
 
-/// A person asking what they can switch to must get names and ladders, not a
-/// column of slugs they have to recognise.
+/// A person asking what they can switch to gets a list that stays put and can
+/// be chosen from, not a paragraph that scrolls away with the conversation.
 #[tokio::test]
-async fn the_model_command_lists_what_the_provider_serves() {
+async fn the_model_command_opens_a_picker_over_what_the_provider_serves() {
     let (mut app, _scripted, _updates, _local) = app_with_models();
 
     type_text(&mut app, "/model");
     app.handle_key(key(KeyCode::Enter));
 
+    assert!(app.model_picker().is_some());
+    let ids: Vec<&str> = app
+        .picker_models()
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.2"]);
+    // It opens on the model in force, not at the top: the commonest reason to
+    // look is to see where you are.
+    assert_eq!(app.picker_selected(), 0);
+    assert!(app.transcript.is_empty());
+}
+
+/// Typing narrows the list, and enter switches to what is highlighted — the
+/// whole point of the overlay is not having to retype an id you just read.
+#[tokio::test]
+async fn the_picker_filters_as_you_type_and_switches_on_enter() {
+    let (mut app, scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/model");
+    app.handle_key(key(KeyCode::Enter));
+    for ch in "5.2".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+
+    let ids: Vec<&str> = app
+        .picker_models()
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["gpt-5.2"]);
+
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.model_picker().is_none());
+    assert_eq!(app.model(), "gpt-5.2");
+    assert_eq!(scripted.models(), vec!["gpt-5.2".to_string()]);
+}
+
+/// Esc leaves the session exactly as it was. A picker that switched on the way
+/// out would make looking at the list a change.
+#[tokio::test]
+async fn escaping_the_picker_switches_nothing() {
+    let (mut app, scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/model");
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Esc));
+
+    assert!(app.model_picker().is_none());
+    assert_eq!(app.model(), "gpt-5.6-sol");
+    assert!(scripted.models().is_empty());
+}
+
+/// A filter matching nothing has no row under the cursor, so enter means
+/// nothing — the alternative is switching to whatever happened to be last.
+#[tokio::test]
+async fn a_picker_matching_nothing_accepts_nothing() {
+    let (mut app, scripted, _updates, _local) = app_with_models();
+
+    type_text(&mut app, "/model");
+    app.handle_key(key(KeyCode::Enter));
+    for ch in "zzz".chars() {
+        app.handle_key(key(KeyCode::Char(ch)));
+    }
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(app.model_picker().is_some());
+    assert!(scripted.models().is_empty());
+}
+
+/// A provider that published no list leaves nothing to open, and says so
+/// rather than showing an empty box.
+#[tokio::test]
+async fn the_model_command_without_a_list_says_so() {
+    let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    let mut app = app.with_models("some-model", Vec::new());
+
+    type_text(&mut app, "/model");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(app.model_picker().is_none());
     let Some(Cell::Notice(text)) = app.transcript.last() else {
         panic!("expected a notice, got {:?}", app.transcript.last());
     };
-    assert!(text.contains("GPT-5.6-Sol"), "{text}");
-    assert!(text.contains("gpt-5.6-sol"), "{text}");
-    assert!(text.contains("272k context"), "{text}");
-    assert!(text.contains("effort: low, ultra"), "{text}");
-    // The one answering is marked, or the list does not say where you are.
-    assert!(text.contains("* GPT-5.6-Sol"), "{text}");
+    assert!(text.contains("published no model list"), "{text}");
 }
 
 #[tokio::test]

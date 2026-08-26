@@ -14,6 +14,7 @@ mod history;
 mod input;
 mod keys;
 mod login;
+mod picker;
 mod ported;
 mod scroll;
 mod selection;

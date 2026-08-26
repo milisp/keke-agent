@@ -257,11 +257,26 @@ async fn session_builder(
         bail!("no {env_key} stored for `{route}`; export it, or set it in the client's login");
     }
 
+    // Nothing chose a model — no flag, no config layer — so the provider is
+    // asked what it serves rather than a constant being guessed at. A vendor
+    // that publishes no list leaves nothing to fall back on, and saying so
+    // here beats sending an empty model id and reading the vendor's rejection.
+    let model = match config.model.model.trim() {
+        "" => match provider.list_models().await {
+            Ok(models) if !models.is_empty() => models[0].id.clone(),
+            Ok(_) => bail!(
+                "no model set and `{route}` publishes no model list — set `model` in config.toml or pass --model"
+            ),
+            Err(error) => bail!("no model set and `{route}` could not be asked for one: {error}"),
+        },
+        chosen => chosen.to_string(),
+    };
+
     let mut builder = SessionBuilder::new()
         .config(SessionConfig {
             model: ModelSelection {
                 provider: route,
-                model: config.model.model.clone(),
+                model,
             },
             home: HomeLayout {
                 home: config.home.home.clone(),

@@ -89,7 +89,7 @@ impl ModelProvider for DeclaredProvider {
     }
 
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
-        Box::pin(async move { self.client.list_models().await })
+        Box::pin(async move { self.client.list_models(self.api).await })
     }
 }
 

@@ -30,8 +30,8 @@ pub enum Builtin {
     Quit,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
-    /// Lists what the session's provider serves, or switches to the model
-    /// named as an argument.
+    /// Opens the model picker, or switches straight to the model named as an
+    /// argument.
     Model,
     /// Puts the last reply on the system clipboard.
     Copy,
@@ -153,7 +153,7 @@ fn builtins() -> Vec<SlashCommand> {
         (
             Builtin::Model,
             "model",
-            "list the models this provider serves, or name one to switch to it",
+            "pick a model from this provider, or name one to switch to it",
         ),
         (
             Builtin::Copy,

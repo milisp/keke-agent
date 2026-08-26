@@ -49,6 +49,14 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
+        // The model overlay owns the keyboard while it is up, letters
+        // included: it filters as you type, and a keystroke that went into the
+        // composer behind it would be invisible until the overlay closed.
+        if self.model_picker().is_some() && !control {
+            self.handle_picker_key(key);
+            return;
+        }
+
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
             KeyCode::Esc if self.turn().is_busy() => self.interrupt(),
@@ -203,6 +211,19 @@ impl App {
                     self.toggle_at(mouse.row);
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// While the model overlay is up, these keys drive it.
+    fn handle_picker_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.move_picker_selection(-1),
+            KeyCode::Down | KeyCode::Tab => self.move_picker_selection(1),
+            KeyCode::Enter => self.accept_picker(),
+            KeyCode::Esc => self.close_picker(),
+            KeyCode::Backspace => self.backspace_in_picker(),
+            KeyCode::Char(ch) => self.type_into_picker(ch),
             _ => {}
         }
     }

@@ -1,6 +1,7 @@
 pub(crate) mod file_search;
 pub(crate) mod input;
 pub(crate) mod menu;
+pub(crate) mod picker;
 pub(crate) mod status;
 pub(crate) mod transcript;
 
@@ -119,4 +120,6 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     file_search::draw(frame, menu, app);
     input::draw(frame, composer, app);
     status::draw(frame, footer, app);
+    // Last: the overlay holds the keyboard, so nothing may be drawn over it.
+    picker::draw(frame, app);
 }

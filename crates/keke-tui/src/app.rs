@@ -67,6 +67,9 @@ pub struct App {
     /// every keystroke, so typing one more letter does not jump the highlight
     /// back to the top of a list the person was already moving through.
     completion: usize,
+    /// The model overlay, while it is open. `None` is the ordinary state: the
+    /// composer has the keyboard.
+    picker: Option<crate::picker::ModelPicker>,
     approval: ApprovalPolicy,
     /// How hard the model is asked to think. `None` is the vendor's own
     /// default, which is a state of its own and not the lowest rung.
@@ -141,6 +144,7 @@ impl App {
                 ),
                 history: PromptHistory::default(),
                 completion: 0,
+                picker: None,
                 approval: ApprovalPolicy::default(),
                 effort: None,
                 model: String::new(),
@@ -736,7 +740,86 @@ impl App {
         }
     }
 
-    /// What `/model` prints with no argument.
+    /// Open the model overlay, or say why there is nothing to open.
+    ///
+    /// A provider that published no list is not an empty menu: it is a session
+    /// where keke has no grounds to refuse any name, so the person is told to
+    /// type one rather than shown a box with nothing in it.
+    pub fn open_model_picker(&mut self) {
+        if self.models.is_empty() {
+            self.transcript.push(Cell::Notice(self.model_list()));
+            return;
+        }
+        let mut picker = crate::picker::ModelPicker::default();
+        if let Some(at) = self.models.iter().position(|model| model.id == self.model) {
+            picker.move_selection(at as isize, self.models.len());
+        }
+        self.picker = Some(picker);
+    }
+
+    #[must_use]
+    pub fn model_picker(&self) -> Option<&crate::picker::ModelPicker> {
+        self.picker.as_ref()
+    }
+
+    /// The rows the overlay is showing this frame, after its filter.
+    #[must_use]
+    pub fn picker_models(&self) -> Vec<&keke_provider_api::ModelInfo> {
+        let Some(picker) = &self.picker else {
+            return Vec::new();
+        };
+        self.models
+            .iter()
+            .filter(|model| picker.matches(model))
+            .collect()
+    }
+
+    /// Which row of [`App::picker_models`] is highlighted.
+    #[must_use]
+    pub fn picker_selected(&self) -> usize {
+        let count = self.picker_models().len();
+        self.picker
+            .as_ref()
+            .map_or(0, |picker| picker.selected(count))
+    }
+
+    pub(crate) fn move_picker_selection(&mut self, delta: isize) {
+        let count = self.picker_models().len();
+        if let Some(picker) = &mut self.picker {
+            picker.move_selection(delta, count);
+        }
+    }
+
+    pub(crate) fn type_into_picker(&mut self, ch: char) {
+        if let Some(picker) = &mut self.picker {
+            picker.push(ch);
+        }
+    }
+
+    pub(crate) fn backspace_in_picker(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.backspace();
+        }
+    }
+
+    /// Switch to the highlighted model and close. A filter that matches
+    /// nothing accepts nothing — there is no row under the cursor to mean.
+    pub(crate) fn accept_picker(&mut self) {
+        let wanted = self
+            .picker_models()
+            .get(self.picker_selected())
+            .map(|model| model.id.clone());
+        if let Some(wanted) = wanted {
+            self.close_picker();
+            self.set_model_aloud(&wanted);
+        }
+    }
+
+    pub(crate) fn close_picker(&mut self) {
+        self.picker = None;
+    }
+
+    /// What `/model` says when there is no list to open.
     fn model_list(&self) -> String {
         if self.models.is_empty() {
             return format!(
@@ -806,8 +889,7 @@ impl App {
             SlashAction::Builtin(Builtin::Model) => {
                 let wanted = arguments.trim().to_string();
                 if wanted.is_empty() {
-                    let text = self.model_list();
-                    self.transcript.push(Cell::Notice(text));
+                    self.open_model_picker();
                 } else {
                     self.set_model_aloud(&wanted);
                 }

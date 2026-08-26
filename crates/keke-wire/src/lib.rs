@@ -188,8 +188,8 @@ impl WireClient {
     /// list means "this provider cannot enumerate", and returning it for a
     /// rejected key would present an authentication problem as an account with
     /// no models.
-    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let body = self.fetch("/models").await?;
+    pub async fn list_models(&self, api: WireApi) -> Result<Vec<ModelInfo>, ProviderError> {
+        let body = self.fetch_with(api, "/models").await?;
         let listing: ModelListing = serde_json::from_str(&body)
             .map_err(|error| ProviderError::Protocol(format!("undecodable model list: {error}")))?;
         Ok(listing.data.into_iter().map(ModelInfo::from).collect())
@@ -203,7 +203,18 @@ impl WireClient {
     /// that built its own HTTP client to read one JSON document would drop all
     /// three.
     pub async fn fetch(&self, path: &str) -> Result<String, ProviderError> {
-        let builder = self.http.get(self.url(path));
+        self.fetch_with(WireApi::ChatCompletions, path).await
+    }
+
+    /// [`WireClient::fetch`] for an endpoint whose wire format asks for headers
+    /// of its own on every request, `GET`s included: Anthropic rejects a
+    /// `/models` call that does not name a version, so a listing that omitted
+    /// it would look like a vendor that publishes none.
+    pub async fn fetch_with(&self, api: WireApi, path: &str) -> Result<String, ProviderError> {
+        let mut builder = self.http.get(self.url(path));
+        if matches!(api, WireApi::Messages) {
+            builder = builder.header("anthropic-version", messages::ANTHROPIC_VERSION);
+        }
         let response = self
             .authorize(builder)
             .await?

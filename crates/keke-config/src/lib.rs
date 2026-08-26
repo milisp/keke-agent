@@ -128,8 +128,14 @@ pub struct PluginsFile {
 ///
 /// These are defaults, not policy: every one of them is overridable from a
 /// config file, which is what invariant 9 in `AGENTS.md` requires.
+///
+/// There is deliberately no default *model*. A model id compiled in here is a
+/// guess about a vendor's catalog on the day the binary was built, and it goes
+/// stale silently: the name keeps being sent long after the vendor renamed or
+/// retired it, and what a person sees is a rejected request rather than a
+/// wrong constant. Unset means "ask the provider", which the composition root
+/// does through `/models` before a session opens.
 const DEFAULT_PROVIDER: &str = "anthropic";
-const DEFAULT_MODEL: &str = "claude-opus-5";
 
 impl Config {
     /// Load and merge every layer for `workspace_root`.
@@ -279,7 +285,9 @@ impl Config {
                 provider: merged
                     .provider
                     .unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
-                model: merged.model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+                // Empty is "not chosen yet", resolved from what the provider
+                // serves rather than from a constant that can only rot.
+                model: merged.model.unwrap_or_default(),
             },
             approval_policy: merged.approval_policy.unwrap_or_default(),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
@@ -536,7 +544,7 @@ mod tests {
         let home = AbsPath::new(dir.path()).expect("absolute");
         std::fs::write(
             dir.path().join("config.toml"),
-            "provider = \"anthropic\"\nmodel = \"claude-opus-5\"\n",
+            "provider = \"grok\"\nmodel = \"grok-4.6\"\n",
         )
         .expect("seed file");
 
@@ -547,8 +555,8 @@ mod tests {
 
         let written = std::fs::read_to_string(dir.path().join("config.toml")).expect("read back");
         let file: ConfigFile = toml::from_str(&written).expect("parses");
-        assert_eq!(file.provider.as_deref(), Some("anthropic"));
-        assert_eq!(file.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(file.provider.as_deref(), Some("grok"));
+        assert_eq!(file.model.as_deref(), Some("grok-4.6"));
         assert_eq!(file.reasoning_effort.as_deref(), Some("high"));
     }
 

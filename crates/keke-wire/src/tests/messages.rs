@@ -341,6 +341,24 @@ async fn the_api_version_header_is_sent() {
     assert_ends_with_one_done(&collect_ok(&client, API).await);
 }
 
+/// The listing is a request on this wire like any other: without the version
+/// header Anthropic rejects it, and a rejected `/models` reads on screen as a
+/// vendor that publishes nothing to choose between.
+#[tokio::test]
+async fn the_model_listing_carries_the_api_version_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("anthropic-version", "2023-06-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"data":[{"id":"claude-x"}]}"#))
+        .mount(&server)
+        .await;
+    let (client, _auth) = client_over(&server);
+
+    let models = client.list_models(API).await.expect("lists");
+    assert_eq!(models[0].id, "claude-x");
+}
+
 #[tokio::test]
 async fn a_request_without_a_token_budget_still_names_one() {
     let server = serve(sse(&stop("end_turn"))).await;
