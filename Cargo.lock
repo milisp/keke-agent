@@ -1700,6 +1700,7 @@ dependencies = [
  "keke-provider-api",
  "keke-provider-codex",
  "keke-provider-grok",
+ "keke-provider-ollama",
  "keke-skills",
  "keke-test-support",
  "keke-tools",
@@ -1913,6 +1914,17 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "keke-provider-ollama"
+version = "0.1.4"
+dependencies = [
+ "keke-auth-api",
+ "keke-provider-api",
+ "keke-wire",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

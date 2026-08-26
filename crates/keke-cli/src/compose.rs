@@ -20,6 +20,7 @@ use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_provider_api::ArcProvider;
 use keke_provider_api::ProviderRegistry;
 use keke_provider_api::WireApi;
+use keke_provider_ollama::OllamaProvider;
 
 /// Where a ChatGPT subscription's tokens are accepted. An API key is not valid
 /// here, and a subscription token is not valid at the public API — so the base
@@ -191,6 +192,18 @@ impl Composed {
                 )),
             ))
             .context("registering the anthropic provider")?;
+
+        // Ollama: local endpoint, no auth required by default, ChatCompletions wire.
+        providers
+            .register(Arc::new(OllamaProvider::new(
+                Arc::new(crate::api_key::NoAuth),
+                keke_provider_ollama::Endpoint {
+                    base_url: base_url_override("OLLAMA_BASE_URL")
+                        .unwrap_or_else(|| keke_provider_ollama::DEFAULT_BASE_URL.to_string()),
+                    wire_api: WireApi::ChatCompletions,
+                },
+            )) as ArcProvider)
+            .context("registering the ollama provider")?;
 
         for declaration in declared {
             let provider = crate::declared::provider_for(declaration, &credentials)?;
