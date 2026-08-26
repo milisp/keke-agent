@@ -10,6 +10,7 @@ use std::sync::Arc;
 use keke_auth_api::AuthProvider;
 use keke_auth_api::CredentialRef;
 use keke_auth_api::CredentialStore;
+use keke_catalog::CatalogCache;
 use keke_config_types::DeclaredWireApi;
 use keke_config_types::ProviderDeclaration;
 use keke_provider_api::ArcProvider;
@@ -74,6 +75,9 @@ struct DeclaredProvider {
     info: ProviderInfo,
     api: WireApi,
     client: WireClient,
+    /// `None` disables caching, which is what a surface with no home
+    /// directory — a test — gets.
+    cache: Option<CatalogCache>,
 }
 
 impl ModelProvider for DeclaredProvider {
@@ -89,7 +93,33 @@ impl ModelProvider for DeclaredProvider {
     }
 
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
-        Box::pin(async move { self.client.list_models(self.api).await })
+        Box::pin(async move {
+            let route = self.info.route.as_str();
+            let cached = self.cache.as_ref().and_then(|cache| cache.load(route));
+            if let Some(cached) = &cached
+                && cached.fresh
+            {
+                return Ok(cached.models.clone());
+            }
+            match self.client.list_models(self.api).await {
+                // A remote gateway can answer slowly or not at all, and this
+                // sits on the path of session start — so what it said last
+                // time is shown while the ask is retried next turn, rather
+                // than the interface waiting on it again.
+                Ok(models) if !models.is_empty() => {
+                    if let Some(cache) = &self.cache {
+                        cache.store(route, &models);
+                    }
+                    Ok(models)
+                }
+                listing => {
+                    if let Err(error) = &listing {
+                        tracing::debug!(%route, %error, "could not list models; using what is on hand");
+                    }
+                    Ok(cached.map(|cached| cached.models).unwrap_or_default())
+                }
+            }
+        })
     }
 }
 
@@ -107,12 +137,27 @@ pub(crate) fn wire_provider_with(
     auth: Arc<dyn AuthProvider>,
     sampling_is_fixed: bool,
 ) -> ArcProvider {
+    wire_provider_cached(info, auth, sampling_is_fixed, None)
+}
+
+/// [`wire_provider_with`] with a model-list cache under keke's home.
+pub(crate) fn wire_provider_cached(
+    info: ProviderInfo,
+    auth: Arc<dyn AuthProvider>,
+    sampling_is_fixed: bool,
+    cache: Option<CatalogCache>,
+) -> ArcProvider {
     let api = info.wire_api;
     let mut client = WireClient::new(info.base_url.clone(), auth);
     if sampling_is_fixed {
         client = client.with_fixed_sampling();
     }
-    Arc::new(DeclaredProvider { info, api, client })
+    Arc::new(DeclaredProvider {
+        info,
+        api,
+        client,
+        cache,
+    })
 }
 
 /// Build a route from one declaration.
@@ -120,9 +165,10 @@ pub(crate) fn wire_provider_with(
 /// The resulting provider reports `auth_id: None`: it has no login flow, so
 /// there is nothing for `keke login` to name. Surfaces report on it through
 /// `ProviderInfo::env_key` instead — see `crate::api_key`.
-pub(crate) fn provider_for(
+pub(crate) fn provider_for_cached(
     declaration: &ProviderDeclaration,
     credentials: &Arc<dyn CredentialStore>,
+    cache: Option<CatalogCache>,
 ) -> Result<ArcProvider, DeclarationError> {
     // A declaration with no credential name names a local endpoint that wants
     // none. Demanding one here would make the commonest declared provider — an
@@ -156,7 +202,12 @@ pub(crate) fn provider_for(
     let api = info.wire_api;
     let client = WireClient::with_http_client(info.base_url.clone(), auth, http)
         .with_extra_headers(extra_headers);
-    Ok(Arc::new(DeclaredProvider { info, api, client }))
+    Ok(Arc::new(DeclaredProvider {
+        info,
+        api,
+        client,
+        cache,
+    }))
 }
 
 /// Build the `reqwest::Client` for one declaration, applying its CA

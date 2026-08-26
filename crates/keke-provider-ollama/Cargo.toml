@@ -11,7 +11,16 @@ keywords = ["llm", "ollama", "coding-agent"]
 
 [dependencies]
 keke-auth-api = { workspace = true }
+keke-catalog = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-wire = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+keke-paths = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

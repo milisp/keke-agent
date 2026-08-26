@@ -165,7 +165,7 @@ impl Composed {
                     }),
                     fixed_sampling: codex_subscription,
                 },
-                Some(catalog),
+                Some(catalog.clone()),
             )) as ArcProvider)
             .context("registering the codex provider")?;
 
@@ -202,11 +202,16 @@ impl Composed {
                         .unwrap_or_else(|| keke_provider_ollama::DEFAULT_BASE_URL.to_string()),
                     wire_api: WireApi::ChatCompletions,
                 },
+                Some(catalog.clone()),
             )) as ArcProvider)
             .context("registering the ollama provider")?;
 
         for declaration in declared {
-            let provider = crate::declared::provider_for(declaration, &credentials)?;
+            let provider = crate::declared::provider_for_cached(
+                declaration,
+                &credentials,
+                Some(catalog.clone()),
+            )?;
             providers.register(provider).with_context(|| {
                 format!("registering declared provider `{}`", declaration.route)
             })?;

@@ -6,7 +6,7 @@
 //! Ollama-specific fields (parameter_size, quantization_level) if needed.
 
 #[allow(dead_code)]
-pub fn parse(body: &str) -> Result<Vec<keke_provider_api::ModelInfo>, serde_json::Error> {
+pub(crate) fn parse(body: &str) -> Result<Vec<keke_provider_api::ModelInfo>, serde_json::Error> {
     #[derive(serde::Deserialize)]
     struct OllamaModel {
         name: String,

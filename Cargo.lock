@@ -1921,10 +1921,14 @@ name = "keke-provider-ollama"
 version = "0.1.4"
 dependencies = [
  "keke-auth-api",
+ "keke-catalog",
+ "keke-paths",
  "keke-provider-api",
  "keke-wire",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
