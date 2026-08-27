@@ -38,6 +38,7 @@ use crate::Opened;
 use crate::PermissionAnswer;
 use crate::PermissionId;
 use crate::Update;
+use crate::conversation::SubagentView;
 
 /// One request awaiting a person.
 struct Pending {
@@ -197,6 +198,21 @@ pub async fn local(
     approvals: Arc<Approvals>,
     requests: ApprovalRequests,
 ) -> Result<Opened, CoreError> {
+    local_with(builder, approvals, requests, None).await
+}
+
+/// [`local`], plus a stream of subagent snapshots to relay to the surface.
+///
+/// Taken as a receiver rather than as a handle to whatever produces it: this
+/// crate does not know that subagents exist beyond the shape of a row, which is
+/// what keeps the same `Update` stream honest when the surface is across a pipe
+/// and there is nothing in this process to poll.
+pub async fn local_with(
+    builder: SessionBuilder,
+    approvals: Arc<Approvals>,
+    requests: ApprovalRequests,
+    subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
+) -> Result<Opened, CoreError> {
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
     let with_updates = builder.updates(turn_tx);
     // Cloned before the resume this build may carry is consumed: `new_session`
@@ -214,7 +230,7 @@ pub async fn local(
     let model = session.model().to_string();
 
     let (updates, update_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(publish(turn_rx, requests, updates.clone()));
+    tokio::spawn(publish(turn_rx, requests, subagents, updates.clone()));
 
     let (commands, mut inbox) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -291,8 +307,20 @@ pub async fn local(
 async fn publish(
     mut turns: UnboundedReceiver<TurnUpdate>,
     ApprovalRequests(mut requests): ApprovalRequests,
+    subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
     updates: UnboundedSender<Update>,
 ) {
+    // A composition with no subagent host gets a channel whose sender is held
+    // here for the life of the loop: its `recv` is then pending forever, which
+    // is what the select arm needs. A dropped sender would resolve immediately
+    // and spin.
+    let (_never, mut subagents) = match subagents {
+        Some(rx) => (None, rx),
+        None => {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), rx)
+        }
+    };
     loop {
         let update = tokio::select! {
             biased;
@@ -304,6 +332,10 @@ async fn publish(
                 Some(Pending { id, call, reason }) => {
                     Update::PermissionRequested { id, call, reason }
                 }
+                None => continue,
+            },
+            rows = subagents.recv() => match rows {
+                Some(rows) => Update::Subagents(rows),
                 None => continue,
             },
         };

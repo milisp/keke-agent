@@ -555,6 +555,11 @@ async fn pump(
             // gives it a session with nothing in it; this is only a signal an
             // in-process surface uses to reset what it has drawn.
             Update::SessionReset => {}
+            // No ACP notification carries this yet, and inventing one would put
+            // a keke-shaped field in front of clients that cannot draw it. The
+            // work is still reported the ordinary way: the tool call that
+            // started the subagent, and its result.
+            Update::Subagents(_) => {}
         }
     }
     Ok(())

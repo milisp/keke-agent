@@ -59,6 +59,10 @@ impl App {
 
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
+            // Before the interrupt: a visible overlay owns escape, the way the
+            // model picker above does. A subagent popup is open exactly while
+            // the turn is busy, so without this it could never be closed.
+            KeyCode::Esc if self.close_subagent() => {}
             KeyCode::Esc if self.turn().is_busy() => self.interrupt(),
             KeyCode::Char('d') if control => self.quit(),
             KeyCode::Char('t') if control => self.toggle_thinking(),
@@ -190,6 +194,10 @@ impl App {
                 self.selection.clear();
                 self.scroll.scroll_down(WHEEL_LINES);
             }
+            // Answered on press rather than release: a subagent row is one
+            // line and is not selectable text, so there is no second meaning
+            // the gesture could turn out to have.
+            MouseEventKind::Down(MouseButton::Left) if self.open_subagent_at(mouse.row) => {}
             MouseEventKind::Down(MouseButton::Left)
                 if self.hit_follow_button(mouse.column, mouse.row) =>
             {

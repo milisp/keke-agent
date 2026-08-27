@@ -5,6 +5,7 @@ pub(crate) mod markdown;
 pub(crate) mod menu;
 pub(crate) mod picker;
 pub(crate) mod status;
+pub(crate) mod subagents;
 pub(crate) mod transcript;
 pub(crate) mod turn_status;
 
@@ -69,13 +70,15 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // The turn-status row appears above the composer only while a
             // turn runs, and collapses to nothing when idle.
             Constraint::Length(turn_status::rows(app)),
+            Constraint::Length(subagents::rows(app)),
             Constraint::Length(input::rows(app)),
             Constraint::Length(1),
         ])
         .split(frame.area());
 
-    let (header, body, menu, turn, composer, footer) =
-        (areas[0], areas[1], areas[2], areas[3], areas[4], areas[5]);
+    let (header, body, menu, turn, agents, composer, footer) = (
+        areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6],
+    );
 
     let rendered = transcript::render(
         app.transcript.cells(),
@@ -128,8 +131,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     file_search::draw(frame, menu, app);
     input::draw(frame, composer, app);
     turn_status::draw(frame, turn, app);
+    subagents::draw(frame, agents, app);
     header::draw(frame, header, app);
     status::draw(frame, footer, app);
     // Last: the overlay holds the keyboard, so nothing may be drawn over it.
     picker::draw(frame, app);
+    subagents::detail(frame, app);
 }
