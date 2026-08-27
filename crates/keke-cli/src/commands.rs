@@ -858,7 +858,13 @@ async fn tui(
     // trip mid-conversation. It costs at most one request, and usually none:
     // the compiled-in vendors cache what they serve between runs.
     let models = models_for(&composed, &config.model.provider).await;
-    let opened = keke_acp::local(builder, approvals, requests).await?;
+    let opened = keke_acp::local_with(
+        builder,
+        approvals,
+        requests,
+        Some(subagent_views(&composed.subagents)),
+    )
+    .await?;
     // Read only once the session has an id: a fresh session's id is minted
     // inside `session_builder`/`local`, and every recorded prompt should carry
     // the session it was actually typed in, not none at all.
@@ -893,6 +899,35 @@ async fn tui(
 ///
 /// A history that cannot be read is an empty one: somebody opening keke wants
 /// their session, not a startup failure over a convenience file.
+/// Relay the subagent host's live rows onto the surface's update stream.
+///
+/// The mapping lives here because the composition root is the only place that
+/// can see both ends: `keke-acp` does not know the engine has subagents, and
+/// `keke-subagent` must not know a surface exists.
+fn subagent_views(
+    host: &std::sync::Arc<keke_subagent::SubagentHost>,
+) -> tokio::sync::mpsc::UnboundedReceiver<Vec<keke_acp::SubagentView>> {
+    let mut rows = host.subscribe();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(rows) = rows.recv().await {
+            let views = rows
+                .into_iter()
+                .map(|row| keke_acp::SubagentView {
+                    id: row.id,
+                    task: row.task,
+                    status: row.status.map(|status| status.as_str().to_string()),
+                    input_tokens: row.input_tokens,
+                })
+                .collect();
+            if tx.send(views).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 fn prompt_history(
     home: &AbsPath,
     cwd: &std::path::Path,

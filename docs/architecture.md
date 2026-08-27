@@ -89,6 +89,15 @@ a subagent cannot start a subagent — not by a configurable depth limit but by
 construction: the host remembers which sessions it created, and a child asking
 for its tool set is answered without these tools at all.
 
+A running subagent is also drawn while it runs, and that goes through the same
+seam every other live notification does rather than around it. The host
+publishes whole snapshots of its rows; `keke-cli`, the only place that can see
+both ends, maps them to `keke_acp::SubagentView` and hands the receiver to
+`keke_acp::local_with`, which merges them into the surface's `Update` stream.
+`keke-acp` therefore does not depend on `keke-subagent`, and `keke-tui` stays
+written against `Conversation` alone — a surface across a pipe is served by the
+same code path as the in-process one.
+
 ### Tier 2 — plugins
 
 Compiled-in crates that register through tier 0 traits:

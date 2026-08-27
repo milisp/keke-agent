@@ -529,6 +529,8 @@ async fn pump(
             // gives it a session with nothing in it; this is only a signal an
             // in-process surface uses to reset what it has drawn.
             Update::SessionReset => {}
+            // See the note in `v2`: no ACP notification carries a subagent row.
+            Update::Subagents(_) => {}
         }
     }
     Ok(())

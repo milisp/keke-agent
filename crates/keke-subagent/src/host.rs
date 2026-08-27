@@ -60,6 +60,23 @@ pub struct AgentReport {
     pub session: Option<SessionId>,
 }
 
+/// What a subagent is doing right now, for a surface to draw while it runs.
+///
+/// Distinct from [`AgentReport`], which exists only once the child is done:
+/// this is the live row, and it is deliberately small enough to send on every
+/// change without the receiver having to diff anything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentProgress {
+    pub id: AgentId,
+    pub task: String,
+    /// `None` while the child is still running.
+    pub status: Option<AgentStatus>,
+    /// The child's context size: input tokens of its most recent model step.
+    /// Not a running total — each request resends the whole conversation, so
+    /// the last step's input count *is* how full the child's window is.
+    pub input_tokens: u64,
+}
+
 /// A subagent that has not been collected yet.
 ///
 /// The join handle is the whole state: a finished child's report sits in it
@@ -102,6 +119,14 @@ pub struct SubagentHost {
     /// answered with nothing, which is what makes the tree one level deep by
     /// construction rather than by a depth counter someone can raise.
     children: Mutex<HashSet<SessionId>>,
+    /// Live rows, in the order they were started. Kept beside `slots` rather
+    /// than derived from it because a slot is a join handle and a running task
+    /// cannot be asked what it has spent so far.
+    progress: Mutex<Vec<AgentProgress>>,
+    /// Surfaces watching the rows. A whole snapshot goes to each on every
+    /// change: a list this short is cheaper to resend than to reconcile, and a
+    /// receiver that missed one message would otherwise be wrong forever.
+    watchers: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Vec<AgentProgress>>>>,
 }
 
 impl SubagentHost {
@@ -114,13 +139,60 @@ impl SubagentHost {
             next: AtomicU64::new(1),
             slots: Mutex::new(HashMap::new()),
             children: Mutex::new(HashSet::new()),
+            progress: Mutex::new(Vec::new()),
+            watchers: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Watch the live rows. The current snapshot arrives immediately, so a
+    /// surface that subscribes mid-turn draws what is already running rather
+    /// than waiting for the next change.
+    #[must_use]
+    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<Vec<AgentProgress>> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = tx.send(self.progress());
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers.push(tx);
+        }
+        rx
+    }
+
+    /// The live rows, oldest first.
+    #[must_use]
+    pub fn progress(&self) -> Vec<AgentProgress> {
+        self.progress
+            .lock()
+            .map(|rows| rows.clone())
+            .unwrap_or_default()
+    }
+
+    /// Edit the rows and publish the result.
+    ///
+    /// One function so that no path can change what a surface draws without
+    /// telling it — the failure mode is a row that is finished on the inside
+    /// and still spinning on screen.
+    fn update_progress(&self, edit: impl FnOnce(&mut Vec<AgentProgress>)) {
+        let snapshot = {
+            let Ok(mut rows) = self.progress.lock() else {
+                return;
+            };
+            edit(&mut rows);
+            rows.clone()
+        };
+        if let Ok(mut watchers) = self.watchers.lock() {
+            // A closed watcher is a surface that went away; dropping it here is
+            // the only reaping this needs.
+            watchers.retain(|watcher| watcher.send(snapshot.clone()).is_ok());
         }
     }
 
     /// Supply the recipe children are built from.
     ///
     /// Pass the session builder *before* live updates are attached to it: a
-    /// child streams to no surface, it reports once at the end.
+    /// child reports to the parent's model once, at the end, and never streams
+    /// its own text into the parent's transcript. Its token accounting does go
+    /// somewhere live — into the row [`SubagentHost::subscribe`] publishes —
+    /// which is a different channel and a different audience.
     ///
     /// Ignored if a recipe is already attached, so a second composition cannot
     /// redirect the children of the first.
@@ -170,6 +242,14 @@ impl SubagentHost {
             parent_cancelled,
         ));
 
+        self.update_progress(|rows| {
+            rows.push(AgentProgress {
+                id: id.clone(),
+                task: task.clone(),
+                status: None,
+                input_tokens: 0,
+            });
+        });
         if let Ok(mut slots) = self.slots.lock() {
             slots.insert(id.clone(), Slot { task, handle });
         }
@@ -197,9 +277,15 @@ impl SubagentHost {
             .and_then(|mut slots| slots.remove(id))
             .ok_or_else(|| SubagentError::Unknown(id.to_string()))?;
 
-        slot.handle
+        let report = slot
+            .handle
             .await
-            .map_err(|error| SubagentError::Lost(error.to_string()))
+            .map_err(|error| SubagentError::Lost(error.to_string()));
+        // The row goes when the report does. A subagent whose result is now in
+        // the transcript has nothing left to say from a status line, and a list
+        // that only grows is one a person stops reading.
+        self.update_progress(|rows| rows.retain(|row| row.id != id));
+        report
     }
 
     /// Every subagent still outstanding, oldest handle first.
@@ -216,6 +302,25 @@ impl SubagentHost {
                 .unwrap_or(u64::MAX)
         });
         ids
+    }
+
+    /// Note the child's context size after one of its model steps.
+    fn note_tokens(&self, id: &str, input_tokens: u64) {
+        self.update_progress(|rows| {
+            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                row.input_tokens = input_tokens;
+            }
+        });
+    }
+
+    /// Mark a row done. It stays on screen until it is collected, which is what
+    /// gives a person the moment to see that it finished at all.
+    fn note_finished(&self, id: &str, status: AgentStatus) {
+        self.update_progress(|rows| {
+            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                row.status = Some(status);
+            }
+        });
     }
 
     /// What a running subagent was asked to do, for a report that has to name
@@ -249,8 +354,32 @@ pub(crate) fn end_event(turn: TurnId, report: &AgentReport) -> SessionEvent {
 /// closure, deliberately, so the tool ABI stays free of a runtime dependency.
 const CANCEL_POLL_MILLIS: u64 = 200;
 
-/// Build the child, run its single turn, and report.
+/// Build the child, run its single turn, report, and leave the live row in a
+/// terminal state whichever way it ended.
 async fn run_child(
+    host: Arc<SubagentHost>,
+    id: AgentId,
+    task: String,
+    recipe: SessionBuilder,
+    permits: Arc<Semaphore>,
+    timeout: std::time::Duration,
+    parent_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> AgentReport {
+    let report = run_one(
+        Arc::clone(&host),
+        id,
+        task,
+        recipe,
+        permits,
+        timeout,
+        parent_cancelled,
+    )
+    .await;
+    host.note_finished(&report.id, report.status);
+    report
+}
+
+async fn run_one(
     host: Arc<SubagentHost>,
     id: AgentId,
     task: String,
@@ -285,7 +414,11 @@ async fn run_child(
         );
     }
 
-    let mut session = match recipe.build().await {
+    // The child streams to no surface, but it does stream to its own row: a
+    // delegated task that shows no sign of costing anything is one a person
+    // cannot decide to stop.
+    let (steps, mut step_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut session = match recipe.updates(steps).build().await {
         Ok(session) => session,
         Err(error) => {
             return failed(
@@ -299,6 +432,18 @@ async fn run_child(
     // answered without the subagent tools, so it cannot fork further.
     host.adopt(session.id());
 
+    let meter = tokio::spawn({
+        let host = Arc::clone(&host);
+        let id = id.clone();
+        async move {
+            while let Some(update) = step_rx.recv().await {
+                if let keke_core::TurnUpdate::StepUsage { usage, .. } = update {
+                    host.note_tokens(&id, usage.input_tokens);
+                }
+            }
+        }
+    });
+
     let log_path = session.log_path().display().to_string();
     let canceller = session.canceller();
     let watchdog = tokio::spawn(async move {
@@ -311,6 +456,7 @@ async fn run_child(
     let outcome =
         tokio::time::timeout(timeout, session.run_turn(Message::user(task.clone()))).await;
     watchdog.abort();
+    meter.abort();
 
     let (status, summary, usage) = match outcome {
         Ok(Ok(turn)) => (

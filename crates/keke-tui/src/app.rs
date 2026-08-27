@@ -114,6 +114,21 @@ pub struct App {
     expanded: std::collections::HashSet<usize>,
     /// Where this frame drew each expandable header, as `(row, cell index)`.
     toggles: Vec<(u16, usize)>,
+    /// The subagents currently worth drawing, as the agent last reported them.
+    /// Replaced wholesale rather than merged: the agent sends whole snapshots
+    /// precisely so this cannot drift.
+    subagents: Vec<keke_acp::SubagentView>,
+    /// When each subagent id was first seen here. The duration on a row is
+    /// measured against this rather than against a timestamp the agent sends,
+    /// because a surface across a pipe has no shared clock to compare with —
+    /// and what a person wants to know is how long they have been waiting.
+    subagent_since: std::collections::HashMap<String, Instant>,
+    /// Where this frame drew each subagent row, as `(row, agent id)`, for the
+    /// same reason `toggles` exists: a click is a screen position and nothing
+    /// else.
+    subagent_rows: Vec<(u16, String)>,
+    /// Which subagent's task is open in full. Cleared when that subagent goes.
+    subagent_detail: Option<String>,
     /// A word about something keke just did for the person at the keyboard —
     /// copied, resumed. It goes in the status bar and expires, never into
     /// the transcript: the transcript is the conversation, and a line in it
@@ -167,6 +182,10 @@ impl App {
                 follow_button: None,
                 expanded: std::collections::HashSet::new(),
                 toggles: Vec::new(),
+                subagents: Vec::new(),
+                subagent_since: std::collections::HashMap::new(),
+                subagent_rows: Vec::new(),
+                subagent_detail: None,
                 flash: None,
                 pending_copy: None,
                 selection: crate::selection::Selection::default(),
@@ -351,6 +370,72 @@ impl App {
         &self.expanded
     }
 
+    /// The subagents to draw, oldest first.
+    #[must_use]
+    pub fn subagents(&self) -> &[keke_acp::SubagentView] {
+        &self.subagents
+    }
+
+    /// Fold in a snapshot, keeping the start times of the agents that survive.
+    pub(crate) fn set_subagents(&mut self, rows: Vec<keke_acp::SubagentView>) {
+        let now = Instant::now();
+        for row in &rows {
+            self.subagent_since.entry(row.id.clone()).or_insert(now);
+        }
+        // An agent that left the snapshot has been collected: its result is in
+        // the transcript now, so the row, its clock, and any popup opened on it
+        // all go together.
+        self.subagent_since
+            .retain(|id, _| rows.iter().any(|row| &row.id == id));
+        if let Some(open) = &self.subagent_detail
+            && !rows.iter().any(|row| &row.id == open)
+        {
+            self.subagent_detail = None;
+        }
+        self.subagents = rows;
+    }
+
+    /// How long a subagent has been on screen.
+    #[must_use]
+    pub fn subagent_elapsed(&self, id: &str) -> Option<std::time::Duration> {
+        self.subagent_since.get(id).map(Instant::elapsed)
+    }
+
+    /// Told by `draw` which rows this frame's subagents landed on.
+    pub(crate) fn set_subagent_rows(&mut self, rows: Vec<(u16, String)>) {
+        self.subagent_rows = rows;
+    }
+
+    /// The subagent whose task is open in full, if one is.
+    #[must_use]
+    pub fn open_subagent(&self) -> Option<&keke_acp::SubagentView> {
+        let open = self.subagent_detail.as_ref()?;
+        self.subagents.iter().find(|row| &row.id == open)
+    }
+
+    /// Open the subagent drawn at `row`, or close it if it is already open.
+    ///
+    /// Reported so the caller knows the click was spent here and must not also
+    /// be read as a click on the transcript underneath.
+    pub fn open_subagent_at(&mut self, row: u16) -> bool {
+        let Some((_, id)) = self.subagent_rows.iter().find(|(at, _)| *at == row) else {
+            return false;
+        };
+        let id = id.clone();
+        self.subagent_detail = if self.subagent_detail.as_ref() == Some(&id) {
+            None
+        } else {
+            Some(id)
+        };
+        true
+    }
+
+    /// Close the subagent popup, reporting whether one was open — so escape can
+    /// fall through to whatever it means when none is.
+    pub fn close_subagent(&mut self) -> bool {
+        self.subagent_detail.take().is_some()
+    }
+
     /// Told by `draw` which rows this frame's expandable headers landed on.
     pub(crate) fn set_toggles(&mut self, toggles: Vec<(u16, usize)>) {
         self.toggles = toggles;
@@ -492,8 +577,12 @@ impl App {
                 self.end_turn();
                 self.transcript.push(Cell::Error(message));
             }
+            Update::Subagents(rows) => {
+                self.set_subagents(rows);
+            }
             Update::SessionReset => {
                 self.transcript = Transcript::default();
+                self.set_subagents(Vec::new());
                 self.scroll.follow();
                 self.usage = Usage::default();
                 self.context_input = 0;

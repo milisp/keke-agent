@@ -33,6 +33,7 @@ mod host;
 mod tools;
 
 pub use host::AgentId;
+pub use host::AgentProgress;
 pub use host::AgentReport;
 pub use host::AgentStatus;
 pub use host::SubagentError;

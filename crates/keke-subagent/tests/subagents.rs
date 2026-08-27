@@ -433,3 +433,63 @@ async fn the_parents_model_is_told_what_the_subagent_found() {
     });
     assert!(carried, "the subagent's answer never reached the parent");
 }
+
+/// A delegated task shows up as a live row while it runs, so a person watching
+/// the interface can see that the turn is doing something and what it is
+/// costing — the moment they can still decide to stop it.
+#[tokio::test]
+async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(0);
+    let mut extensions = ExtensionRegistryBuilder::new();
+    let host = keke_subagent::install(&mut extensions, SubagentLimits::default());
+    let builder = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build());
+    host.attach(builder);
+
+    let mut rows = host.subscribe();
+    // A subscriber gets the current state at once rather than only the next
+    // change: a surface that attaches mid-turn must not draw an empty list.
+    assert_eq!(rows.recv().await.expect("snapshot"), Vec::new());
+
+    let cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+    let id = host
+        .spawn("SUB watched\nsecond line".to_string(), cancelled)
+        .expect("spawns");
+
+    let started = rows.recv().await.expect("start published");
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].id, id);
+    assert_eq!(started[0].task, "SUB watched\nsecond line");
+    // Still running: nothing may claim an outcome the child has not reached.
+    assert_eq!(started[0].status, None);
+
+    let report = host.collect(&id).await.expect("collects");
+    assert_eq!(report.status, keke_subagent::AgentStatus::Completed);
+
+    // Somewhere in what followed the child finished, was charged for its step,
+    // and then left the list when its report reached the model.
+    let mut finished = None;
+    let mut gone = false;
+    while let Ok(snapshot) = rows.try_recv() {
+        if let Some(row) = snapshot.first() {
+            finished = Some(row.clone());
+        } else {
+            gone = true;
+        }
+    }
+    let finished = finished.expect("a row after the start");
+    assert_eq!(
+        finished.status,
+        Some(keke_subagent::AgentStatus::Completed),
+        "a finished child must not still be drawn as running"
+    );
+    assert!(
+        finished.input_tokens > 0,
+        "the child's context size is what the row reports; it was never observed"
+    );
+    assert!(gone, "a collected subagent must leave the live rows");
+    assert!(host.progress().is_empty());
+}

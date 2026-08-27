@@ -68,11 +68,40 @@ pub enum Update {
     /// decide to stop it.
     TokensUsed(Usage),
     TurnEnded(StopReason),
+    /// Every subagent currently worth showing, oldest first. A whole snapshot
+    /// rather than per-agent deltas: the list is short, and a surface that
+    /// missed one delta would draw a subagent that finished long ago.
+    ///
+    /// Empty means nothing is outstanding, which is a surface's cue to take the
+    /// section away entirely.
+    Subagents(Vec<SubagentView>),
     /// The turn failed. The conversation stays usable.
     Failed(String),
     /// [`Conversation::new_session`] finished: history and usage are gone,
     /// and whatever the surface shows for either should go back to nothing.
     SessionReset,
+}
+
+/// One running subagent, as a client sees it.
+///
+/// Flat fields rather than the engine's own progress type, for the reason
+/// [`PluginCommand`] is flat: this crosses the seam to a surface that may be on
+/// the other end of a pipe, and everything here is something to draw rather
+/// than something to act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubagentView {
+    /// The handle the agent named it, which is also what a person sees if they
+    /// go looking for it in the transcript.
+    pub id: String,
+    /// What it was asked to do, in full. A surface truncates for its row and
+    /// still has the whole thing to show on demand.
+    pub task: String,
+    /// `completed`, `failed`, `timed_out`, `cancelled` — or `None` while it is
+    /// still running.
+    pub status: Option<String>,
+    /// How full the child's context window is, in input tokens of its last
+    /// model step.
+    pub input_tokens: u64,
 }
 
 /// A conversation that is open and ready to be prompted.
