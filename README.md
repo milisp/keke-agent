@@ -1,9 +1,14 @@
 # keke
 
-[中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Roadmap](docs/ROADMAP.md)
+[中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
 keke is a local terminal coding agent built for zero-vendor lock-in. 
 Works with subscriptions you already have, standard API keys, or self-hosted local models.
+
+**Status: early (v0.1.x), usable day to day.** Good fit for personal daily
+driving, scripted/CI use, and small-team trials. Not yet the right choice for
+a regulated or uninterruptible production pipeline — see
+[Production & safety](#production--safety).
 
 ## Why keke?
 
@@ -23,7 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/inst
 ```
 
 This downloads the latest prebuilt binary for your platform into
-`~/.local/bin` (override with `KEKE_INSTALL_DIR`).
+`~/.local/bin` (override with `KEKE_INSTALL_DIR`). Piping a remote script into
+`sh` runs it with your privileges — inspect it first if that matters to you:
+`curl -fsSL .../install.sh | less`.
 
 ### npm
 
@@ -35,20 +42,20 @@ You can also grab a binary directly from the
 [latest release](https://github.com/milisp/keke-agent/releases/latest), or build
 from source with `cargo build --release`.
 
-## Try it
+## Try it (30 seconds)
 
 ```sh
-# Sign in with a subscription you already pay for
+keke doctor                              # see which providers/logins resolve, before you rely on one
+
+# Sign in with a subscription you already pay for...
 keke login codex
 keke login grok
-
 # ...or bring a key
-export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
 
 keke exec "what does this project do?"   # one-shot, for scripts and CI
 keke                                     # interactive TUI
 keke resume                              # pick the last conversation back up
-keke doctor                              # which providers and logins resolve
 ```
 
 ## What you can point it at
@@ -68,59 +75,50 @@ change:
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
 default_model = "gpt-oss:20b"
-
-[providers.anthropic]
-base_url = "https://api.anthropic.com"
-env_key = "ANTHROPIC_API_KEY"
-wire = "messages"
 ```
 
-`wire` picks the request format — `chat_completions` (the default),
-`responses`, or `messages` — so a new endpoint is a config entry rather than a release.
-
-Behind a corporate proxy or a TLS-intercepting gateway, a declared provider
-can also carry a CA certificate, a proxy, and headers your gateway wants for
-routing or audit:
-
-```toml
-[providers.internal-gateway]
-base_url = "https://gateway.corp.internal/v1"
-env_key = "INTERNAL_GATEWAY_API_KEY"
-ca_cert_path = "/etc/ssl/certs/corp-root-ca.pem"
-proxy = "http://proxy.corp.internal:8080"
-proxy_username = "svc-keke"
-proxy_password_env_key = "CORP_PROXY_PASSWORD"
-
-[providers.internal-gateway.headers]
-X-Department-Token = "env:DEPT_TOKEN"
-X-Company-User-Id = "milisp-labs"
-```
-
-A header value written as `env:VAR_NAME` is resolved from the environment
-rather than taken literally, so a secret header need not sit in the config
-file in the clear. `authorization` is reserved for the provider's own
-credential and cannot be set here.
+Corporate proxies, TLS-intercepting gateways, custom headers, and the full
+field reference live in [`docs/config.md`](docs/config.md) — the shape is the
+same declaration, just with more fields filled in.
 
 ## Status
 
 Usable day to day. `keke exec`, the TUI, and the ACP server all run real
 sessions end to end; runtime plugins (skills, commands, hooks, MCP servers)
 install in the Claude Code format, and repository-provided ones stay inert
-until you approve them. Switching models inside a running session is not
-implemented yet — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+until you approve them. `/model` switches models inside a running session
+(tied to their provider so config can't persist an invalid pairing), and the
+agent can spawn subagents — isolated child sessions given one task that
+report back a single answer instead of their whole search trace. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next.
+
+## Production & safety
+
+Fine for personal use, local/self-hosted models, and CI one-shots today.
+Before trusting it with anything you can't afford to break, weigh in:
+
+- **Sandboxing & approvals** — default `approval_policy` and `sandbox_mode`
+  are conservative, but you should confirm they match what you're running
+  ([`docs/config.md`](docs/config.md)).
+- **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
+  execute on `git clone` alone; a person must approve them, keyed to their
+  exact contents, not their path. There's no flag to turn that gate off.
+- **Maturity** — early (v0.1.x), single-maintainer, no formal security audit
+  or SLA. Remaining roadmap gaps (full end-to-end MCP tool-call verification)
+  are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+**Good fit:** you want no vendor lock-in, script/CI-friendly one-shot runs,
+local models, or ACP integration into your own editor/client.
+**Not yet a fit:** you need turnkey OAuth for every vendor, an established
+plugin ecosystem, or vendor support contracts.
 
 ## Where it comes from
 
-keke is a fresh implementation built by studying three open agent repos:
-OpenAI's **codex**, xAI's **grok-build**, and **deepseek-harness** — whose
-seam-first architecture (a hard boundary between engine and vendor, not a
-convention) is the idea keke leans on hardest. Some pieces are ported
-outright and attributed in the crate that carries them (codex's OAuth login
-flow, for instance); most of it is keke's own code, shaped by what worked and
-what didn't in those three. What keke does differently — and why that
-matters enough to enforce in CI — is in
-[`docs/architecture.md`](docs/architecture.md); the invariants themselves are
-in [`AGENTS.md`](AGENTS.md).
+keke is a fresh implementation informed by OpenAI's **codex**, xAI's
+**grok-build**, and **deepseek-harness**. A few pieces are ported and
+attributed in-crate; most of the code is original. Design rationale and
+CI-enforced invariants: [`docs/architecture.md`](docs/architecture.md),
+[`AGENTS.md`](AGENTS.md).
 
 ## License
 
