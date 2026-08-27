@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use keke_protocol::SessionEvent;
 use keke_protocol::SessionId;
 use keke_protocol::ThreadId;
+use keke_protocol::TurnId;
 
 /// A piece of model-visible context contributed by an extension.
 ///
@@ -60,6 +62,8 @@ impl TypeMap {
 pub struct ExtensionContext {
     pub session: SessionId,
     pub thread: ThreadId,
+    turn: Option<TurnId>,
+    events: Arc<RwLock<Vec<SessionEvent>>>,
     state: Arc<TypeMap>,
 }
 
@@ -69,8 +73,49 @@ impl ExtensionContext {
         Self {
             session,
             thread,
+            turn: None,
+            events: Arc::new(RwLock::new(Vec::new())),
             state: Arc::new(TypeMap::default()),
         }
+    }
+
+    /// Name the turn this context belongs to.
+    ///
+    /// Set by the engine, which is the only thing that knows the id. A
+    /// contributor reads it to stamp the events it records.
+    #[must_use]
+    pub fn in_turn(mut self, turn: TurnId) -> Self {
+        self.turn = Some(turn);
+        self
+    }
+
+    /// The turn in progress, when this context belongs to one.
+    #[must_use]
+    pub fn turn(&self) -> Option<TurnId> {
+        self.turn
+    }
+
+    /// Queue a session event for the engine to append to the rollout log.
+    ///
+    /// An extension that puts something in front of the model has to be able to
+    /// record it, or the log stops being a full account of the turn
+    /// (`AGENTS.md` invariant 6). Queued rather than written because appending
+    /// is asynchronous and owns the recorder; the engine drains this between
+    /// steps, so ordering within a step is registration order and not
+    /// completion order.
+    pub fn record(&self, event: SessionEvent) {
+        if let Ok(mut events) = self.events.write() {
+            events.push(event);
+        }
+    }
+
+    /// Take everything recorded since the last drain. Called by the engine.
+    #[must_use]
+    pub fn drain_events(&self) -> Vec<SessionEvent> {
+        self.events
+            .write()
+            .map(|mut events| std::mem::take(&mut *events))
+            .unwrap_or_default()
     }
 
     /// Store a value keyed by its type, replacing any previous value.
@@ -90,6 +135,7 @@ impl std::fmt::Debug for ExtensionContext {
         f.debug_struct("ExtensionContext")
             .field("session", &self.session)
             .field("thread", &self.thread)
+            .field("turn", &self.turn)
             .finish_non_exhaustive()
     }
 }

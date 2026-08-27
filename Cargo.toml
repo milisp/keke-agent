@@ -39,6 +39,7 @@ keke-plugin = { path = "crates/keke-plugin" }
 keke-provider-codex = { path = "crates/keke-provider-codex" }
 keke-provider-grok = { path = "crates/keke-provider-grok" }
 keke-provider-ollama = { path = "crates/keke-provider-ollama" }
+keke-subagent = { path = "crates/keke-subagent" }
 keke-test-support = { path = "crates/keke-test-support" }
 keke-tools = { path = "crates/keke-tools" }
 keke-tui = { path = "crates/keke-tui" }

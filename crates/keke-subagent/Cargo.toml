@@ -1,0 +1,29 @@
+[package]
+name = "keke-subagent"
+description = "Subagents: isolated child sessions a model can start, run, and collect."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-core = { workspace = true }
+keke-plugin-api = { workspace = true }
+keke-protocol = { workspace = true }
+keke-tool = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+keke-paths = { workspace = true }
+keke-provider-api = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+[lints]
+workspace = true

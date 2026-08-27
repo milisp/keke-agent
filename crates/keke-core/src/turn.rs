@@ -61,7 +61,7 @@ impl Session {
         self.reset_cancellation();
 
         let turn = TurnId::new();
-        let ext_ctx = ExtensionContext::new(self.id, self.thread);
+        let ext_ctx = ExtensionContext::new(self.id, self.thread).in_turn(turn);
 
         self.log(SessionEvent::TurnStart {
             turn,
@@ -104,6 +104,10 @@ impl Session {
             contributor
                 .on_turn_end(&ext_ctx, turn, &outcome.stop_reason)
                 .await;
+        }
+        // Anything a lifecycle contributor recorded on its way out.
+        for event in ext_ctx.drain_events() {
+            self.log(event).await?;
         }
         self.emit(TurnUpdate::TurnEnded {
             turn,
@@ -211,6 +215,12 @@ impl Session {
                 let result = dispatched.result;
                 aborted |= dispatched.abort;
 
+                // Drained before the call's own end event so an extension's
+                // record of what it put in front of a model precedes the
+                // result that reported it (`AGENTS.md` invariant 6).
+                for event in ext_ctx.drain_events() {
+                    self.log(event).await?;
+                }
                 self.log(SessionEvent::ToolCallEnd {
                     turn,
                     result: result.clone(),

@@ -94,6 +94,14 @@ context_window = 128000       # Context window size compaction measures against
 # Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
 model_catalog_ttl_seconds = 21600  # 6 hours default
 
+# Subagents: isolated child sessions `spawn_agent` starts
+[subagents]
+max_concurrent = 3        # How many run at once (1-16); further spawns queue
+timeout_millis = 600000   # Wall-clock ceiling per subagent (60000-3600000)
+
+# There is no depth setting: a subagent is never offered `spawn_agent` at all,
+# so the tree is one level deep by construction rather than by configuration.
+
 # Plugin timeouts in milliseconds
 [plugins]
 hook_millis = 30000       # Hook timeout (100-3600000)

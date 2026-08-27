@@ -43,6 +43,7 @@ RANK = {
     "keke-credentials": 10,
     "keke-workspace": 11,
     "keke-core": 12,
+    "keke-subagent": 13,
     # test support sits beside the plugins: it may use the contracts, and
     # anything may depend on it as a dev-dependency
     "keke-test-support": 15,
@@ -63,7 +64,14 @@ PLUGIN_RANK = 20
 # The engine must not know about any specific vendor. `keke-cli` is the only
 # crate allowed to name a vendor plugin, because it is the composition root.
 VENDOR_PREFIXES = ("keke-provider-", "keke-auth-")
-VENDOR_FREE = {"keke-core", "keke-config", "keke-workspace", "keke-acp", "keke-tui"}
+VENDOR_FREE = {
+    "keke-core",
+    "keke-config",
+    "keke-subagent",
+    "keke-workspace",
+    "keke-acp",
+    "keke-tui",
+}
 
 
 def rank(name: str) -> int:

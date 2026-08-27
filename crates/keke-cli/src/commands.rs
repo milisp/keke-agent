@@ -77,6 +77,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         &config.providers,
         config.plugins,
         config.model_catalog_ttl,
+        config.subagents,
         interactive.then(|| Arc::clone(&approvals)),
     )?;
 
@@ -93,6 +94,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     &config.providers,
                     config.plugins,
                     config.model_catalog_ttl,
+                    config.subagents,
                     interactive.then(|| Arc::clone(&approvals)),
                 )?;
             }
@@ -311,6 +313,13 @@ async fn session_builder(
     if let Some(auth) = auth {
         builder = builder.auth(auth);
     }
+
+    // Handed over here rather than in `Composed::build`: the recipe a subagent
+    // is built from *is* a session builder, and there is no finished builder
+    // until this function has one. Deliberately before any surface attaches
+    // live updates — a subagent streams to nobody and reports once, at the end.
+    composed.subagents.attach(builder.clone());
+
     Ok(builder)
 }
 
@@ -431,6 +440,7 @@ impl EditorSessions {
             &self.config.providers,
             self.config.plugins,
             self.config.model_catalog_ttl,
+            self.config.subagents,
             Some(Arc::clone(&approvals)),
         )?;
         // What the session was last talking to wins over the server's config
@@ -488,6 +498,7 @@ impl keke_acp::SessionFactory for EditorSessions {
             &self.config.providers,
             self.config.plugins,
             self.config.model_catalog_ttl,
+            self.config.subagents,
             None,
         ) else {
             return Vec::new();
@@ -577,6 +588,7 @@ impl keke_acp::SessionFactory for EditorSessions {
                 &self.config.providers,
                 self.config.plugins,
                 self.config.model_catalog_ttl,
+                self.config.subagents,
                 None,
             )
             .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
