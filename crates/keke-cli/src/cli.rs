@@ -124,10 +124,18 @@ pub(crate) struct ResumeArgs {
     pub session: Option<String>,
 
     /// List what can be resumed instead of resuming anything.
+    ///
+    /// Shows only sessions started in the current directory; pass `--all` to
+    /// see every session under every directory.
     #[arg(long)]
     pub list: bool,
 
-    /// Include sessions nobody said anything in.
+    /// Resume the current directory's most recent session.
+    #[arg(long)]
+    pub last: bool,
+
+    /// Cover every directory's sessions, not just the current one — and
+    /// include sessions nobody said anything in.
     #[arg(long)]
     pub all: bool,
 }

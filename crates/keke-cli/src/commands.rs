@@ -770,17 +770,20 @@ async fn resume(
 ) -> Result<()> {
     let home = &config.home.home;
     let sessions = keke_core::list_sessions(home)?;
+    let cwd_str = cwd.display().to_string();
     // A log with no turns is an interface someone opened and closed; listing
-    // them buries the conversations under the empty files.
+    // them buries the conversations under the empty files. Scoped to the
+    // current directory unless `--all` asks to see every project's sessions.
     let conversations: Vec<_> = sessions
         .iter()
         .filter(|session| args.all || session.turns > 0)
+        .filter(|session| args.all || session.cwd.as_deref() == Some(cwd_str.as_str()))
         .collect();
 
     if args.list {
         if conversations.is_empty() {
             println!(
-                "no sessions under {}",
+                "no sessions under {} for {cwd_str}",
                 keke_core::sessions_dir(home).display()
             );
             return Ok(());
@@ -798,7 +801,9 @@ async fn resume(
                 session.summary
             );
         }
-        println!("\nresume one with `keke resume <id>`, or the last one with `keke resume`");
+        println!(
+            "\nresume one with `keke resume <id>`, or the last one here with `keke resume --last`"
+        );
         return Ok(());
     }
 
@@ -821,15 +826,19 @@ async fn resume(
                 bail!("no session starts with `{typed}`; `keke resume --list` shows what there is");
             }
         },
-        None => {
-            keke_core::latest_session(home)?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no session to resume under {}",
-                        keke_core::sessions_dir(home).display()
-                    )
-                })?
+        None if args.last => {
+            sessions
+                .iter()
+                .find(|session| {
+                    session.turns > 0 && session.cwd.as_deref() == Some(cwd_str.as_str())
+                })
+                .ok_or_else(|| anyhow::anyhow!("no session to resume under {cwd_str}"))?
                 .id
+        }
+        None => {
+            bail!(
+                "specify a session id, `--last` for this directory's most recent session, or `--list` to see what there is"
+            );
         }
     };
 
