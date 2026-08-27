@@ -50,66 +50,7 @@ keke                                     # 交互式 TUI
 keke resume                              # 恢复上一次的对话
 ```
 
-## 支持的模型与接入方式
-
-| Provider | 认证方式 | 说明 |
-| --- | --- | --- |
-| OpenAI / ChatGPT | `keke login codex`，或 `OPENAI_API_KEY` | OAuth 登录流程移植自 codex |
-| Anthropic Claude | `ANTHROPIC_API_KEY` | 内置；默认 provider。仅支持 API Key——暂无订阅登录 |
-| xAI Grok | `keke login grok`，或 `XAI_API_KEY` | 内置 |
-| 本地模型（Ollama、vLLM 等） | 无需认证 | 你的代码绝不会离开本地机器 |
-| 任意 OpenAI 兼容网关 | `config.toml` 中的 `env_key` | 企业代理、NVIDIA NIM、API 路由分发器等 |
-
-内置支持之外的服务，只需在 `$KEKE_HOME/config.toml` 中添加几行配置，无需修改代码：
-
-```toml
-[providers.ollama]
-base_url = "http://localhost:11434/v1"
-default_model = "qwen3.8"
-```
-
-企业代理、TLS 拦截网关、自定义请求头及完整的配置字段参考详见 [`docs/config.md`](docs/config.md)——结构相同，仅需填充对应字段。
-
-### 同一家厂商，两个身份
-
-订阅登录和 API key 是两样东西，花在两个不同的地址上，各自在对方那里都不被接受。
-keke 让你同时保留两者，用你自己起的名字，一个参数切换：
-
-```toml
-[providers.grok]          # 你的登录，以及随之而来的额度
-kind = "grok"
-
-[providers.xai]           # 按量付费 API，用 $XAI_API_KEY
-kind = "grok"
-base_url = "https://api.x.ai/v1"
-wire = "chat_completions"
-account = "apikey"
-
-[providers.grok-work]     # 同一家厂商，另一个人
-kind = "grok"
-account = "work@corp.com"
-```
-
-`keke --provider xai` 花的是 key，`keke --provider grok` 花的是登录。
-登录按 token 里的邮箱归档，所以你有几个账号就能存几个——而且配置成某个身份的
-实例，绝不会悄悄用另一个身份去认证。
-
-### 按目录自动切换账号
-
-工作仓库用工作账号。配置一次，从此不必每次都敲 `--provider`：
-
-```toml
-[[dir]]
-match = "~/work/**"
-provider = "grok-work"
-model = "grok-4.6"     # 可选
-
-[[dir]]
-match = "~/oss/**"
-provider = "xai"
-```
-
-keke 用该模式匹配你所在的仓库根目录，因此它跟随仓库而不是当前 shell 所在的子目录。多条规则同时命中时，以最后一条为准；命令行上的 `--provider` 仍然优先于所有规则；若规则指向一个未配置的 provider，keke 会在启动时报错，而不是悄悄退回到错误的账号。
+配置文件位置、Provider 声明、API Key、本地模型、多账号、按目录切换账号及其他设置，详见 [`docs/config.md`](docs/config.md)。
 
 ## 现状
 

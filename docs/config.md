@@ -2,6 +2,26 @@
 
 keke is configured through a TOML file at `$KEKE_HOME/config.toml` (defaults to `~/.keke/config.toml`). All settings are optional — built-in providers work without any configuration.
 
+## What You Can Point It At
+
+Built-in providers can be used with the following credentials:
+
+| Provider | Authentication | Notes |
+| --- | --- | --- |
+| OpenAI / ChatGPT | `keke login codex`, or `OPENAI_API_KEY` | Subscription OAuth or API key |
+| Anthropic Claude | `ANTHROPIC_API_KEY` | API key only; the default provider |
+| xAI Grok | `keke login grok`, or `XAI_API_KEY` | Subscription login or API key |
+| Local (Ollama, vLLM, …) | none | Requests stay on the machine |
+| OpenAI-compatible gateway | `env_key` | Company proxies, NVIDIA NIM, and routers |
+
+For example, a local Ollama endpoint needs only a provider declaration:
+
+```toml
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+default_model = "qwen3.8"
+```
+
 ## Provider Declaration
 
 Any OpenAI-compatible endpoint can be added by declaring a provider. This is how you use company proxies, NVIDIA NIM, Ollama, vLLM, or any custom gateway without rebuilding keke.
