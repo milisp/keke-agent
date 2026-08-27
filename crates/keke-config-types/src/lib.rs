@@ -333,3 +333,85 @@ impl Default for PluginTimeouts {
         }
     }
 }
+
+/// Bounds on the subagents a session may run.
+///
+/// Both numbers are deployment-varying in the way invariant 9 in `AGENTS.md`
+/// means: how many models a person is willing to pay for at once, and how long
+/// they are willing to let one run unattended, are answered differently by a
+/// laptop on a metered key and by a CI runner.
+///
+/// There is deliberately no depth setting. A subagent cannot spawn a subagent —
+/// the tools are not advertised to it at all — so the tree is one level deep by
+/// construction rather than by a number someone can raise until a session forks
+/// without bound. A limit that exists only when configured correctly is the
+/// failure mode the limit was for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentLimits {
+    /// How many subagents may be running at once. Spawns beyond this queue
+    /// rather than fail: a rejected spawn is something the model retries, and a
+    /// retry loop costs more than the wait it was avoiding.
+    pub max_concurrent: u8,
+    /// The wall-clock ceiling for one subagent's turn. It is cancelled at the
+    /// limit and reported as timed out, so the parent gets an answer either way.
+    pub timeout_millis: u64,
+}
+
+impl SubagentLimits {
+    /// One at a time is a real setting — serial subagents still isolate context,
+    /// which is half of what they are for.
+    pub const MIN_CONCURRENT: u8 = 1;
+    /// Beyond this the bound stops being about the machine and starts being
+    /// about the vendor's rate limit, which answers faster and less politely.
+    pub const MAX_CONCURRENT: u8 = 16;
+    /// A minute. Below this a subagent doing real work times out mid-thought
+    /// and the parent pays for the tokens without getting the answer.
+    pub const MIN_TIMEOUT_MILLIS: u64 = 60_000;
+    /// An hour, for the same reason `PluginTimeouts` stops there: a longer
+    /// budget is indistinguishable from none.
+    pub const MAX_TIMEOUT_MILLIS: u64 = 3_600_000;
+
+    /// Validate a concurrency bound.
+    pub fn check_concurrent(value: u8) -> Result<u8, String> {
+        if (Self::MIN_CONCURRENT..=Self::MAX_CONCURRENT).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "subagents.max_concurrent must be between {} and {}, got {value}",
+                Self::MIN_CONCURRENT,
+                Self::MAX_CONCURRENT
+            ))
+        }
+    }
+
+    /// Validate a per-subagent budget, in milliseconds.
+    pub fn check_timeout(value: u64) -> Result<u64, String> {
+        if (Self::MIN_TIMEOUT_MILLIS..=Self::MAX_TIMEOUT_MILLIS).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "subagents.timeout_millis must be between {} and {} milliseconds, got {value}",
+                Self::MIN_TIMEOUT_MILLIS,
+                Self::MAX_TIMEOUT_MILLIS
+            ))
+        }
+    }
+
+    #[must_use]
+    pub fn timeout(self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.timeout_millis)
+    }
+}
+
+impl Default for SubagentLimits {
+    /// Three at once, ten minutes each. Three is what fits a single screen of
+    /// reported results and what most vendors' concurrent-request allowances
+    /// tolerate without shaping; ten minutes is longer than any search-shaped
+    /// task and shorter than a person's patience.
+    fn default() -> Self {
+        Self {
+            max_concurrent: 3,
+            timeout_millis: 600_000,
+        }
+    }
+}

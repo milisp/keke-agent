@@ -30,6 +30,7 @@ use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
 use keke_config_types::ReasoningEffort;
 use keke_config_types::SandboxMode;
+use keke_config_types::SubagentLimits;
 use keke_paths::AbsPath;
 use serde::Deserialize;
 use serde::Serialize;
@@ -69,6 +70,8 @@ pub struct Config {
     pub compaction: CompactionConfig,
     /// Budgets for plugin-supplied programs.
     pub plugins: PluginTimeouts,
+    /// Bounds on the subagents a session may run at once.
+    pub subagents: SubagentLimits,
     /// How long a fetched model catalog stays usable before the vendor is
     /// asked again.
     pub model_catalog_ttl: ModelCatalogTtl,
@@ -97,6 +100,7 @@ pub struct ConfigFile {
     pub reasoning_effort: Option<String>,
     pub compaction: Option<CompactionFile>,
     pub plugins: Option<PluginsFile>,
+    pub subagents: Option<SubagentsFile>,
     /// Seconds. `0` asks the vendor every time.
     pub model_catalog_ttl_seconds: Option<u64>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
@@ -122,6 +126,14 @@ pub struct PluginsFile {
     pub hook_timeout_millis: Option<u64>,
     pub mcp_startup_timeout_millis: Option<u64>,
     pub mcp_call_timeout_millis: Option<u64>,
+}
+
+/// The subagents section, separated so a layer can override one field of it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct SubagentsFile {
+    pub max_concurrent: Option<u8>,
+    pub timeout_millis: Option<u64>,
 }
 
 /// Values applied when no layer states them.
@@ -194,6 +206,11 @@ impl Config {
                     .mcp_call_timeout_millis
                     .or(base.mcp_call_timeout_millis);
             }
+            if let Some(subagents) = layer.file.subagents {
+                let base = merged.subagents.get_or_insert_with(SubagentsFile::default);
+                base.max_concurrent = subagents.max_concurrent.or(base.max_concurrent);
+                base.timeout_millis = subagents.timeout_millis.or(base.timeout_millis);
+            }
             // Declarations accumulate; a later layer redeclaring a route
             // replaces that one entry rather than the whole set.
             for (route, declaration) in &layer.file.providers {
@@ -258,6 +275,19 @@ impl Config {
             },
         };
 
+        let subagent_defaults = SubagentLimits::default();
+        let subagents_file = merged.subagents.unwrap_or_default();
+        let subagents = SubagentLimits {
+            max_concurrent: match subagents_file.max_concurrent {
+                Some(value) => SubagentLimits::check_concurrent(value).map_err(invalid)?,
+                None => subagent_defaults.max_concurrent,
+            },
+            timeout_millis: match subagents_file.timeout_millis {
+                Some(value) => SubagentLimits::check_timeout(value).map_err(invalid)?,
+                None => subagent_defaults.timeout_millis,
+            },
+        };
+
         let max_output_tokens = match merged.max_output_tokens {
             Some(value) => MaxOutputTokens::new(value).map_err(|message| ConfigError::Invalid {
                 path: sources
@@ -295,6 +325,7 @@ impl Config {
             reasoning_effort,
             compaction,
             plugins,
+            subagents,
             model_catalog_ttl,
             providers: merged
                 .providers
@@ -533,6 +564,25 @@ mod tests {
 
         let layers = vec![layer("user", "[plugins]\nhook_timeout_millis = 30\n")];
         let error = Config::from_layers(home(), &layers).expect_err("too short");
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_deployment_can_bound_how_many_subagents_run_at_once() {
+        let layers = vec![layer("user", "[subagents]\nmax_concurrent = 8\n")];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.subagents.max_concurrent, 8);
+        // The field nobody stated keeps its default rather than being zeroed.
+        assert_eq!(
+            config.subagents.timeout_millis,
+            SubagentLimits::default().timeout_millis
+        );
+
+        // Out of range fails loud rather than being clamped: a deployment that
+        // asked for 64 subagents wanted something this cannot give it, and
+        // silently giving it 16 answers a question nobody asked.
+        let layers = vec![layer("user", "[subagents]\nmax_concurrent = 64\n")];
+        let error = Config::from_layers(home(), &layers).expect_err("too many");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
 

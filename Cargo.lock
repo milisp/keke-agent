@@ -1702,6 +1702,7 @@ dependencies = [
  "keke-provider-grok",
  "keke-provider-ollama",
  "keke-skills",
+ "keke-subagent",
  "keke-test-support",
  "keke-tools",
  "keke-tui",
@@ -1943,6 +1944,26 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "keke-subagent"
+version = "0.1.7"
+dependencies = [
+ "futures",
+ "keke-config-types",
+ "keke-core",
+ "keke-paths",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-provider-api",
+ "keke-tool",
+ "schemars 0.8.22",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

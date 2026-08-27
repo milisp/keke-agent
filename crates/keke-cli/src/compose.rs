@@ -70,6 +70,9 @@ pub(crate) struct Composed {
     pub auth: AuthRegistry,
     pub providers: ProviderRegistry,
     pub extensions: ExtensionRegistry,
+    /// The coordinator behind `spawn_agent`. Handed the session recipe in
+    /// `session_builder`, once there is a finished builder to hand it.
+    pub subagents: Arc<keke_subagent::SubagentHost>,
     /// The plugins' slash commands. Kept as data rather than as a registry
     /// because a command is a prompt file: only a surface that has someone to
     /// type it means anything by it.
@@ -87,6 +90,7 @@ impl Composed {
         declared: &[keke_config_types::ProviderDeclaration],
         timeouts: keke_config_types::PluginTimeouts,
         catalog_ttl: keke_config_types::ModelCatalogTtl,
+        subagent_limits: keke_config_types::SubagentLimits,
         approvals: Option<Arc<keke_acp::Approvals>>,
     ) -> Result<Self> {
         // Resolution finds every plugin; this holds back the programs of the
@@ -228,6 +232,9 @@ impl Composed {
         // The budgets come from configuration rather than from each crate's own
         // constants: how long someone else's program may hold up a turn is a
         // deployment's call (`AGENTS.md` invariant 9).
+        // Registered before the plugin packs so a plugin can shadow
+        // `spawn_agent` with its own, the same way it can shadow a built-in.
+        let subagents = keke_subagent::install(&mut extensions, subagent_limits);
         keke_skills::install(&mut extensions, &plugins);
         keke_mcp::install_with(&mut extensions, &plugins, timeouts.into());
         keke_hooks::install_with(&mut extensions, &plugins, timeouts);
@@ -245,6 +252,7 @@ impl Composed {
             auth,
             providers,
             extensions: extensions.build(),
+            subagents,
             commands,
         })
     }

@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::Message;
 use crate::ReasoningEffort;
+use crate::SessionId;
 use crate::StopReason;
 use crate::ToolCall;
 use crate::ToolResult;
@@ -87,6 +88,37 @@ pub enum SessionEvent {
     TurnEnd {
         turn: TurnId,
         stop_reason: StopReason,
+        usage: Usage,
+    },
+    /// A subagent was started for this turn.
+    ///
+    /// The child keeps its own log; this is the parent's record that it exists.
+    /// Without it the child's tokens and tool calls would be spent under a
+    /// session id nothing in the parent's log ever mentions, and a transcript
+    /// that cannot name its own children cannot account for what a turn did.
+    SubagentStart {
+        turn: TurnId,
+        /// The handle the model sees and passes back to collect the result.
+        agent: String,
+        /// The instruction the child was given. Model-visible input to the
+        /// child, so it is logged in full rather than summarized.
+        task: String,
+    },
+    /// A subagent finished, was cancelled, or timed out.
+    SubagentEnd {
+        turn: TurnId,
+        agent: String,
+        /// The child's own session, so its log can be found from here. Absent
+        /// when the child never got far enough to open one — a spawn refused
+        /// at the pool, or a parent cancelled before it started.
+        session: Option<SessionId>,
+        /// `completed`, `failed`, `timed_out`, or `cancelled`.
+        status: String,
+        /// What the child reported back, which is what reaches the parent's
+        /// model. Empty when it produced nothing.
+        summary: String,
+        /// Charged to the parent's account of the turn: a child's tokens are
+        /// spent because the parent asked for them.
         usage: Usage,
     },
     /// A turn failed. The session stays usable; the next turn resumes from the

@@ -73,6 +73,22 @@ compaction, rollout log), `keke-config` (layered load), `keke-credentials`
 
 `keke-core` depends only on tier 0 and contains nothing vendor-specific.
 
+### Tier 1.5 — engine-dependent tools
+
+`keke-subagent` sits between the engine and the plugins because it is the one
+tool pack that needs the engine itself: a subagent *is* a session, built from a
+`SessionBuilder` the composition root already assembled. It stays vendor-free —
+the builder carries an `Arc<dyn ModelProvider>` and this crate cannot see which
+vendor is behind it.
+
+Two shapes there are worth knowing about before changing it. The recipe is
+attached after installation rather than passed to it, because the recipe
+contains the very registry installation is contributing to; nothing can hold a
+finished builder while that builder's extensions are still being collected. And
+a subagent cannot start a subagent — not by a configurable depth limit but by
+construction: the host remembers which sessions it created, and a child asking
+for its tool set is answered without these tools at all.
+
 ### Tier 2 — plugins
 
 Compiled-in crates that register through tier 0 traits:
