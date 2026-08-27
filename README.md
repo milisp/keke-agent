@@ -74,7 +74,7 @@ change:
 ```toml
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
-default_model = "gpt-oss:20b"
+default_model = "qwen3.8"
 ```
 
 Corporate proxies, TLS-intercepting gateways, custom headers, and the full

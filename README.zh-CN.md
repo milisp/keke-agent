@@ -65,7 +65,7 @@ keke resume                              # 恢复上一次的对话
 ```toml
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
-default_model = "gpt-oss:20b"
+default_model = "qwen3.8"
 ```
 
 企业代理、TLS 拦截网关、自定义请求头及完整的配置字段参考详见 [`docs/config.md`](docs/config.md)——结构相同，仅需填充对应字段。
