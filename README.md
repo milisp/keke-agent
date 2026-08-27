@@ -14,6 +14,8 @@ a regulated or uninterruptible production pipeline — see
 
 - **Protocol: ACP for every client**
   Speaks the open Agent Client Protocol for both external client integrations and its internal TUI/agent seam.
+- **Multi-Account & Per-Directory Routing**
+  Login to multiple subscription accounts (e.g., work and personal) and automatically route requests based on workspace directory path.
 - **Script & CI First (`keke exec`)**
   Supports one-shot execution out of the box for non-interactive scripting and automated CI pipelines.
 - **Vendor-Isolated Engine**
