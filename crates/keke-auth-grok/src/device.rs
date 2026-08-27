@@ -141,7 +141,7 @@ async fn poll(
 
         let outcome = post_token(
             http,
-            &crate::discovery::token_endpoint(http, discovery, config).await,
+            &crate::discovery::token_endpoint(http, discovery, config, None).await,
             &[
                 ("grant_type", GRANT_TYPE),
                 ("device_code", grant.device_code.as_str()),
@@ -152,7 +152,7 @@ async fn poll(
 
         let refusal = match outcome {
             TokenOutcome::Granted(tokens) => {
-                return Ok(tokens.into_tokens(None, None));
+                return Ok(tokens.into_tokens(None, None, Some(config.issuer.clone())));
             }
             TokenOutcome::Refused(refusal) => refusal,
         };

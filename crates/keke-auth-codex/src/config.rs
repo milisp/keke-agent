@@ -66,6 +66,28 @@ impl CodexAuthConfig {
     /// Configure against `issuer` for `client_id`, deriving the standard
     /// endpoint paths. Override the endpoint fields afterwards for an issuer
     /// that lays them out differently.
+    /// The standard token path under an issuer that is not necessarily this
+    /// config's — a credential records who signed it, and that is who renews
+    /// it. Posting to the build's constant instead fails as an unreachable
+    /// host or a 404, and both read as a revoked login rather than as the
+    /// wrong address.
+    pub(crate) fn token_endpoint_for(&self, issuer: Option<&str>) -> String {
+        match issuer {
+            // A deployment that stated an endpoint outranks both: it said
+            // where the endpoint is, and neither the credential nor discovery
+            // gets to overrule that.
+            _ if self.token_endpoint != self.derived_token_endpoint() => {
+                self.token_endpoint.clone()
+            }
+            Some(issuer) => format!("{}/oauth/token", issuer.trim_end_matches('/')),
+            None => self.token_endpoint.clone(),
+        }
+    }
+
+    fn derived_token_endpoint(&self) -> String {
+        format!("{}/oauth/token", self.issuer.trim_end_matches('/'))
+    }
+
     pub fn new(issuer: impl Into<String>, client_id: impl Into<String>) -> Self {
         let issuer = issuer.into();
         let base = issuer.trim_end_matches('/').to_string();

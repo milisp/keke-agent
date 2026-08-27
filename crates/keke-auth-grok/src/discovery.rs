@@ -67,17 +67,24 @@ async fn document(http: &Client, cache: &Cache, issuer: &str) -> Option<Document
 }
 
 /// Where to post a token request.
+/// `issuer` is the credential's own when it recorded one, which outranks the
+/// build's constant: a login imported from another CLI, or made against a
+/// private deployment, must be renewed by whoever signed it. Posting to the
+/// constant instead fails as an unreachable host or a 404, and both of those
+/// read as a revoked login rather than as the wrong address.
 pub(crate) async fn token_endpoint(
     http: &Client,
     cache: &Cache,
     config: &GrokAuthConfig,
+    issuer: Option<&str>,
 ) -> String {
+    let issuer = issuer.unwrap_or(&config.issuer);
     resolve(
         http,
         cache,
-        config,
+        issuer,
         &config.token_endpoint,
-        &config.derived_token_endpoint(),
+        &config.derived_token_endpoint_for(issuer),
         |document| document.token_endpoint,
     )
     .await
@@ -92,7 +99,7 @@ pub(crate) async fn authorize_endpoint(
     resolve(
         http,
         cache,
-        config,
+        &config.issuer,
         &config.authorize_endpoint,
         &config.derived_authorize_endpoint(),
         |document| document.authorization_endpoint,
@@ -109,7 +116,7 @@ pub(crate) async fn device_authorization_endpoint(
     resolve(
         http,
         cache,
-        config,
+        &config.issuer,
         &config.device_authorization_endpoint,
         &config.derived_device_authorization_endpoint(),
         |document| document.device_authorization_endpoint,
@@ -123,7 +130,7 @@ pub(crate) async fn device_authorization_endpoint(
 async fn resolve(
     http: &Client,
     cache: &Cache,
-    config: &GrokAuthConfig,
+    issuer: &str,
     configured: &str,
     derived: &str,
     pick: impl FnOnce(Document) -> Option<String>,
@@ -131,7 +138,7 @@ async fn resolve(
     if configured != derived {
         return configured.to_string();
     }
-    match document(http, cache, &config.issuer).await.and_then(pick) {
+    match document(http, cache, issuer).await.and_then(pick) {
         Some(discovered) => discovered,
         None => configured.to_string(),
     }
@@ -165,7 +172,7 @@ mod tests {
         let config = GrokAuthConfig::new(server.uri(), "client-1");
 
         assert_eq!(
-            token_endpoint(&Client::new(), &Cache::default(), &config).await,
+            token_endpoint(&Client::new(), &Cache::default(), &config, None).await,
             "https://auth.example/somewhere/else"
         );
     }
@@ -180,7 +187,7 @@ mod tests {
         config.token_endpoint = "https://gateway.internal/token".to_string();
 
         assert_eq!(
-            token_endpoint(&Client::new(), &Cache::default(), &config).await,
+            token_endpoint(&Client::new(), &Cache::default(), &config, None).await,
             "https://gateway.internal/token",
             "a deployment that named an endpoint must keep it"
         );
@@ -192,7 +199,7 @@ mod tests {
         let config = GrokAuthConfig::new(server.uri(), "client-1");
 
         assert_eq!(
-            token_endpoint(&Client::new(), &Cache::default(), &config).await,
+            token_endpoint(&Client::new(), &Cache::default(), &config, None).await,
             config.token_endpoint
         );
     }

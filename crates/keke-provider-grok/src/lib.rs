@@ -10,9 +10,10 @@
 //! proxy, which speaks the responses wire, fixes its own sampling, and
 //! publishes a catalog with reasoning levels in it. An API key is spent at the
 //! pay-per-token API, which takes chat completions and answers `/models` with
-//! the plain listing. Which one a session talks to follows the credential, and
-//! the composition root is the only place that knows which is stored — so the
-//! address arrives from there rather than being guessed here.
+//! the plain listing. Both can be registered at once, under names a deployment
+//! chooses, because an [`Endpoint`] carries its own route rather than taking
+//! [`ROUTE`] as given — so the address, the wire, and the account all arrive
+//! from the composition root rather than being guessed here.
 
 mod catalog;
 
@@ -39,6 +40,18 @@ pub const DEFAULT_BASE_URL: &str = "https://api.x.ai/v1";
 
 /// How to reach xAI for one session.
 pub struct Endpoint {
+    /// What this instance registers as. [`ROUTE`] is the default name, not the
+    /// only one: xAI's two addresses are two instances of this provider, and a
+    /// deployment may run both — so the registry key is an argument rather
+    /// than a constant baked in here.
+    pub route: String,
+    /// Shown in surfaces. Two instances of one vendor need telling apart.
+    pub display_name: String,
+    /// Which registered [`keke_auth_api::AuthProvider`] this instance draws on.
+    /// [`ROUTE`] for the account in force; `route/account` for a named one.
+    /// Supplied rather than derived because only the composition root knows
+    /// which accounts were registered.
+    pub auth_id: String,
     pub base_url: String,
     pub wire_api: WireApi,
     /// Whether this address refuses a request that names a reply budget or a
@@ -50,6 +63,9 @@ impl Default for Endpoint {
     /// The pay-per-token API, which is what an API key reaches.
     fn default() -> Self {
         Self {
+            route: ROUTE.to_string(),
+            display_name: "Grok".to_string(),
+            auth_id: ROUTE.to_string(),
             base_url: DEFAULT_BASE_URL.to_string(),
             wire_api: WireApi::ChatCompletions,
             fixed_sampling: false,
@@ -84,11 +100,11 @@ impl GrokProvider {
         }
         Self {
             info: ProviderInfo {
-                route: ROUTE.to_string(),
-                display_name: "Grok".to_string(),
+                route: endpoint.route,
+                display_name: endpoint.display_name,
                 base_url: wire.base_url().to_string(),
                 wire_api: endpoint.wire_api,
-                auth_id: Some(ROUTE.to_string()),
+                auth_id: Some(endpoint.auth_id),
                 env_key: Some("XAI_API_KEY".to_string()),
             },
             wire,
@@ -125,7 +141,12 @@ impl ModelProvider for GrokProvider {
     /// list is the vendor's own.
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
         Box::pin(async move {
-            let cached = self.cache.as_ref().and_then(|cache| cache.load(ROUTE));
+            // Keyed by this instance's route, not by the vendor: the two
+            // addresses publish different catalogs, and one key for both would
+            // have each overwrite the other's listing every time the picker
+            // opened.
+            let route = self.info.route.as_str();
+            let cached = self.cache.as_ref().and_then(|cache| cache.load(route));
             if let Some(cached) = &cached
                 && cached.fresh
             {
@@ -134,7 +155,7 @@ impl ModelProvider for GrokProvider {
             match self.fetch().await {
                 Ok(models) if !models.is_empty() => {
                     if let Some(cache) = &self.cache {
-                        cache.store(ROUTE, &models);
+                        cache.store(route, &models);
                     }
                     Ok(models)
                 }

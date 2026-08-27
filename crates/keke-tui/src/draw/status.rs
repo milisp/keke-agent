@@ -44,6 +44,15 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Cyan)
         },
     ));
+    // Which route is serving. Shown beside the model because one vendor can be
+    // registered twice — a subscription login and an API key — and then the
+    // model id alone does not say which of them the answer came from.
+    if let Some(provider) = app.provider() {
+        spans.push(Span::styled(
+            format!("· {provider} "),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
     // Which model is answering. A person switching between vendors mid-session
     // is choosing what the next answer costs and how good it will be; a bar
     // that does not say leaves them re-reading the transcript to find out.

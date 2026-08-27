@@ -81,6 +81,53 @@ Corporate proxies, TLS-intercepting gateways, custom headers, and the full
 field reference live in [`docs/config.md`](docs/config.md) — the shape is the
 same declaration, just with more fields filled in.
 
+### One vendor, two identities
+
+A subscription login and an API key are two different things spent at two
+different addresses. keke lets you keep both, under names you choose, and
+switch with a flag:
+
+```toml
+[providers.grok]          # your login, and the hours that come with it
+kind = "grok"
+
+[providers.xai]           # the pay-per-token API, on $XAI_API_KEY
+kind = "grok"
+base_url = "https://api.x.ai/v1"
+wire = "chat_completions"
+account = "apikey"
+
+[providers.grok-work]     # the same vendor, as someone else
+kind = "grok"
+account = "work@corp.com"
+```
+
+`keke --provider xai` spends the key; `keke --provider grok` spends the login.
+Logins are filed under the email they carry, so you can have as many as you
+have accounts — and an instance configured as one of them will never quietly
+authenticate as another.
+
+### The right account, per repo
+
+Work accounts belong in work repos. Say it once and stop typing `--provider`:
+
+```toml
+[[dir]]
+match = "~/work/**"
+provider = "grok-work"
+model = "grok-4.6"     # optional
+
+[[dir]]
+match = "~/oss/**"
+provider = "xai"
+```
+
+keke matches the pattern against the repository you are in, so it follows the
+checkout rather than your shell. When several entries match, the last one wins;
+`--provider` on the command line still beats all of them, and an entry pointing
+at a provider you never configured is an error at startup, not a silent
+fallback onto the wrong account.
+
 ## Status
 
 Usable day to day. `keke exec`, the TUI, and the ACP server all run real

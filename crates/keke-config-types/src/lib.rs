@@ -88,6 +88,11 @@ pub struct ModelSelection {
 /// providers exist for vendors that need real behavior of their own (an OAuth
 /// flow, a non-standard error shape); everything else can be declared here, and
 /// a person can add an endpoint keke has never heard of without rebuilding.
+///
+/// A declaration is an *instance*, not a vendor. [`Self::kind`] names which
+/// implementation serves it, and the table key names this particular
+/// configuration of it — so one vendor can appear twice, at two addresses, on
+/// two accounts, without either instance being the other's special case.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct ProviderDeclaration {
@@ -95,13 +100,37 @@ pub struct ProviderDeclaration {
     /// from the table key in configuration, not from a field.
     #[serde(skip)]
     pub route: String,
+    /// Which compiled-in implementation serves this instance — `"grok"`,
+    /// `"codex"`, `"ollama"`. Unset means the generic wire provider, which is
+    /// what a plain endpoint needs and what every declaration meant before
+    /// instances existed.
+    ///
+    /// A kind is what lets `[providers.xai]` and `[providers.grok]` both be
+    /// served by the xAI plugin while differing in address and credential. The
+    /// set of names lives in the composition root, since it is the only place
+    /// allowed to know a vendor exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Which stored account this instance authenticates as, for a kind whose
+    /// credential file holds more than one. Unset means whichever the file
+    /// records as active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// Shown in surfaces; defaults to the route.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    pub base_url: String,
-    /// Which inference format the endpoint speaks.
-    #[serde(default)]
-    pub wire: DeclaredWireApi,
+    /// Where this instance sends requests. Optional only when [`Self::kind`] is
+    /// set, since a compiled-in implementation knows its vendor's own address;
+    /// a declaration with neither is rejected rather than pointed somewhere
+    /// guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Which inference format the endpoint speaks. Unset lets the kind decide,
+    /// which matters because one vendor's two addresses do not agree: xAI's
+    /// subscription proxy speaks `responses` where its public API speaks
+    /// `chat_completions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<DeclaredWireApi>,
     /// Environment variable holding the API key, e.g. `NVIDIA_API_KEY`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_key: Option<String>,
@@ -138,6 +167,155 @@ pub struct ProviderDeclaration {
     /// reserved for the provider's own credential and may not be set here.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+}
+
+/// A provider (and optionally a model) chosen by where the session is running.
+///
+/// Which account someone wants is almost never a property of the invocation and
+/// almost always a property of the repository: a work checkout wants the work
+/// instance, a personal one wants the personal instance. Expressing that as
+/// configuration is what removes `--provider` from every command, in the same
+/// spirit as git's `includeIf gitdir:`.
+///
+/// The pattern is matched against the session's workspace root, so an override
+/// follows the repository rather than the shell's current subdirectory.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct DirectoryOverride {
+    /// The glob the workspace root is matched against. `match` is a Rust
+    /// keyword, hence the rename; the configuration spelling is what a person
+    /// reads, so the file keeps the shorter word.
+    #[serde(rename = "match")]
+    pub pattern: String,
+    /// The provider route to use in matching directories. Must name a
+    /// registered route: an override pointing at a provider that does not exist
+    /// fails loud rather than leaving a person on an account they did not pick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The model to use in matching directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl DirectoryOverride {
+    /// Reject an entry that cannot do anything, naming why.
+    ///
+    /// An override stating neither a provider nor a model is almost certainly a
+    /// half-finished edit, and silently applying nothing is the failure mode
+    /// that costs an afternoon.
+    pub fn check(&self) -> Result<(), String> {
+        if self.pattern.trim().is_empty() {
+            return Err("dir.match must not be empty".to_string());
+        }
+        if self.provider.as_ref().is_some_and(|route| route.is_empty()) {
+            return Err(format!(
+                "dir.provider must not be empty (match = \"{}\")",
+                self.pattern
+            ));
+        }
+        if self.provider.is_none() && self.model.is_none() {
+            return Err(format!(
+                "dir entry for match = \"{}\" sets neither provider nor model",
+                self.pattern
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether this entry applies to `directory`.
+    ///
+    /// `home` expands a leading `~`; passing `None` leaves such a pattern
+    /// unexpanded, which simply will not match an absolute path.
+    #[must_use]
+    pub fn matches(&self, directory: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+        let pattern = match self.pattern.strip_prefix('~') {
+            Some(rest) => {
+                let Some(home) = home else { return false };
+                let rest = rest.trim_start_matches(['/', '\\']);
+                let mut expanded = normalize(home);
+                if !rest.is_empty() {
+                    expanded.push('/');
+                    expanded.push_str(&rest.replace('\\', "/"));
+                }
+                expanded
+            }
+            None => self.pattern.replace('\\', "/"),
+        };
+        glob_match(&pattern, &normalize(directory))
+    }
+}
+
+/// Paths are compared as `/`-separated text, so one pattern spelling works on
+/// every platform and Windows' separator is not mistaken for an escape.
+fn normalize(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let trimmed = text.trim_end_matches('/');
+    if trimmed.is_empty() {
+        text.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// A deliberately small glob: `?` is one character, `*` is any run within one
+/// path segment, and a `**` segment is any run of segments including none.
+///
+/// Small enough to keep this crate dependency-light, which is invariant 3, and
+/// large enough for what these patterns are actually for — naming a directory
+/// and everything under it. `~/work/**` therefore matches `~/work` itself as
+/// well as everything below it, because a person who wrote that meant the tree.
+fn glob_match(pattern: &str, path: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').collect();
+    let path: Vec<&str> = path.split('/').collect();
+    segments_match(&pattern, &path)
+}
+
+fn segments_match(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some((&"**", rest)) => {
+            // Try consuming zero, then one, then more path segments.
+            (0..=path.len()).any(|taken| segments_match(rest, &path[taken..]))
+        }
+        Some((head, rest)) => match path.split_first() {
+            Some((first, tail)) if segment_match(head, first) => segments_match(rest, tail),
+            _ => false,
+        },
+    }
+}
+
+/// `*` and `?` within one segment, matched greedily with backtracking.
+fn segment_match(pattern: &str, segment: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let segment: Vec<char> = segment.chars().collect();
+    let (mut p, mut s) = (0, 0);
+    let (mut star, mut resume) = (None, 0);
+    while s < segment.len() {
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some(p);
+                resume = s;
+                p += 1;
+            }
+            Some('?') => {
+                p += 1;
+                s += 1;
+            }
+            Some(&literal) if literal == segment[s] => {
+                p += 1;
+                s += 1;
+            }
+            _ => match star {
+                Some(index) => {
+                    p = index + 1;
+                    resume += 1;
+                    s = resume;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|&character| character == '*')
 }
 
 /// The wire format a declared provider speaks.
@@ -413,5 +591,54 @@ impl Default for SubagentLimits {
             max_concurrent: 3,
             timeout_millis: 600_000,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn entry(pattern: &str) -> DirectoryOverride {
+        DirectoryOverride {
+            pattern: pattern.to_string(),
+            provider: Some("grok-work".to_string()),
+            model: None,
+        }
+    }
+
+    /// A leading `~` names the person's home directory, as it does everywhere
+    /// else they type a path.
+    #[test]
+    fn a_tilde_pattern_matches_below_the_home_directory() {
+        let home = Path::new("/home/ada");
+        assert!(entry("~/work/**").matches(Path::new("/home/ada/work/api"), Some(home)));
+        assert!(!entry("~/work/**").matches(Path::new("/home/ada/oss/keke"), Some(home)));
+    }
+
+    /// Someone who wrote `~/work/**` meant the tree, the root of it included.
+    #[test]
+    fn a_trailing_double_star_matches_the_directory_itself() {
+        let home = Path::new("/home/ada");
+        assert!(entry("~/work/**").matches(Path::new("/home/ada/work"), Some(home)));
+    }
+
+    /// A single `*` stays inside one path segment, so a broad rule cannot
+    /// reach into a tree the person did not name.
+    #[test]
+    fn a_single_star_does_not_cross_a_path_separator() {
+        assert!(entry("/srv/*").matches(Path::new("/srv/api"), None));
+        assert!(!entry("/srv/*").matches(Path::new("/srv/api/nested"), None));
+    }
+
+    #[test]
+    fn an_entry_stating_nothing_is_rejected() {
+        let empty = DirectoryOverride {
+            pattern: "~/work/**".to_string(),
+            provider: None,
+            model: None,
+        };
+        assert!(empty.check().is_err());
+        assert!(entry("~/work/**").check().is_ok());
     }
 }

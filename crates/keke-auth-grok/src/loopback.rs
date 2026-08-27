@@ -65,7 +65,7 @@ pub(crate) async fn run(
 
     let tokens = exchange(
         http,
-        &crate::discovery::token_endpoint(http, discovery, config).await,
+        &crate::discovery::token_endpoint(http, discovery, config, None).await,
         &[
             ("grant_type", "authorization_code"),
             ("code", code.as_str()),
@@ -76,7 +76,7 @@ pub(crate) async fn run(
     )
     .await?;
 
-    Ok(tokens.into_tokens(None, None))
+    Ok(tokens.into_tokens(None, None, Some(config.issuer.clone())))
 }
 
 fn authorize_url(

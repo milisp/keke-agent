@@ -70,6 +70,47 @@ default_model = "qwen3.8"
 
 企业代理、TLS 拦截网关、自定义请求头及完整的配置字段参考详见 [`docs/config.md`](docs/config.md)——结构相同，仅需填充对应字段。
 
+### 同一家厂商，两个身份
+
+订阅登录和 API key 是两样东西，花在两个不同的地址上，各自在对方那里都不被接受。
+keke 让你同时保留两者，用你自己起的名字，一个参数切换：
+
+```toml
+[providers.grok]          # 你的登录，以及随之而来的额度
+kind = "grok"
+
+[providers.xai]           # 按量付费 API，用 $XAI_API_KEY
+kind = "grok"
+base_url = "https://api.x.ai/v1"
+wire = "chat_completions"
+account = "apikey"
+
+[providers.grok-work]     # 同一家厂商，另一个人
+kind = "grok"
+account = "work@corp.com"
+```
+
+`keke --provider xai` 花的是 key，`keke --provider grok` 花的是登录。
+登录按 token 里的邮箱归档，所以你有几个账号就能存几个——而且配置成某个身份的
+实例，绝不会悄悄用另一个身份去认证。
+
+### 按目录自动切换账号
+
+工作仓库用工作账号。配置一次，从此不必每次都敲 `--provider`：
+
+```toml
+[[dir]]
+match = "~/work/**"
+provider = "grok-work"
+model = "grok-4.6"     # 可选
+
+[[dir]]
+match = "~/oss/**"
+provider = "xai"
+```
+
+keke 用该模式匹配你所在的仓库根目录，因此它跟随仓库而不是当前 shell 所在的子目录。多条规则同时命中时，以最后一条为准；命令行上的 `--provider` 仍然优先于所有规则；若规则指向一个未配置的 provider，keke 会在启动时报错，而不是悄悄退回到错误的账号。
+
 ## 现状
 
 日常开发已完全可用。`keke exec`、TUI 和 ACP 服务器均支持端到端完整运行会话；运行时插件（skills、commands、hooks、MCP servers）遵循 Claude Code 格式安装，仓库自带的插件在你显式批准前会保持非激活状态。在运行中的会话内可通过 `/model` 切换模型（模型与 provider 绑定，避免配置持久化无效组合），并且 agent 支持生成子 agent——分配独立任务的子会话，仅汇总返回最终结果而不会污染完整的搜索 trace。后续规划请参见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。

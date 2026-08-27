@@ -27,6 +27,7 @@ use keke_paths::AbsPath;
 use serde::Deserialize;
 
 use crate::error::AuthFileError;
+use crate::vendor::AuthDocument;
 use crate::vendor::AuthFile;
 use crate::vendor::AuthMode;
 use crate::vendor::AuthTokens;
@@ -56,8 +57,26 @@ pub struct ImportedCredential {
     pub vendor: Vendor,
     /// Ready to be written as `auth.<vendor>.json` — but not written by the
     /// import itself.
-    pub auth: AuthFile,
+    ///
+    /// Every account the foreign tool held, not the newest one. The grok CLI
+    /// keys its `auth.json` by `"<issuer>::<client_id>"` and a person with two
+    /// logins has two records; collapsing them to one discarded both the other
+    /// account and the issuer that signed it.
+    pub auth: AuthDocument,
     pub provenance: Provenance,
+}
+
+impl ImportedCredential {
+    /// The account the foreign tool had in force, when it had one.
+    ///
+    /// `None` is reachable only for a document with several accounts and no
+    /// `active` — which an import never produces, but which the type permits
+    /// and a caller must therefore be allowed to see rather than be panicked
+    /// on.
+    #[must_use]
+    pub fn active_account(&self) -> Option<&AuthFile> {
+        self.auth.resolve(None).map(|(_, file)| file)
+    }
 }
 
 /// Which foreign CLIs an [`Importer`] knows how to read.
@@ -137,9 +156,12 @@ impl Importer {
             .map_err(|err| AuthFileError::malformed(path.as_path(), &err))?;
         let auth = document.into_auth_file();
 
+        // codex's own file holds exactly one credential, so an import from it
+        // is one account. Naming it `default` rather than inventing an
+        // identity keeps the migration honest about what the file said.
         Ok(auth.map(|auth| ImportedCredential {
             vendor: vendor.clone(),
-            auth,
+            auth: AuthDocument::single(auth),
             provenance: Provenance {
                 tool: "codex",
                 path,
@@ -239,12 +261,12 @@ impl CodexAuthJson {
             .filter(|tokens| !tokens.access_token.trim().is_empty())
         {
             return Some(AuthFile {
-                schema_version: crate::vendor::SCHEMA_VERSION,
                 auth_mode: AuthMode::Chatgpt,
                 tokens: Some(AuthTokens {
                     access_token: tokens.access_token,
                     refresh_token: tokens.refresh_token,
                     account_id: tokens.account_id,
+                    issuer: None,
                     expires_at: None,
                 }),
                 api_key: None,
@@ -262,6 +284,12 @@ impl CodexAuthJson {
 struct GrokRecord {
     #[serde(default)]
     key: String,
+    /// Who signed this token set. The grok CLI records it per record because
+    /// one file can hold logins from several issuers; keke keeps it for the
+    /// same reason, and because a refresh posted to a constant instead is the
+    /// bug this field exists to prevent.
+    #[serde(default)]
+    oidc_issuer: Option<String>,
     #[serde(default)]
     auth_mode: Option<String>,
     #[serde(default)]
@@ -282,7 +310,9 @@ const GROK_API_KEY_SCOPE: &str = "xai::api_key";
 /// A person with both has logged in interactively at some point; that is the
 /// credential with an identity attached, and the one whose expiry keke can
 /// renew.
-fn pick_grok_credential(store: std::collections::BTreeMap<String, GrokRecord>) -> Option<AuthFile> {
+fn pick_grok_credential(
+    store: std::collections::BTreeMap<String, GrokRecord>,
+) -> Option<AuthDocument> {
     let (logins, keys): (Vec<_>, Vec<_>) = store
         .into_iter()
         .filter(|(_, record)| !record.key.trim().is_empty())
@@ -290,27 +320,70 @@ fn pick_grok_credential(store: std::collections::BTreeMap<String, GrokRecord>) -
             scope != GROK_API_KEY_SCOPE && record.auth_mode.as_deref() != Some("api_key")
         });
 
-    if let Some((_, record)) = logins
-        .into_iter()
-        .max_by_key(|(_, record)| record.create_time)
-    {
-        return Some(AuthFile {
-            schema_version: crate::vendor::SCHEMA_VERSION,
+    // Newest last, so it is the one `put` leaves active after the loop.
+    let mut logins = logins;
+    logins.sort_by_key(|(_, record)| record.create_time);
+
+    let mut document = AuthDocument {
+        schema_version: crate::vendor::SCHEMA_VERSION,
+        active: None,
+        accounts: std::collections::BTreeMap::new(),
+    };
+    for (scope, record) in logins {
+        let issuer = record.oidc_issuer.clone().or_else(|| issuer_of(&scope));
+        let name = record
+            .user_id
+            .clone()
+            .unwrap_or_else(|| scope_account_name(&scope));
+        let file = AuthFile {
             auth_mode: AuthMode::Oidc,
             tokens: Some(AuthTokens {
                 access_token: record.key,
                 refresh_token: record.refresh_token,
                 account_id: record.user_id,
+                issuer,
                 expires_at: record.expires_at.map(|at| at.timestamp()),
             }),
             api_key: None,
             last_refresh: record.create_time,
-        });
+        };
+        document.accounts.insert(name.clone(), file);
+        document.active = Some(name);
     }
 
-    keys.into_iter()
-        .next()
-        .map(|(_, record)| AuthFile::from_api_key(record.key))
+    // A stored key sits beside the logins rather than replacing them: it is
+    // one more way to authenticate as this vendor, which is exactly what an
+    // account is. A person with both keeps both.
+    if let Some((_, record)) = keys.into_iter().next() {
+        document.accounts.insert(
+            crate::vendor::API_KEY_ACCOUNT.to_string(),
+            AuthFile::from_api_key(record.key),
+        );
+        if document.active.is_none() {
+            document.active = Some(crate::vendor::API_KEY_ACCOUNT.to_string());
+        }
+    }
+
+    (!document.accounts.is_empty()).then_some(document)
+}
+
+/// The issuer half of a `"<issuer>::<client_id>"` scope key.
+fn issuer_of(scope: &str) -> Option<String> {
+    scope
+        .split_once("::")
+        .map(|(issuer, _)| issuer.to_string())
+        .filter(|issuer| issuer.starts_with("http"))
+}
+
+/// A name for a login whose record carried no user id.
+///
+/// The scope is not pretty, but it is unique and it is what the person would
+/// see in the foreign tool's own file — better than a counter nobody can match
+/// back to anything.
+fn scope_account_name(scope: &str) -> String {
+    scope
+        .split_once("::")
+        .map_or_else(|| scope.to_string(), |(_, client)| client.to_string())
 }
 
 #[cfg(test)]
@@ -365,8 +438,16 @@ mod tests {
             .expect("import")
             .expect("a codex login must be found");
 
-        assert_eq!(found.auth.auth_mode, AuthMode::Chatgpt);
-        let tokens = found.auth.tokens.expect("tokens");
+        assert_eq!(
+            found.active_account().expect("an account").auth_mode,
+            AuthMode::Chatgpt
+        );
+        let tokens = found
+            .active_account()
+            .expect("an account")
+            .tokens
+            .clone()
+            .expect("tokens");
         assert_eq!(tokens.access_token, "codex-access-1");
         assert_eq!(tokens.refresh_token.as_deref(), Some("codex-refresh-1"));
         assert_eq!(tokens.account_id.as_deref(), Some("acct-9"));
@@ -398,8 +479,18 @@ mod tests {
             .import(&codex())
             .expect("import")
             .expect("present");
-        assert_eq!(found.auth.auth_mode, AuthMode::ApiKey);
-        assert_eq!(found.auth.api_key.as_deref(), Some("sk-codex-1"));
+        assert_eq!(
+            found.active_account().expect("an account").auth_mode,
+            AuthMode::ApiKey
+        );
+        assert_eq!(
+            found
+                .active_account()
+                .expect("an account")
+                .api_key
+                .as_deref(),
+            Some("sk-codex-1")
+        );
     }
 
     #[test]
@@ -432,8 +523,16 @@ mod tests {
             .expect("import")
             .expect("present");
 
-        assert_eq!(found.auth.auth_mode, AuthMode::Oidc);
-        let tokens = found.auth.tokens.expect("tokens");
+        assert_eq!(
+            found.active_account().expect("an account").auth_mode,
+            AuthMode::Oidc
+        );
+        let tokens = found
+            .active_account()
+            .expect("an account")
+            .tokens
+            .clone()
+            .expect("tokens");
         assert_eq!(tokens.access_token, "xai-access-1");
         assert_eq!(tokens.refresh_token.as_deref(), Some("xai-refresh-1"));
         assert_eq!(tokens.account_id.as_deref(), Some("user-3"));
@@ -456,8 +555,18 @@ mod tests {
             .import(&grok())
             .expect("import")
             .expect("present");
-        assert_eq!(found.auth.auth_mode, AuthMode::ApiKey);
-        assert_eq!(found.auth.api_key.as_deref(), Some("xai-key-1"));
+        assert_eq!(
+            found.active_account().expect("an account").auth_mode,
+            AuthMode::ApiKey
+        );
+        assert_eq!(
+            found
+                .active_account()
+                .expect("an account")
+                .api_key
+                .as_deref(),
+            Some("xai-key-1")
+        );
     }
 
     #[test]

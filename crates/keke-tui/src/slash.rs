@@ -36,6 +36,9 @@ pub enum Builtin {
     /// Opens the model picker, or switches straight to the model named as an
     /// argument.
     Model,
+    /// Opens the provider picker, or points the next session straight at the
+    /// route named as an argument.
+    Provider,
     /// Puts the last reply on the system clipboard.
     Copy,
 }
@@ -157,6 +160,11 @@ fn builtins() -> Vec<SlashCommand> {
             Builtin::Model,
             "model",
             "pick a model from this provider, or name one to switch to it",
+        ),
+        (
+            Builtin::Provider,
+            "provider",
+            "pick which registered provider serves the next session, or name one",
         ),
         (
             Builtin::Copy,

@@ -89,6 +89,9 @@ pub struct GrokAuth {
     auth_files: VendorAuthStore,
     importer: Importer,
     http: reqwest::Client,
+    /// Which stored account this provider speaks for. `None` follows the
+    /// file's own `active`.
+    account: Option<String>,
     refresh: Mutex<Refresh>,
     generation: AtomicU64,
     delay: Arc<dyn Delay>,
@@ -112,6 +115,7 @@ impl GrokAuth {
                 outcome: Ok(()),
             }),
             generation: AtomicU64::new(0),
+            account: None,
             delay: Arc::new(TokioDelay),
             discovery: discovery::Cache::default(),
         }
@@ -136,6 +140,18 @@ impl GrokAuth {
         self
     }
 
+    /// Authenticate as one named account rather than whichever the credential
+    /// file records as active.
+    ///
+    /// A provider instance carries the name (`[providers.grok-work] account =
+    /// "..."`), so two instances of one vendor can be two identities without
+    /// either being a mode the other has to unset.
+    #[must_use]
+    pub fn as_account(mut self, account: Option<String>) -> Self {
+        self.account = account;
+        self
+    }
+
     #[must_use]
     pub fn config(&self) -> &GrokAuthConfig {
         &self.config
@@ -153,7 +169,7 @@ impl GrokAuth {
     fn credential(&self) -> Result<Option<AuthFile>, AuthError> {
         if let Some(file) = self
             .auth_files
-            .load(&self.config.vendor)?
+            .load_account(&self.config.vendor, self.account.as_deref())?
             .filter(AuthFile::has_credential)
         {
             return Ok(Some(file));
@@ -168,9 +184,29 @@ impl GrokAuth {
     /// world-readable one would be keke's problem to answer for.
     fn imported(&self) -> Option<AuthFile> {
         match self.importer.import(&self.config.vendor) {
-            Ok(found) => found.map(|found| found.auth),
+            // The same account this provider speaks for, not whichever the
+            // foreign tool had in force. An instance configured as one
+            // identity must not quietly adopt another's login just because it
+            // is the one lying around.
+            Ok(found) => found.and_then(|found| {
+                found
+                    .auth
+                    .resolve(self.account.as_deref())
+                    .map(|(_, file)| file.clone())
+            }),
             Err(err) => {
                 tracing::warn!(auth = AUTH_ID, %err, "ignoring an existing grok CLI login");
+                None
+            }
+        }
+    }
+
+    /// Every account a foreign CLI's file holds, for `login` to adopt whole.
+    fn imported_document(&self) -> Option<keke_credentials::AuthDocument> {
+        match self.importer.import(&self.config.vendor) {
+            Ok(found) => found.map(|found| found.auth),
+            Err(err) => {
+                tracing::warn!(auth = AUTH_ID, %err, "ignoring an existing CLI login");
                 None
             }
         }
@@ -180,10 +216,31 @@ impl GrokAuth {
         Ok(self.credential()?.and_then(|file| file.tokens))
     }
 
+    /// File a fresh login under the identity it carries.
+    ///
+    /// The name comes from the token's own claims rather than from a counter,
+    /// so a person with two logins sees two things they recognize. A token
+    /// with nothing readable in it still has to be addressable, which is what
+    /// [`keke_credentials::DEFAULT_ACCOUNT`] is for.
     fn save(&self, mode: AuthMode, tokens: AuthTokens) -> Result<(), AuthError> {
-        self.auth_files
-            .save(&self.config.vendor, &AuthFile::from_tokens(mode, tokens))?;
+        let account = Self::account_name(&tokens);
+        self.auth_files.save_account(
+            &self.config.vendor,
+            Some(&account),
+            &AuthFile::from_tokens(mode, tokens),
+        )?;
+        self.auth_files.set_active(&self.config.vendor, &account)?;
         Ok(())
+    }
+
+    /// What to call the account a token set belongs to.
+    fn account_name(tokens: &AuthTokens) -> String {
+        let claims = jwt::claims(&tokens.access_token).unwrap_or_default();
+        claims
+            .email
+            .or(claims.sub)
+            .or_else(|| tokens.account_id.clone())
+            .unwrap_or_else(|| keke_credentials::DEFAULT_ACCOUNT.to_string())
     }
 
     /// A login's headers.
@@ -199,8 +256,20 @@ impl GrokAuth {
     }
 
     /// An API key the deployment supplied, from the layered credential store.
+    ///
+    /// Reachable only when this provider speaks for no particular account, or
+    /// for the one that *means* the key. An instance configured as
+    /// `work@corp.com` must not quietly authenticate as whatever key happens
+    /// to be exported: that would spend the wrong quota under the wrong
+    /// identity, which is the failure every account rule here exists to
+    /// prevent.
     fn api_key(&self) -> Result<Option<String>, AuthError> {
-        Ok(self.credentials.load(&self.config.api_key_ref)?)
+        match self.account.as_deref() {
+            None | Some(keke_credentials::API_KEY_ACCOUNT) => {
+                Ok(self.credentials.load(&self.config.api_key_ref)?)
+            }
+            Some(_) => Ok(None),
+        }
     }
 
     /// Refresh at most once, however many callers ask at once.
@@ -235,7 +304,9 @@ impl GrokAuth {
         // write: between an unlocked read and the exchange, another keke
         // process can rotate the refresh token, and presenting the superseded
         // one gets `invalid_grant` — which reads as a revoked login.
-        let mutation = self.auth_files.begin(&self.config.vendor)?;
+        let mutation = self
+            .auth_files
+            .begin_account(&self.config.vendor, self.account.as_deref())?;
         let current = mutation
             .load()?
             .filter(AuthFile::has_credential)
@@ -254,6 +325,12 @@ impl GrokAuth {
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AuthError::RefreshFailed("the stored credential has no refresh token".into())
         })?;
+        // Whoever signed this token set is who renews it. See
+        // `discovery::token_endpoint`.
+        let issuer = tokens
+            .issuer
+            .clone()
+            .unwrap_or_else(|| self.config.issuer.clone());
 
         // xAI mints a token *for a principal*, and renewing one without saying
         // which principal it belongs to is refused. The claims are the only
@@ -274,14 +351,15 @@ impl GrokAuth {
 
         let response = endpoint::exchange(
             &self.http,
-            &discovery::token_endpoint(&self.http, &self.discovery, &self.config).await,
+            &discovery::token_endpoint(&self.http, &self.discovery, &self.config, Some(&issuer))
+                .await,
             &form,
         )
         .await?;
 
         mutation.save(&AuthFile::from_tokens(
             current.auth_mode,
-            response.into_tokens(Some(refresh_token), tokens.account_id),
+            response.into_tokens(Some(refresh_token), tokens.account_id, Some(issuer)),
         ))?;
         Ok(())
     }
@@ -406,10 +484,20 @@ impl AuthProvider for GrokAuth {
         Box::pin(async move {
             let stored = self.auth_files.load(&self.config.vendor)?;
             if !stored.is_some_and(|file| file.has_credential())
-                && let Some(imported) = self.imported()
+                && let Some(imported) = self.imported_document()
             {
                 ui.notice("adopting the existing grok CLI login");
-                self.auth_files.save(&self.config.vendor, &imported)?;
+                // Every account the other tool held, not just the one it had
+                // in force: a person with two logins there has two here, and
+                // discarding the rest would make the adoption lossy in a way
+                // nothing later can recover.
+                for (name, file) in &imported.accounts {
+                    self.auth_files
+                        .save_account(&self.config.vendor, Some(name), file)?;
+                }
+                if let Some(active) = imported.active.as_deref() {
+                    self.auth_files.set_active(&self.config.vendor, active)?;
+                }
                 return Ok(());
             }
 
@@ -550,6 +638,38 @@ mod tests {
             .expect("path")
             .to_string();
         assert!(path.ends_with("auth.grok.json"), "{path}");
+    }
+
+    /// An instance configured as one identity must not authenticate as
+    /// whatever key happens to be exported: that spends the wrong quota under
+    /// the wrong identity, which reads to the person as nothing being wrong.
+    #[tokio::test]
+    async fn a_named_account_does_not_fall_back_to_the_deployment_key() {
+        let home = Home::new();
+        let store = Arc::new(MemoryStore::new());
+        store
+            .save(&GrokAuthConfig::default().api_key_ref, "xai-deployment-key")
+            .expect("save");
+
+        let shared = xai(&home, &store, GrokAuthConfig::default());
+        assert!(
+            shared.has_usable_credential(),
+            "an instance naming no account still reaches the deployment key"
+        );
+
+        let named = xai(&home, &store, GrokAuthConfig::default())
+            .as_account(Some("work@corp.com".to_string()));
+        assert!(
+            !named.has_usable_credential(),
+            "an account with no stored login is not signed in just because a key exists"
+        );
+
+        let key_account = xai(&home, &store, GrokAuthConfig::default())
+            .as_account(Some(keke_credentials::API_KEY_ACCOUNT.to_string()));
+        assert!(
+            key_account.has_usable_credential(),
+            "the account that means the key reaches it"
+        );
     }
 
     #[test]

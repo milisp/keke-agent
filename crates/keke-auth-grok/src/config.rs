@@ -128,8 +128,11 @@ impl GrokAuthConfig {
         format!("{}/oauth2/authorize", self.base())
     }
 
-    pub(crate) fn derived_token_endpoint(&self) -> String {
-        format!("{}/oauth2/token", self.base())
+    /// The standard path under an issuer that is not necessarily this
+    /// config's — a credential records who signed it, and that is who renews
+    /// it.
+    pub(crate) fn derived_token_endpoint_for(&self, issuer: &str) -> String {
+        format!("{}/oauth2/token", issuer.trim_end_matches('/'))
     }
 
     pub(crate) fn derived_device_authorization_endpoint(&self) -> String {

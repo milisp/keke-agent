@@ -1426,6 +1426,117 @@ async fn without_a_list_any_model_is_accepted() {
     );
 }
 
+/// An app whose host told it which provider instances are registered.
+fn app_with_providers() -> (
+    App,
+    Arc<ScriptedConversation>,
+    UnboundedReceiver<Update>,
+    UnboundedReceiver<Update>,
+) {
+    let (app, scripted, updates, local) = app_with_models();
+    (
+        app.with_provider_routes(vec![
+            crate::ProviderChoice {
+                route: "test-provider".to_string(),
+                display_name: "Test Provider".to_string(),
+            },
+            crate::ProviderChoice {
+                route: "xai".to_string(),
+                display_name: "xAI (API key)".to_string(),
+            },
+        ]),
+        scripted,
+        updates,
+        local,
+    )
+}
+
+/// The same question `/model` answers, about a different list: bare
+/// `/provider` is somebody asking what there is, so it opens on the route in
+/// force rather than printing a paragraph that scrolls away.
+#[tokio::test]
+async fn the_provider_command_opens_a_picker_over_the_registered_routes() {
+    let (mut app, _scripted, _updates, _local) = app_with_providers();
+
+    type_text(&mut app, "/provider");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(app.provider_picker().is_some());
+    assert!(app.model_picker().is_none(), "the two lists are not one");
+    let routes: Vec<&str> = app
+        .picker_providers()
+        .iter()
+        .map(|route| route.route.as_str())
+        .collect();
+    assert_eq!(routes, vec!["test-provider", "xai"]);
+    assert_eq!(app.picker_selected(), 0);
+    assert!(app.transcript.is_empty());
+}
+
+/// A name typed in full is an instruction, not a question: nothing opens.
+#[tokio::test]
+async fn a_named_provider_switches_without_opening_anything() {
+    let (mut app, _scripted, _updates, _local) = app_with_providers();
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert!(!app.picker_open());
+    assert_eq!(app.provider(), Some("xai"));
+}
+
+/// A model id belongs to the provider that serves it, so one carried across is
+/// a pair no run ever used.
+#[tokio::test]
+async fn switching_provider_unsets_the_model_the_old_one_served() {
+    let (mut app, _scripted, _updates, _local) = app_with_providers();
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(app.model(), "");
+    // And the old route's list goes with it: keeping it would have `/model`
+    // refuse names the new route does serve.
+    assert!(app.models().is_empty());
+}
+
+/// Invariant 8: a route nothing is registered under is refused by name, here,
+/// where the person can still see what they typed.
+#[tokio::test]
+async fn a_provider_no_route_is_registered_for_is_refused() {
+    let (mut app, _scripted, _updates, _local) = app_with_providers();
+
+    type_text(&mut app, "/provider xaii");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(
+        app.provider(),
+        Some("test-provider"),
+        "a refusal must not move the provider"
+    );
+    assert_eq!(app.model(), "gpt-5.6-sol", "nor unset the model");
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(text)) if text.contains("xaii")));
+}
+
+/// The choice outlives the process, through the one persistence path `/model`
+/// and `/effort` already use.
+#[tokio::test]
+async fn the_chosen_provider_is_written_to_the_user_config() {
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
+    let (app, _scripted, _updates, _local) = app_with_providers();
+    let mut app = app.with_config_home(home.clone());
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+
+    let written = std::fs::read_to_string(home.as_path().join("config.toml"))
+        .expect("the switch was written");
+    assert!(written.contains("provider = \"xai\""), "{written}");
+    // The model is not written back under a route that may not serve it.
+    assert!(!written.contains("model = "), "{written}");
+}
+
 /// Cycling must stay on the ladder the model published, or every second tap
 /// buys a request the endpoint will reject.
 #[tokio::test]
