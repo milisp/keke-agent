@@ -5,11 +5,6 @@
 keke is a local terminal coding agent built for zero-vendor lock-in. 
 Works with subscriptions you already have, standard API keys, or self-hosted local models.
 
-**Status: early (v0.1.x), usable day to day.** Good fit for personal daily
-driving, scripted/CI use, and small-team trials. Not yet the right choice for
-a regulated or uninterruptible production pipeline — see
-[Production & safety](#production--safety).
-
 ## Why keke?
 
 - **Protocol: ACP for every client**
@@ -63,6 +58,14 @@ keke resume                              # pick the last conversation back up
 Provider routes, API keys, local models, gateways, per-directory accounts, and
 all other settings are documented in [`docs/config.md`](docs/config.md).
 
+## Safety
+
+- **Sandboxing & approvals** — `approval_policy` and `sandbox_mode` are
+  configurable to match how you run it ([`docs/config.md`](docs/config.md)).
+- **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
+  execute on `git clone` alone; a person must approve them, keyed to their
+  exact contents, not their path. There's no flag to turn that gate off.
+
 ## Status
 
 Usable day to day. `keke exec`, the TUI, and the ACP server all run real
@@ -74,36 +77,9 @@ agent can spawn subagents — isolated child sessions given one task that
 report back a single answer instead of their whole search trace. See
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next.
 
-## Production & safety
-
-Fine for personal use, local/self-hosted models, and CI one-shots today.
-Before trusting it with anything you can't afford to break, weigh in:
-
-- **Sandboxing & approvals** — default `approval_policy` and `sandbox_mode`
-  are conservative, but you should confirm they match what you're running
-  ([`docs/config.md`](docs/config.md)).
-- **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
-  execute on `git clone` alone; a person must approve them, keyed to their
-  exact contents, not their path. There's no flag to turn that gate off.
-- **Maturity** — early (v0.1.x), single-maintainer, no formal security audit
-  or SLA. Remaining roadmap gaps (full end-to-end MCP tool-call verification)
-  are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
-
-**Good fit:** you want no vendor lock-in, script/CI-friendly one-shot runs,
-local models, or ACP integration into your own editor/client.
-**Not yet a fit:** you need turnkey OAuth for every vendor, an established
-plugin ecosystem, or vendor support contracts.
-
-## Where it comes from
-
-keke is a fresh implementation informed by OpenAI's **codex**, xAI's
-**grok-build**, and **deepseek-harness**. A few pieces are ported and
-attributed in-crate; most of the code is original. Design rationale and
-CI-enforced invariants: [`docs/architecture.md`](docs/architecture.md),
-[`AGENTS.md`](AGENTS.md).
-
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE); code ported from
-other projects is attributed in the `THIRD_PARTY_NOTICES.md` of the crate that
-contains it.
+Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Design rationale
+and source attribution are documented in
+[`docs/architecture.md`](docs/architecture.md#why-it-is-shaped-this-way) and
+`THIRD_PARTY_NOTICES.md` files in the relevant crates.
