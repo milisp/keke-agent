@@ -14,6 +14,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+use super::markdown;
 use crate::transcript::CallState;
 use crate::transcript::Cell;
 use crate::transcript::PermissionCell;
@@ -76,7 +77,8 @@ pub(crate) fn render(
                 push_block(&mut out.lines, "› ", text, Style::new().fg(USER), width);
             }
             Cell::Assistant(text) => {
-                push_block(&mut out.lines, "", text, Style::new(), width);
+                out.lines
+                    .extend(markdown::render(text, width, Style::new(), ""));
             }
             // The cell still being streamed is the one being read, so it stays
             // open; a finished thought collapses to a line that says it
@@ -89,7 +91,7 @@ pub(crate) fn render(
                         out.toggles.push((out.lines.len(), index));
                         out.lines.push(header("✻", "Thought", "", true, style));
                     }
-                    push_block(&mut out.lines, "  ", text, style, width);
+                    out.lines.extend(markdown::render(text, width, style, "  "));
                 } else {
                     out.toggles.push((out.lines.len(), index));
                     let count = text.split('\n').count();

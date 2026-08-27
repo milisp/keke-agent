@@ -59,6 +59,7 @@ eventsource-stream = "0.2"
 futures = "0.3"
 ignore = "0.4"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9"
 ratatui = "0.29"
 regex = "1"

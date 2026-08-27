@@ -1,6 +1,7 @@
 pub(crate) mod file_search;
 pub(crate) mod header;
 pub(crate) mod input;
+pub(crate) mod markdown;
 pub(crate) mod menu;
 pub(crate) mod picker;
 pub(crate) mod status;
