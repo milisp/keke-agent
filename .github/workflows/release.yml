@@ -80,6 +80,47 @@ jobs:
         if: matrix.use-cross
         run: cross build --release --locked -p keke-cli --target ${{ matrix.target }}
 
+      # A Developer ID signature keeps the same identity across every build,
+      # which is what lets the OS keyring recognize this binary on rebuilds
+      # instead of prompting for Keychain access every run (see scripts/sign-dev.sh
+      # for the equivalent local-dev fix with an ad-hoc signature).
+      - name: Import Apple Developer certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f certificate.p12
+
+      - name: Sign and notarize binary
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${BIN_NAME}"
+          identity="$(security find-identity -v -p codesigning build.keychain | grep -o '"Developer ID Application:.*"' | head -1 | tr -d '"')"
+          codesign --force --options runtime --timestamp -s "$identity" --identifier com.keke.cli "$bin"
+          zip -j notarize.zip "$bin"
+          xcrun notarytool submit notarize.zip --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          rm -f notarize.zip
+          codesign -v "$bin"
+
+      - name: Clean up keychain
+        if: runner.os == 'macOS'
+        run: security delete-keychain build.keychain
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
