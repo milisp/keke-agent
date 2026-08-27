@@ -14,6 +14,10 @@ use serde::Deserialize;
 pub(crate) struct Claims {
     pub exp: Option<i64>,
     pub sub: Option<String>,
+    /// What a person recognizes themselves by, and therefore what an account
+    /// in a multi-account credential file is named. The login asks for the
+    /// `email` scope precisely so this is here to read.
+    pub email: Option<String>,
     #[serde(alias = "organization_id")]
     pub org_id: Option<String>,
     /// xAI names the principal a token was minted for, and its token endpoint

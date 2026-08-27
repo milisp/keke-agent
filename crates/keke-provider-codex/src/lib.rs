@@ -42,6 +42,17 @@ pub struct CodexProvider {
 
 /// How to reach OpenAI for one session.
 pub struct Endpoint {
+    /// What this instance registers as. [`ROUTE`] is the default name, not the
+    /// only one: OpenAI's two addresses are two instances of this provider,
+    /// and a deployment may run both.
+    pub route: String,
+    /// Shown in surfaces. Two instances of one vendor need telling apart.
+    pub display_name: String,
+    /// Which registered [`keke_auth_api::AuthProvider`] this instance draws on.
+    /// [`ROUTE`] for the account in force; `route/account` for a named one.
+    /// Supplied rather than derived because only the composition root knows
+    /// which accounts were registered.
+    pub auth_id: String,
     /// Where to send requests. The composition root picks it from the stored
     /// credential, because a subscription token at the public API and an API
     /// key at the subscription backend both fail as a 401 that names neither
@@ -52,6 +63,21 @@ pub struct Endpoint {
     pub fixed_sampling: bool,
 }
 
+impl Default for Endpoint {
+    /// The ChatGPT backend under this provider's own name. The address is not
+    /// defaulted to the public API because this provider exists for the
+    /// subscription surface; a key-only instance states its address.
+    fn default() -> Self {
+        Self {
+            route: ROUTE.to_string(),
+            display_name: "ChatGPT".to_string(),
+            auth_id: ROUTE.to_string(),
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            fixed_sampling: true,
+        }
+    }
+}
+
 impl CodexProvider {
     #[must_use]
     pub fn new(
@@ -59,17 +85,17 @@ impl CodexProvider {
         endpoint: Endpoint,
         cache: Option<CatalogCache>,
     ) -> Self {
-        let mut wire = WireClient::new(endpoint.base_url, auth);
+        let mut wire = WireClient::new(endpoint.base_url.clone(), auth);
         if endpoint.fixed_sampling {
             wire = wire.with_fixed_sampling();
         }
         Self {
             info: ProviderInfo {
-                route: ROUTE.to_string(),
-                display_name: "ChatGPT".to_string(),
+                route: endpoint.route,
+                display_name: endpoint.display_name,
                 base_url: wire.base_url().to_string(),
                 wire_api: WireApi::Responses,
-                auth_id: Some(ROUTE.to_string()),
+                auth_id: Some(endpoint.auth_id),
                 env_key: Some("OPENAI_API_KEY".to_string()),
             },
             wire,
@@ -108,7 +134,11 @@ impl ModelProvider for CodexProvider {
     /// the compiled-in list is the vendor's own.
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
         Box::pin(async move {
-            let cached = self.cache.as_ref().and_then(|cache| cache.load(ROUTE));
+            // Keyed by this instance's route, not by the vendor: two
+            // instances serve different addresses, and one key for both would
+            // have each overwrite the other's listing.
+            let route = self.info.route.as_str();
+            let cached = self.cache.as_ref().and_then(|cache| cache.load(route));
             if let Some(cached) = &cached
                 && cached.fresh
             {
@@ -117,7 +147,7 @@ impl ModelProvider for CodexProvider {
             match self.fetch().await {
                 Ok(models) if !models.is_empty() => {
                     if let Some(cache) = &self.cache {
-                        cache.store(ROUTE, &models);
+                        cache.store(route, &models);
                     }
                     Ok(models)
                 }

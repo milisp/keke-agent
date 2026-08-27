@@ -58,6 +58,19 @@ pub(crate) enum DeclarationError {
         "provider `{route}`: `headers` may not set `{header}`, which is reserved for the provider's credential"
     )]
     ReservedHeader { route: String, header: String },
+    /// Neither a `kind` to inherit an address from nor a `base_url` to use.
+    /// Guessing one would produce a route that resolves and never connects.
+    #[error("provider `{route}`: needs a `base_url`, or a `kind` to take one from")]
+    NoAddress { route: String },
+    /// A `kind` no compiled-in implementation answers to. Named loudly rather
+    /// than fallen back to the generic wire provider, which would authenticate
+    /// with the wrong scheme and fail as if the credential were bad.
+    #[error("provider `{route}`: unknown kind `{kind}` (known: {known})")]
+    UnknownKind {
+        route: String,
+        kind: String,
+        known: String,
+    },
     /// A header value of the form `env:VAR_NAME` named an environment
     /// variable that is not set.
     #[error(
@@ -191,8 +204,13 @@ pub(crate) fn provider_for_cached(
             .display_name
             .clone()
             .unwrap_or_else(|| declaration.route.clone()),
-        base_url: declaration.base_url.clone(),
-        wire_api: wire_api(declaration.wire),
+        base_url: declaration
+            .base_url
+            .clone()
+            .ok_or_else(|| DeclarationError::NoAddress {
+                route: declaration.route.clone(),
+            })?,
+        wire_api: wire_api(declaration.wire.unwrap_or_default()),
         auth_id: None,
         env_key: declaration.env_key.clone(),
     };
@@ -291,7 +309,7 @@ fn extra_headers(
 
 /// Config states its own format enum so `keke-config-types` need not depend on
 /// the provider contract; this is the one place the two meet.
-fn wire_api(declared: DeclaredWireApi) -> WireApi {
+pub(crate) fn wire_api(declared: DeclaredWireApi) -> WireApi {
     match declared {
         DeclaredWireApi::ChatCompletions => WireApi::ChatCompletions,
         DeclaredWireApi::Responses => WireApi::Responses,
@@ -308,9 +326,11 @@ mod tests {
     fn declaration(headers: BTreeMap<String, String>) -> ProviderDeclaration {
         ProviderDeclaration {
             route: "gateway".to_string(),
+            kind: None,
+            account: None,
             display_name: None,
-            base_url: "https://gateway.example/v1".to_string(),
-            wire: DeclaredWireApi::ChatCompletions,
+            base_url: Some("https://gateway.example/v1".to_string()),
+            wire: Some(DeclaredWireApi::ChatCompletions),
             env_key: None,
             default_model: None,
             ca_cert_path: None,

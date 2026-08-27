@@ -144,7 +144,7 @@ pub trait AuthProvider: Send + Sync + 'static {
 /// The set of registered auth providers.
 #[derive(Default)]
 pub struct AuthRegistry {
-    providers: std::collections::BTreeMap<&'static str, Arc<dyn AuthProvider>>,
+    providers: std::collections::BTreeMap<String, Arc<dyn AuthProvider>>,
 }
 
 impl AuthRegistry {
@@ -155,15 +155,27 @@ impl AuthRegistry {
 
     /// Register `provider` under its declared id, replacing any previous entry.
     pub fn register(&mut self, provider: Arc<dyn AuthProvider>) {
-        self.providers.insert(provider.id(), provider);
+        let id = provider.id().to_string();
+        self.register_as(id, provider);
+    }
+
+    /// Register under an id the caller chose.
+    ///
+    /// [`AuthProvider::id`] names a *vendor*, and one vendor now has as many
+    /// credentials as the person has accounts. Two providers for two accounts
+    /// would otherwise both answer to `"grok"` and the second would silently
+    /// replace the first, leaving every surface reporting on an account no
+    /// session was using.
+    pub fn register_as(&mut self, id: String, provider: Arc<dyn AuthProvider>) {
+        self.providers.insert(id, provider);
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn AuthProvider>> {
         self.providers.get(id).cloned()
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.providers.keys().copied()
+    pub fn ids(&self) -> impl Iterator<Item = &str> + '_ {
+        self.providers.keys().map(String::as_str)
     }
 }
 

@@ -452,9 +452,11 @@ fn pick_local(routes: &[Route]) -> Result<Option<Picked>> {
         route: route.clone(),
         declaration: Some(ProviderDeclaration {
             route,
+            kind: None,
+            account: None,
             display_name: Some(display_name.to_string()),
-            base_url,
-            wire: DeclaredWireApi::ChatCompletions,
+            base_url: Some(base_url),
+            wire: Some(DeclaredWireApi::ChatCompletions),
             env_key: None,
             default_model: None,
             ca_cert_path: None,
@@ -623,9 +625,11 @@ fn declare(taken: &[Route], need: CredentialNeed) -> Result<Option<ProviderDecla
 
     Ok(Some(ProviderDeclaration {
         route,
+        kind: None,
+        account: None,
         display_name: None,
-        base_url,
-        wire,
+        base_url: Some(base_url),
+        wire: Some(wire),
         env_key: env_key.map(|reference| reference.to_string()),
         default_model: (!default_model.is_empty()).then_some(default_model),
         ca_cert_path: None,
@@ -771,9 +775,11 @@ mod tests {
     fn a_declared_endpoint_is_written_in_the_shape_config_parses() {
         let declared = ProviderDeclaration {
             route: "nvidia".to_string(),
+            kind: None,
+            account: None,
             display_name: None,
-            base_url: "https://integrate.api.nvidia.com/v1".to_string(),
-            wire: DeclaredWireApi::ChatCompletions,
+            base_url: Some("https://integrate.api.nvidia.com/v1".to_string()),
+            wire: Some(DeclaredWireApi::ChatCompletions),
             env_key: Some("NVIDIA_API_KEY".to_string()),
             default_model: Some("qwen3-coder".to_string()),
             ca_cert_path: None,

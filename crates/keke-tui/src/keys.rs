@@ -49,10 +49,10 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-        // The model overlay owns the keyboard while it is up, letters
+        // Whichever overlay is up owns the keyboard, letters
         // included: it filters as you type, and a keystroke that went into the
         // composer behind it would be invisible until the overlay closed.
-        if self.model_picker().is_some() && !control {
+        if self.picker_open() && !control {
             self.handle_picker_key(key);
             return;
         }

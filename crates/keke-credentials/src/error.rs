@@ -42,6 +42,12 @@ pub enum AuthFileError {
         supported: u32,
     },
 
+    /// A session asked to authenticate as an account the vendor's file does
+    /// not hold. Named rather than fallen back from: silently using a
+    /// different login would spend the wrong quota under the wrong identity.
+    #[error("no account `{account}` is stored for `{vendor}`")]
+    UnknownAccount { vendor: String, account: String },
+
     #[error("another keke process is holding {path} (waited {millis}ms)")]
     Locked { path: String, millis: u64 },
 

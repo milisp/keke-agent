@@ -149,7 +149,7 @@ async fn poll(
 
         let refusal = match outcome {
             TokenOutcome::Granted(tokens) => {
-                return Ok(tokens.into_tokens(None, None));
+                return Ok(tokens.into_tokens(None, None, Some(config.issuer.clone())));
             }
             TokenOutcome::Refused(refusal) => refusal,
         };

@@ -49,6 +49,7 @@ pub use history::PromptHistory;
 pub use history::PromptRecorder;
 pub use input::InputBox;
 pub use login::Notice;
+pub use picker::ProviderChoice;
 
 pub use login::TuiLoginUi;
 pub use scroll::Scrollback;
@@ -78,6 +79,11 @@ pub struct Models {
     /// Empty when the provider could not be asked and had nothing to fall back
     /// on. The surface then offers no choice rather than a wrong one.
     pub available: Vec<keke_provider_api::ModelInfo>,
+    /// Every provider instance registered in this build, so `/provider` can
+    /// list them. One vendor can appear twice under two routes — a
+    /// subscription login beside an API key — which is precisely why choosing
+    /// between them belongs on a list rather than in a launch flag.
+    pub routes: Vec<ProviderChoice>,
 }
 
 /// What a resumed session hands the interface: what was said and what it
@@ -127,6 +133,7 @@ pub async fn run(
         .with_approval_policy(defaults.approval)
         .with_reasoning_effort(defaults.effort)
         .with_models(models.provider, models.current, models.available)
+        .with_provider_routes(models.routes)
         .with_prompt_history(history)
         .with_config_home(defaults.config_home);
     if !resumed.history.is_empty() || resumed.usage.total() > 0 {

@@ -45,6 +45,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     // typed for this run apart from the config default, so it knows not to
     // clobber a flag with what the session logged.
     let model_explicit = cli.model.is_some();
+    let provider_explicit = cli.provider.is_some();
     let effort_explicit = cli.reasoning_effort.is_some();
     if let Some(provider) = cli.provider {
         // A `model` left over from config.toml names a model on whatever route
@@ -80,6 +81,23 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         config.subagents,
         interactive.then(|| Arc::clone(&approvals)),
     )?;
+
+    // A directory override that names a route nobody registered is not a
+    // preference that can be ignored: silently falling back would run the turn
+    // on whatever account the global default names, which for a work checkout
+    // is the wrong one and says so nowhere.
+    // A `--provider` on the command line has already replaced whatever the
+    // override chose, so there is nothing left of it to check.
+    if let Some(applied) = &config.directory_override
+        && let Some(route) = applied.provider.as_deref().filter(|_| !provider_explicit)
+        && composed.providers.get(route).is_err()
+    {
+        bail!(
+            "the directory override for match = \"{}\" names provider `{route}`, which is not configured; known routes: {}",
+            applied.pattern,
+            composed.providers.routes().collect::<Vec<_>>().join(", ")
+        );
+    }
 
     // A first run that declares an endpoint changes what the registry should
     // contain, and the registry is frozen once built — so it is rebuilt rather
@@ -158,6 +176,22 @@ async fn models_for(composed: &Composed, route: &str) -> Vec<keke_provider_api::
             Vec::new()
         }
     }
+}
+
+/// Every provider instance a person could point the next session at, as
+/// `/provider` needs to describe it.
+fn provider_choices(composed: &Composed) -> Vec<keke_tui::ProviderChoice> {
+    let routes: Vec<String> = composed.providers.routes().map(str::to_string).collect();
+    routes
+        .into_iter()
+        .filter_map(|route| {
+            let provider = composed.providers.get(&route).ok()?;
+            Some(keke_tui::ProviderChoice {
+                display_name: provider.info().display_name.clone(),
+                route,
+            })
+        })
+        .collect()
 }
 
 /// The command list a person completes against, wherever the interface is.
@@ -888,6 +922,7 @@ async fn tui(
             provider: config.model.provider.clone(),
             current: opened.model,
             available: models,
+            routes: provider_choices(&composed),
         },
         seed,
         prompts,

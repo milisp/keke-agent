@@ -57,15 +57,19 @@ impl TokenResponse {
     /// a refresh — a non-rotating issuer answers with the access token alone,
     /// and dropping the refresh token there would turn every refresh into the
     /// last one.
+    /// `issuer` is recorded so the next refresh goes back to whoever minted
+    /// this, rather than to whatever this build's constant happens to say.
     pub(crate) fn into_tokens(
         self,
         previous_refresh: Option<String>,
         account_id: Option<String>,
+        issuer: Option<String>,
     ) -> AuthTokens {
         AuthTokens {
             access_token: self.access_token,
             refresh_token: self.refresh_token.or(previous_refresh),
             account_id,
+            issuer,
             expires_at: self.expires_in.map(|seconds| now() + seconds),
         }
     }

@@ -1,4 +1,4 @@
-//! The floating model overlay.
+//! The floating model and provider overlay.
 //!
 //! Drawn last and over everything, on a cleared rect: it has the keyboard, so
 //! it has to look like it does. Anything showing through it would read as
@@ -18,25 +18,70 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 
-/// At most this many models are on screen at once.
+/// At most this many rows are on screen at once.
 const MAX_ROWS: usize = 12;
 /// How wide the box gets, and how narrow it may be squeezed before it is not
 /// worth drawing.
 const MAX_WIDTH: u16 = 72;
 const MIN_WIDTH: u16 = 24;
 
+/// One row as the overlay needs it: what a person reads, whatever else is
+/// worth saying about it, and whether it is the one in force. Built here
+/// because the two lists are drawn the same way and differ only in what fills
+/// these three fields.
+struct Row {
+    current: bool,
+    label: String,
+    detail: String,
+}
+
 pub(crate) fn draw(frame: &mut Frame, app: &App) {
-    let Some(picker) = app.model_picker() else {
+    let (picker, title, rows) = if let Some(picker) = app.model_picker() {
+        let rows = app
+            .picker_models()
+            .into_iter()
+            .map(|model| {
+                let mut detail = model.id.clone();
+                if let Some(window) = model.context_window {
+                    detail.push_str(&format!("  \u{b7}  {}k context", window / 1_000));
+                }
+                Row {
+                    current: model.id == app.model(),
+                    label: model.display_name.clone(),
+                    detail,
+                }
+            })
+            .collect::<Vec<_>>();
+        (
+            picker,
+            " models \u{2014} type to filter, enter switches, esc cancels ",
+            rows,
+        )
+    } else if let Some(picker) = app.provider_picker() {
+        let rows = app
+            .picker_providers()
+            .into_iter()
+            .map(|route| Row {
+                current: app.provider() == Some(route.route.as_str()),
+                label: route.display_name.clone(),
+                detail: route.route.clone(),
+            })
+            .collect::<Vec<_>>();
+        (
+            picker,
+            " providers \u{2014} type to filter, enter switches, esc cancels ",
+            rows,
+        )
+    } else {
         return;
     };
-    let models = app.picker_models();
     let selected = app.picker_selected();
 
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(MAX_WIDTH);
-    let rows = u16::try_from(models.len().clamp(1, MAX_ROWS)).unwrap_or(1);
+    let rows_shown = u16::try_from(rows.len().clamp(1, MAX_ROWS)).unwrap_or(1);
     // Rows, plus the filter line and the two borders.
-    let height = rows + 3;
+    let height = rows_shown + 3;
     if width < MIN_WIDTH || area.height < height {
         return;
     }
@@ -57,31 +102,27 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         Span::styled("▏", Style::new().fg(Color::Cyan)),
     ])];
 
-    if models.is_empty() {
+    if rows.is_empty() {
         lines.push(Line::styled(
             "  nothing matches — backspace to widen",
             Style::new().fg(Color::DarkGray),
         ));
     }
-    for (at, model) in models.iter().enumerate().skip(first).take(MAX_ROWS) {
+    for (at, row) in rows.iter().enumerate().skip(first).take(MAX_ROWS) {
         let style = if at == selected {
             Style::new().fg(Color::Black).bg(Color::Cyan)
         } else {
             Style::new()
         };
-        // The model in force is marked rather than moved to the top: a list
-        // that reorders itself as you switch is one you cannot learn.
-        let mark = if model.id == app.model() { "*" } else { " " };
+        // The one in force is marked rather than moved to the top: a list that
+        // reorders itself as you switch is one you cannot learn.
+        let mark = if row.current { "*" } else { " " };
         let mut spans = vec![Span::styled(
-            format!(" {mark} {} ", model.display_name),
+            format!(" {mark} {} ", row.label),
             style.add_modifier(Modifier::BOLD),
         )];
-        let mut detail = model.id.clone();
-        if let Some(window) = model.context_window {
-            detail.push_str(&format!("  ·  {}k context", window / 1_000));
-        }
         spans.push(Span::styled(
-            detail,
+            row.detail.clone(),
             style.fg(if at == selected {
                 Color::Black
             } else {
@@ -94,7 +135,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Cyan))
-        .title(" models — type to filter, enter switches, esc cancels ");
+        .title(title);
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }

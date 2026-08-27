@@ -67,9 +67,9 @@ pub struct App {
     /// every keystroke, so typing one more letter does not jump the highlight
     /// back to the top of a list the person was already moving through.
     completion: usize,
-    /// The model overlay, while it is open. `None` is the ordinary state: the
-    /// composer has the keyboard.
-    picker: Option<crate::picker::ModelPicker>,
+    /// The model or provider overlay, while one is open. `None` is the
+    /// ordinary state: the composer has the keyboard.
+    picker: Option<crate::picker::Picker>,
     approval: ApprovalPolicy,
     /// How hard the model is asked to think. `None` is the vendor's own
     /// default, which is a state of its own and not the lowest rung.
@@ -82,6 +82,10 @@ pub struct App {
     /// The route serving `model`. Persisted with it so config.toml always
     /// holds a pair that existed.
     provider: Option<String>,
+    /// Every route this build has registered, so `/provider` can list them and
+    /// refuse a name none of them answers to. Empty when the host did not say,
+    /// and then nothing is refused — keke has no grounds to.
+    routes: Vec<crate::picker::ProviderChoice>,
     models: Vec<keke_provider_api::ModelInfo>,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
@@ -171,6 +175,7 @@ impl App {
                 effort: None,
                 model: String::new(),
                 provider: None,
+                routes: Vec::new(),
                 models: Vec::new(),
                 turn: Turn::Idle,
                 started: None,
@@ -253,6 +258,18 @@ impl App {
         self.provider = Some(provider.into());
         self.model = model.into();
         self.models = models;
+        self
+    }
+
+    /// Every provider instance this build registered, so `/provider` lists
+    /// what a person could point the next session at.
+    ///
+    /// From the composition root for the same reason the model list is: only it
+    /// has a registry, and a surface handed nothing offers no choice rather
+    /// than a wrong one.
+    #[must_use]
+    pub fn with_provider_routes(mut self, routes: Vec<crate::picker::ProviderChoice>) -> Self {
+        self.routes = routes;
         self
     }
 
@@ -899,6 +916,62 @@ impl App {
         }
     }
 
+    /// Which provider route is in force, for the status bar and the overlay's
+    /// current-row mark.
+    #[must_use]
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
+    }
+
+    /// Point the next session at another provider instance, or say why not.
+    ///
+    /// A route nothing is registered under is refused rather than written, for
+    /// the same reason `/model` refuses a model the provider does not serve: a
+    /// name that only fails on the next launch fails long after the command
+    /// that caused it.
+    ///
+    /// The running conversation keeps the provider it was built with — a
+    /// session's route is settled when its provider is handed to it, and
+    /// re-pointing one mid-turn would leave the transcript half-answered by
+    /// each. So this records the choice and says plainly when it takes effect,
+    /// rather than pretending a switch that did not happen.
+    fn set_provider_aloud(&mut self, wanted: &str) {
+        if !self.routes.is_empty() && !self.routes.iter().any(|route| route.route == wanted) {
+            self.transcript.push(Cell::Error(format!(
+                "no provider {wanted:?} on this build — /provider lists them"
+            )));
+            return;
+        }
+        if self.provider.as_deref() == Some(wanted) {
+            self.transcript
+                .push(Cell::Notice(format!("already on provider {wanted}")));
+            return;
+        }
+        let previous = self.provider.replace(wanted.to_string());
+        // A model id belongs to the provider that serves it, so one carried
+        // across is a pair no run ever used. The list goes with it: what this
+        // session knows is what the *old* route published, and keeping it would
+        // have `/model` refuse names the new route does serve.
+        self.model.clear();
+        self.models.clear();
+        let route = wanted.to_string();
+        self.persist_override(move |file| {
+            file.provider = Some(route);
+            file.model = None;
+        });
+
+        let mut notice = format!("provider is now {wanted}");
+        if let Some(previous) = previous {
+            notice.push_str(&format!(
+                " — this session keeps talking to {previous}; restart keke to use it"
+            ));
+        }
+        notice.push_str(
+            ".\nThe model is unset, since an id from the old provider need not exist on this one.",
+        );
+        self.transcript.push(Cell::Notice(notice));
+    }
+
     /// Open the model overlay, or say why there is nothing to open.
     ///
     /// A provider that published no list is not an empty menu: it is a session
@@ -909,41 +982,100 @@ impl App {
             self.transcript.push(Cell::Notice(self.model_list()));
             return;
         }
-        let mut picker = crate::picker::ModelPicker::default();
+        let mut picker = crate::picker::Picker::new(crate::picker::PickerKind::Model);
         if let Some(at) = self.models.iter().position(|model| model.id == self.model) {
             picker.move_selection(at as isize, self.models.len());
         }
         self.picker = Some(picker);
     }
 
-    #[must_use]
-    pub fn model_picker(&self) -> Option<&crate::picker::ModelPicker> {
-        self.picker.as_ref()
+    /// Open the provider overlay, or say why there is nothing to open.
+    ///
+    /// A build whose registry was never handed over is the provider list's
+    /// version of a provider that published no models: the person is told what
+    /// is in force and asked to name one, not shown an empty box.
+    pub fn open_provider_picker(&mut self) {
+        if self.routes.is_empty() {
+            self.transcript.push(Cell::Notice(self.provider_list()));
+            return;
+        }
+        let mut picker = crate::picker::Picker::new(crate::picker::PickerKind::Provider);
+        if let Some(at) = self
+            .routes
+            .iter()
+            .position(|route| Some(&route.route) == self.provider.as_ref())
+        {
+            picker.move_selection(at as isize, self.routes.len());
+        }
+        self.picker = Some(picker);
     }
 
-    /// The rows the overlay is showing this frame, after its filter.
+    /// The model overlay, if that is the one that is open.
+    #[must_use]
+    pub fn model_picker(&self) -> Option<&crate::picker::Picker> {
+        self.picker
+            .as_ref()
+            .filter(|picker| picker.kind() == crate::picker::PickerKind::Model)
+    }
+
+    /// The provider overlay, if that is the one that is open.
+    #[must_use]
+    pub fn provider_picker(&self) -> Option<&crate::picker::Picker> {
+        self.picker
+            .as_ref()
+            .filter(|picker| picker.kind() == crate::picker::PickerKind::Provider)
+    }
+
+    /// Whether either overlay has the keyboard.
+    #[must_use]
+    pub fn picker_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    /// The model rows the overlay is showing this frame, after its filter.
     #[must_use]
     pub fn picker_models(&self) -> Vec<&keke_provider_api::ModelInfo> {
-        let Some(picker) = &self.picker else {
+        let Some(picker) = self.model_picker() else {
             return Vec::new();
         };
         self.models
             .iter()
-            .filter(|model| picker.matches(model))
+            .filter(|model| picker.matches(*model))
             .collect()
     }
 
-    /// Which row of [`App::picker_models`] is highlighted.
+    /// The provider rows the overlay is showing this frame, after its filter.
+    #[must_use]
+    pub fn picker_providers(&self) -> Vec<&crate::picker::ProviderChoice> {
+        let Some(picker) = self.provider_picker() else {
+            return Vec::new();
+        };
+        self.routes
+            .iter()
+            .filter(|route| picker.matches(*route))
+            .collect()
+    }
+
+    /// How many rows the open overlay is showing, whichever list it is.
+    fn picker_rows(&self) -> usize {
+        match self.picker.as_ref().map(crate::picker::Picker::kind) {
+            Some(crate::picker::PickerKind::Model) => self.picker_models().len(),
+            Some(crate::picker::PickerKind::Provider) => self.picker_providers().len(),
+            None => 0,
+        }
+    }
+
+    /// Which row of the open overlay is highlighted.
     #[must_use]
     pub fn picker_selected(&self) -> usize {
-        let count = self.picker_models().len();
+        let count = self.picker_rows();
         self.picker
             .as_ref()
             .map_or(0, |picker| picker.selected(count))
     }
 
     pub(crate) fn move_picker_selection(&mut self, delta: isize) {
-        let count = self.picker_models().len();
+        let count = self.picker_rows();
         if let Some(picker) = &mut self.picker {
             picker.move_selection(delta, count);
         }
@@ -961,16 +1093,26 @@ impl App {
         }
     }
 
-    /// Switch to the highlighted model and close. A filter that matches
-    /// nothing accepts nothing — there is no row under the cursor to mean.
+    /// Switch to the highlighted row and close. A filter that matches nothing
+    /// accepts nothing — there is no row under the cursor to mean.
     pub(crate) fn accept_picker(&mut self) {
-        let wanted = self
-            .picker_models()
-            .get(self.picker_selected())
-            .map(|model| model.id.clone());
-        if let Some(wanted) = wanted {
-            self.close_picker();
-            self.set_model_aloud(&wanted);
+        let at = self.picker_selected();
+        match self.picker.as_ref().map(crate::picker::Picker::kind) {
+            Some(crate::picker::PickerKind::Model) => {
+                let wanted = self.picker_models().get(at).map(|model| model.id.clone());
+                if let Some(wanted) = wanted {
+                    self.close_picker();
+                    self.set_model_aloud(&wanted);
+                }
+            }
+            Some(crate::picker::PickerKind::Provider) => {
+                let wanted = self.picker_providers().get(at).map(|row| row.route.clone());
+                if let Some(wanted) = wanted {
+                    self.close_picker();
+                    self.set_provider_aloud(&wanted);
+                }
+            }
+            None => {}
         }
     }
 
@@ -1017,6 +1159,16 @@ impl App {
         text
     }
 
+    /// What `/provider` says when there is no list to open.
+    fn provider_list(&self) -> String {
+        format!(
+            "provider: {}\n\nThis session was not told which providers are registered, so there \n\
+             is nothing to choose between here. `/provider <name>` still points the next \n\
+             session at whatever you name.",
+            self.provider.as_deref().unwrap_or("(unset)")
+        )
+    }
+
     fn run_command(&mut self, typed: &str, name: &str, arguments: &str) {
         let Some(command) = self.commands.find(name) else {
             self.transcript.push(Cell::Error(format!(
@@ -1052,6 +1204,14 @@ impl App {
                     self.open_model_picker();
                 } else {
                     self.set_model_aloud(&wanted);
+                }
+            }
+            SlashAction::Builtin(Builtin::Provider) => {
+                let wanted = arguments.trim().to_string();
+                if wanted.is_empty() {
+                    self.open_provider_picker();
+                } else {
+                    self.set_provider_aloud(&wanted);
                 }
             }
             SlashAction::Prompt(path) => match std::fs::read_to_string(&path) {

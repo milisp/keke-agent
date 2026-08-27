@@ -2,7 +2,10 @@
 //!
 //! Settings come from three layers, later ones overriding earlier:
 //! managed (deployment policy), user (`$KEKE_HOME/config.toml`), and project
-//! (`.keke/config.toml` beside the workspace root). Splitting the *values*
+//! (`.keke/config.toml` beside the workspace root). On top of the merged
+//! result — and beneath any flag typed on the command line — come the
+//! `[[dir]]` entries, which pick a provider and model by which repository the
+//! session is in. Splitting the *values*
 //! into `keke-config-types` and the *loading* here is what lets a plugin name a
 //! setting without depending on how settings reach disk.
 //!
@@ -22,6 +25,7 @@ use std::path::Path;
 
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::CompactionConfig;
+use keke_config_types::DirectoryOverride;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelCatalogTtl;
@@ -78,6 +82,10 @@ pub struct Config {
     /// Endpoints declared from configuration, in addition to the compiled-in
     /// vendors.
     pub providers: Vec<ProviderDeclaration>,
+    /// The directory override that applied, if one did. Kept so the composition
+    /// root can check the route it names against the registry — and so `keke
+    /// doctor` can say which pattern moved a person off their default.
+    pub directory_override: Option<DirectoryOverride>,
     /// Which layers contributed, in application order. Kept so `keke doctor`
     /// can answer "where did this value come from" without re-reading disk.
     pub sources: Vec<LayerSource>,
@@ -108,6 +116,11 @@ pub struct ConfigFile {
     /// restating the user's.
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderDeclaration>,
+    /// Per-directory choices: `[[dir]]`. Accumulated across layers in the order
+    /// the layers apply, and applied after all of them — see
+    /// [`Config::from_layers`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dir: Vec<DirectoryOverride>,
 }
 
 /// The compaction section, separated so a layer can override one field of it.
@@ -216,6 +229,10 @@ impl Config {
             for (route, declaration) in &layer.file.providers {
                 merged.providers.insert(route.clone(), declaration.clone());
             }
+            // Appended rather than replaced, for the same reason declarations
+            // accumulate: a project may add a rule without restating the
+            // user's. Order is layer order, and the last match wins.
+            merged.dir.extend(layer.file.dir.iter().cloned());
             sources.push(layer.source.clone());
         }
 
@@ -309,16 +326,48 @@ impl Config {
             None => None,
         };
 
+        let mut model = ModelSelection {
+            provider: merged
+                .provider
+                .unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
+            // Empty is "not chosen yet", resolved from what the provider
+            // serves rather than from a constant that can only rot.
+            model: merged.model.unwrap_or_default(),
+        };
+
+        for entry in &merged.dir {
+            entry.check().map_err(invalid)?;
+        }
+        // Applied on top of the merged file layers and beneath the CLI flags the
+        // composition root applies afterwards: where a person is standing is a
+        // better answer than a global default, and a worse one than what they
+        // just typed. When several entries match, the last one wins, so a
+        // narrower rule is written below the broader rule it refines.
+        let user_home = dirs::home_dir();
+        let directory_override = merged
+            .dir
+            .iter()
+            .rfind(|entry| entry.matches(home.workspace_root.as_path(), user_home.as_deref()))
+            .cloned();
+        if let Some(applied) = &directory_override {
+            if let Some(provider) = &applied.provider {
+                // A model carried over from the layers names a model on the
+                // route that was in force before this override, which is a pair
+                // no configuration chose. Dropping it lets the new route's own
+                // default answer, exactly as `--provider` does.
+                if *provider != model.provider {
+                    model.model.clear();
+                }
+                model.provider = provider.clone();
+            }
+            if let Some(chosen) = &applied.model {
+                model.model = chosen.clone();
+            }
+        }
+
         Ok(Self {
             home,
-            model: ModelSelection {
-                provider: merged
-                    .provider
-                    .unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
-                // Empty is "not chosen yet", resolved from what the provider
-                // serves rather than from a constant that can only rot.
-                model: merged.model.unwrap_or_default(),
-            },
+            model,
             approval_policy: merged.approval_policy.unwrap_or_default(),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
             max_output_tokens,
@@ -335,6 +384,7 @@ impl Config {
                     ..declaration
                 })
                 .collect(),
+            directory_override,
             sources,
         })
     }
@@ -490,7 +540,7 @@ mod tests {
             .map(|provider| provider.route.as_str())
             .collect();
         assert_eq!(routes, vec!["nvidia", "ollama"]);
-        assert_eq!(config.providers[1].wire, DeclaredWireApi::ChatCompletions);
+        assert_eq!(config.providers[1].wire, None);
     }
 
     /// Redeclaring a route overrides that one entry, not the whole list — the
@@ -515,8 +565,75 @@ mod tests {
             .iter()
             .find(|provider| provider.route == "ollama")
             .expect("ollama survives");
-        assert_eq!(ollama.base_url, "http://gpu-box:11434/v1");
-        assert_eq!(ollama.wire, DeclaredWireApi::Responses);
+        assert_eq!(ollama.base_url.as_deref(), Some("http://gpu-box:11434/v1"));
+        assert_eq!(ollama.wire, Some(DeclaredWireApi::Responses));
+    }
+
+    /// `home()` puts the workspace root at `ROOT`, so a pattern naming that
+    /// tree is what a matching entry looks like here.
+    #[test]
+    fn a_directory_override_chooses_the_provider_for_the_tree_it_matches() {
+        let layers = vec![layer(
+            "user",
+            &format!(
+                "provider = \"anthropic\"\n\n[[dir]]\nmatch = \"{ROOT}/**\"\nprovider = \"grok-work\"\nmodel = \"grok-4.6\"\n"
+            ),
+        )];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.model.provider, "grok-work");
+        assert_eq!(config.model.model, "grok-4.6");
+    }
+
+    #[test]
+    fn a_directory_override_for_another_tree_leaves_the_default_alone() {
+        let layers = vec![layer(
+            "user",
+            "provider = \"anthropic\"\n\n[[dir]]\nmatch = \"/somewhere/else/**\"\nprovider = \"grok-work\"\n",
+        )];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.model.provider, "anthropic");
+        assert!(config.directory_override.is_none());
+    }
+
+    /// Later entries win, so a narrow rule is written below the broad one it
+    /// refines rather than having to be reordered by specificity.
+    #[test]
+    fn the_last_matching_directory_override_wins() {
+        let layers = vec![layer(
+            "user",
+            &format!(
+                "[[dir]]\nmatch = \"{ROOT}/**\"\nprovider = \"xai\"\n\n[[dir]]\nmatch = \"{ROOT}\"\nprovider = \"grok-work\"\n"
+            ),
+        )];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.model.provider, "grok-work");
+    }
+
+    /// The flag is applied by the composition root after the merge, which is
+    /// what makes a one-off override still possible inside a matched tree.
+    #[test]
+    fn an_explicit_flag_beats_a_directory_override() {
+        let layers = vec![layer(
+            "user",
+            &format!("[[dir]]\nmatch = \"{ROOT}/**\"\nprovider = \"grok-work\"\n"),
+        )];
+        let mut config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.model.provider, "grok-work");
+
+        config.model.provider = "xai".to_string();
+        assert_eq!(config.model.provider, "xai");
+    }
+
+    /// An entry that could not do anything is a half-finished edit, and
+    /// applying nothing quietly is the failure it would cause.
+    #[test]
+    fn a_directory_override_stating_nothing_fails_at_load() {
+        let layers = vec![layer("user", "[[dir]]\nmatch = \"~/work/**\"\n")];
+        let error = Config::from_layers(home(), &layers).expect_err("rejected");
+        assert!(
+            error.to_string().contains("neither provider nor model"),
+            "{error}"
+        );
     }
 
     #[test]

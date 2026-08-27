@@ -60,6 +60,7 @@ fn provider_over(server: &MockServer, home: Option<&tempfile::TempDir>) -> Codex
         Endpoint {
             base_url: format!("{}/backend-api/codex", server.uri()),
             fixed_sampling: true,
+            ..Endpoint::default()
         },
         cache,
     )
@@ -72,6 +73,7 @@ fn provider_info_names_its_route_and_credentials() {
         Endpoint {
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             fixed_sampling: true,
+            ..Endpoint::default()
         },
         None,
     );

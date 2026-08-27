@@ -75,7 +75,7 @@ pub(crate) async fn run(
     )
     .await?;
 
-    Ok(tokens.into_tokens(None, None))
+    Ok(tokens.into_tokens(None, None, Some(config.issuer.clone())))
 }
 
 /// Delegates to the ported upstream builder — see

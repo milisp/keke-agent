@@ -28,6 +28,11 @@ pub const DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 
 /// How to reach Ollama for one session.
 pub struct Endpoint {
+    /// What this instance registers as. [`ROUTE`] is the default name, not the
+    /// only one: two ollama boxes are two instances of this provider.
+    pub route: String,
+    /// Shown in surfaces. Two instances of one vendor need telling apart.
+    pub display_name: String,
     pub base_url: String,
     pub wire_api: WireApi,
 }
@@ -37,6 +42,8 @@ impl Default for Endpoint {
     /// credential reaches.
     fn default() -> Self {
         Self {
+            route: ROUTE.to_string(),
+            display_name: "Ollama".to_string(),
             base_url: DEFAULT_BASE_URL.to_string(),
             wire_api: WireApi::ChatCompletions,
         }
@@ -74,8 +81,8 @@ impl OllamaProvider {
         let wire = WireClient::new(base_url, auth);
         Self {
             info: ProviderInfo {
-                route: ROUTE.to_string(),
-                display_name: "Ollama".to_string(),
+                route: endpoint.route,
+                display_name: endpoint.display_name,
                 base_url: wire.base_url().to_string(),
                 wire_api: endpoint.wire_api,
                 auth_id: None,
@@ -143,7 +150,11 @@ impl ModelProvider for OllamaProvider {
     /// interface tells the person to type a model name instead.
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
         Box::pin(async move {
-            let cached = self.cache.as_ref().and_then(|cache| cache.load(ROUTE));
+            // Keyed by this instance's route, not by the vendor: two
+            // instances serve different addresses, and one key for both would
+            // have each overwrite the other's listing.
+            let route = self.info.route.as_str();
+            let cached = self.cache.as_ref().and_then(|cache| cache.load(route));
             if let Some(cached) = &cached
                 && cached.fresh
             {
@@ -152,7 +163,7 @@ impl ModelProvider for OllamaProvider {
             match self.fetch().await {
                 Ok(models) if !models.is_empty() => {
                     if let Some(cache) = &self.cache {
-                        cache.store(ROUTE, &models);
+                        cache.store(route, &models);
                     }
                     Ok(models)
                 }
@@ -241,6 +252,7 @@ mod tests {
             Endpoint {
                 base_url: "http://127.0.0.1:9/v1".to_string(),
                 wire_api: WireApi::ChatCompletions,
+                ..Endpoint::default()
             },
             None,
         );
