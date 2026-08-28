@@ -13,6 +13,7 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+use wiremock::matchers::query_param;
 
 use super::CodexProvider;
 use super::Endpoint;
@@ -122,6 +123,34 @@ async fn the_subscription_listing_reaches_the_caller_with_its_levels() {
             keke_protocol::ReasoningEffort::Ultra,
         ]
     );
+}
+
+/// The listing is gated on `client_version`: without the query parameter the
+/// backend refuses the request outright, and with one it considers too old it
+/// answers `{"models":[]}`. Both land in the fallback *without* filling the
+/// cache, so every launch pays for a round trip whose result is discarded —
+/// which is the slow start this asserts against.
+#[tokio::test]
+async fn the_listing_names_the_client_version_the_backend_gates_on() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/backend-api/codex/models"))
+        .and(query_param("client_version", super::DEFAULT_CLIENT_VERSION))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "models": [{"slug": "gpt-5.6-luna", "display_name": "GPT-5.6-Luna"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let models = provider_over(&server, None)
+        .list_models()
+        .await
+        .expect("listed");
+
+    // The bundled fallback would answer too, so the assertion is that the
+    // *vendor* answered: only a request carrying the version matches the mock.
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "gpt-5.6-luna");
 }
 
 /// The failure this whole change exists to fix: the ChatGPT backend has no

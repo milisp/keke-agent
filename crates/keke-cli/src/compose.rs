@@ -232,6 +232,7 @@ impl Vendors {
                 // An instance pointed at an address of its own is not the
                 // ChatGPT backend, whatever credential happens to be stored.
                 fixed_sampling: if stated { false } else { subscription },
+                client_version: keke_provider_codex::DEFAULT_CLIENT_VERSION.to_string(),
             },
             Some(self.catalog.clone()),
         )) as ArcProvider)

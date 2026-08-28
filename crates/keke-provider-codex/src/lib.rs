@@ -31,6 +31,28 @@ use keke_wire::WireClient;
 /// credentials from.
 pub const ROUTE: &str = "codex";
 
+/// The client version `/models` is gated on.
+///
+/// Not keke's version, and the difference is not cosmetic. The subscription
+/// backend requires a `client_version` query parameter — a request without one
+/// is refused as
+/// `invalid request: [{'type': 'missing', 'loc': ('query', 'client_version')}]`
+/// — and then gates each model on it, answering `{"models":[]}` for a client it
+/// considers too old. Both failures read as "this vendor publishes no catalog",
+/// which sends the listing to the compiled-in fallback *without* filling the
+/// cache, so every launch pays for a round trip whose result is thrown away.
+///
+/// Upstream sends its own crate version (`codex-models-manager`'s
+/// `client_version_to_whole()`), and codex versions calendrically — its
+/// app-server gates features on `version.starts_with("26.4")`. Measured against
+/// the live endpoint, that shape is what the gate wants: `0.1.10` (keke's own
+/// version at the time) returns nothing, `0.99.0` returns two of six models, and
+/// `26.4.0` returns all six. Sending keke's version here would therefore buy an
+/// empty catalog on every launch, so this tracks the protocol generation the
+/// vendor expects instead — and a deployment that meets a raised gate before
+/// keke ships a new release needs to say so without forking the plugin.
+pub const DEFAULT_CLIENT_VERSION: &str = "26.4.0";
+
 /// OpenAI over the responses wire.
 pub struct CodexProvider {
     info: ProviderInfo,
@@ -38,6 +60,7 @@ pub struct CodexProvider {
     /// `None` disables caching entirely, which is what a surface with no home
     /// directory — a test — gets.
     cache: Option<CatalogCache>,
+    client_version: String,
 }
 
 /// How to reach OpenAI for one session.
@@ -61,6 +84,9 @@ pub struct Endpoint {
     /// Whether this address refuses a request that names a reply budget or a
     /// temperature, as the subscription backend does.
     pub fixed_sampling: bool,
+    /// Sent as the `client_version` query parameter on `/models` — see
+    /// [`DEFAULT_CLIENT_VERSION`].
+    pub client_version: String,
 }
 
 impl Default for Endpoint {
@@ -74,6 +100,7 @@ impl Default for Endpoint {
             auth_id: ROUTE.to_string(),
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             fixed_sampling: true,
+            client_version: DEFAULT_CLIENT_VERSION.to_string(),
         }
     }
 }
@@ -89,6 +116,7 @@ impl CodexProvider {
         if endpoint.fixed_sampling {
             wire = wire.with_fixed_sampling();
         }
+        let client_version = endpoint.client_version;
         Self {
             info: ProviderInfo {
                 route: endpoint.route,
@@ -100,12 +128,16 @@ impl CodexProvider {
             },
             wire,
             cache,
+            client_version,
         }
     }
 
     /// Ask the endpoint what it serves.
     async fn fetch(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let body = self.wire.fetch("/models").await?;
+        let body = self
+            .wire
+            .fetch(&format!("/models?client_version={}", self.client_version))
+            .await?;
         catalog::parse(&body)
             .map_err(|error| ProviderError::Protocol(format!("undecodable model list: {error}")))
     }
