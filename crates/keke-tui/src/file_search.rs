@@ -93,6 +93,11 @@ impl FileSearchState {
         let new_ctx = context::detect(line, cursor_byte);
         match (&self.context, &new_ctx) {
             (None, Some(ctx)) => self.start_query(ctx.matcher_query()),
+            // The token itself didn't change — e.g. an arrow key moved the
+            // dropdown's selection without touching the input line. Re-issuing
+            // the same query would reset `selected` back to 0 out from under
+            // whatever the arrow just picked.
+            (Some(old), Some(new)) if old == new => return,
             (Some(old), Some(new)) if old.is_dir_mode() != new.is_dir_mode() => {
                 self.start_query(new.matcher_query());
             }
@@ -225,5 +230,33 @@ mod tests {
         let replacement = state.accept().expect("replacement");
         assert_eq!(replacement.range, 1..3);
         assert_eq!(replacement.text, "src/");
+    }
+
+    #[test]
+    fn moving_the_selection_survives_a_redundant_update() {
+        // `update` is called after every keystroke, arrow keys included, with
+        // the same line and cursor an arrow key leaves untouched. It must not
+        // snap `selected` back to 0 out from under the move that just ran.
+        let mut state = FileSearchState::new(PathBuf::from("."));
+        state.context = Some(context::detect("@sr", 3).expect("context"));
+        state.results = FuzzyMatcherDaemonResults {
+            topk: Arc::from(vec![
+                FuzzyMatchResult {
+                    path: nucleo::Utf32String::from("src"),
+                    is_dir: true,
+                    ..Default::default()
+                },
+                FuzzyMatchResult {
+                    path: nucleo::Utf32String::from("src2"),
+                    is_dir: true,
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        state.move_selection(1);
+        assert_eq!(state.selected(), 1);
+        state.update("@sr", 3);
+        assert_eq!(state.selected(), 1);
     }
 }
