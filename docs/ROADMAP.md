@@ -31,12 +31,11 @@ drift the way the README status line did.
 
 ## In progress / next
 
-- **MCP tool-call closure, end to end** — install a real MCP plugin
-  (GitHub or filesystem server), drive it from the TUI so the agent actually
-  triggers a tool call, and confirm `ApprovalReviewContributor`/`ToolGuard`
-  intercept as expected (invariant 7) and the resulting `SessionEvent`s are
-  complete (invariant 6). The transport, OAuth, and tool-call plumbing exist
-  (`keke-mcp`); what's missing is a verified real-plugin run.
+- **MCP tool-call closure against a real server** — a real remote server
+  (Vercel's) is configured, signed in via OAuth, and driven from the TUI,
+  confirming the tool call itself fires end to end. Still unconfirmed:
+  `ApprovalReviewContributor`/`ToolGuard` intercept it as expected
+  (invariant 7) and the resulting `SessionEvent`s are complete (invariant 6).
 
 ## How to use this file
 
