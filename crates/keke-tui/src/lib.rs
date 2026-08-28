@@ -147,10 +147,10 @@ pub async fn run(
     // because the event loop is what drains it — a sender handed out without a
     // reader would leave a person watching nothing happen.
     let (notices, notice_stream) = tokio::sync::mpsc::unbounded_channel();
+    let is_resumed = !resumed.history.is_empty() || resumed.usage.total() > 0;
     let mut app = app
         .with_mcp(mcp.servers, mcp.sign_in)
         .with_notices(notices)
-        .with_banner()
         .with_commands(commands)
         .with_approval_policy(defaults.approval)
         .with_reasoning_effort(defaults.effort)
@@ -158,8 +158,10 @@ pub async fn run(
         .with_provider_routes(models.routes)
         .with_prompt_history(history)
         .with_config_home(defaults.config_home);
-    if !resumed.history.is_empty() || resumed.usage.total() > 0 {
+    if is_resumed {
         app = app.with_history(&resumed.history, resumed.usage, resumed.context_input);
+    } else {
+        app = app.with_banner();
     }
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no
