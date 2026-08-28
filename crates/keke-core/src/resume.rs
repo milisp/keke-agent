@@ -24,6 +24,7 @@ use keke_protocol::Usage;
 
 use crate::RolloutError;
 use crate::read_log;
+use crate::read_log_from;
 
 /// Where a home layout keeps its rollout logs.
 #[must_use]
@@ -71,6 +72,9 @@ pub struct SessionSummary {
     /// First thing the person said, for telling two sessions apart.
     pub summary: String,
     pub turns: usize,
+    /// Set when this session is a subagent's, naming the session that spawned
+    /// it. A child is not something a person continues.
+    pub parent: Option<SessionId>,
 }
 
 impl SessionSummary {
@@ -138,13 +142,18 @@ pub fn find_session(home: &AbsPath, typed: &str) -> Result<SessionMatch, Rollout
     if needle.is_empty() {
         return Ok(SessionMatch::None);
     }
-    let matched: Vec<SessionSummary> = list_sessions(home)?
+    // Matched on the name before anything is read: a prefix names at most a
+    // handful of sessions, and summarizing the rest to discard them is what
+    // made resuming by id cost a scan of every log on disk.
+    let matched: Vec<SessionSummary> = log_paths(home)?
         .into_iter()
+        .filter(|log| normalize(&log.id.to_string()).starts_with(&needle))
+        .filter_map(|log| summarize(&log).ok())
         // A log with no turns holds no conversation, so it is not a candidate
         // for continuing one — and counting it would make a prefix ambiguous
-        // against something nobody could have meant.
-        .filter(|session| session.turns > 0)
-        .filter(|session| normalize(&session.id.to_string()).starts_with(&needle))
+        // against something nobody could have meant. Neither is a subagent's:
+        // it is a turn of some other session, not a session of its own.
+        .filter(|session| session.turns > 0 && session.parent.is_none())
         .collect();
 
     let mut found = matched;
@@ -165,11 +174,24 @@ fn normalize(id: &str) -> String {
         .collect()
 }
 
-/// Every session under `home`, newest first.
+/// One session's log on disk, found without reading it.
+struct LogPath {
+    id: SessionId,
+    path: PathBuf,
+}
+
+/// Every session log under `home`, newest first, by name alone.
 ///
-/// A file that cannot be read at all is skipped rather than failing the
-/// listing: one unreadable log must not hide the others.
-pub fn list_sessions(home: &AbsPath) -> Result<Vec<SessionSummary>, RolloutError> {
+/// Ids are UUIDv7, so their string form already sorts chronologically; the
+/// log's own name is a steadier key than an mtime a backup tool may rewrite.
+/// Nothing here opens a file, which is what lets the callers that only need a
+/// few sessions pay for only those.
+///
+/// Two layouts are recognised. A session owns a directory holding
+/// `rollout.jsonl` and its cache; before that it was one `<id>.jsonl` beside
+/// its siblings, and those keep working, without a cache, for as long as they
+/// are on disk. There is no migration to run.
+fn log_paths(home: &AbsPath) -> Result<Vec<LogPath>, RolloutError> {
     let dir = sessions_dir(home);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -184,23 +206,57 @@ pub fn list_sessions(home: &AbsPath) -> Result<Vec<SessionSummary>, RolloutError
         }
     };
 
-    let mut logs: Vec<PathBuf> = Vec::new();
-    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
-        let Ok(inner) = std::fs::read_dir(&path) else {
+    let mut logs: Vec<LogPath> = Vec::new();
+    for project in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        let Ok(inner) = std::fs::read_dir(&project) else {
             continue;
         };
-        logs.extend(inner.filter_map(Result::ok).map(|entry| entry.path()));
+        for entry in inner.filter_map(Result::ok) {
+            let path = entry.path();
+            let Some(id) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| uuid::Uuid::parse_str(stem).ok())
+                .map(SessionId::from)
+            else {
+                continue;
+            };
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                logs.push(LogPath {
+                    id,
+                    path: path.join(crate::meta::LOG_FILE),
+                });
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                logs.push(LogPath { id, path });
+            }
+        }
     }
+    logs.sort_by_key(|log| std::cmp::Reverse(log.id));
+    Ok(logs)
+}
 
-    let mut sessions: Vec<SessionSummary> = logs
+/// Every session under `home`, newest first.
+///
+/// A file that cannot be read at all is skipped rather than failing the
+/// listing: one unreadable log must not hide the others.
+pub fn list_sessions(home: &AbsPath) -> Result<Vec<SessionSummary>, RolloutError> {
+    list_recent(home, usize::MAX)
+}
+
+/// The `limit` most recent sessions under `home`.
+///
+/// A surface that draws a page of sessions should ask for a page. Even reading
+/// only the cache, a machine with thousands of sessions is thousands of opens,
+/// and the ones past the first screen are opened for nothing.
+pub fn list_recent(home: &AbsPath, limit: usize) -> Result<Vec<SessionSummary>, RolloutError> {
+    Ok(log_paths(home)?
         .into_iter()
-        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .filter_map(|path| summarize(&path).ok())
-        .collect();
-    // Ids are UUIDv7, so their string form already sorts chronologically; the
-    // log's own name is a steadier key than a mtime a backup tool may rewrite.
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.id));
-    Ok(sessions)
+        .filter_map(|log| summarize(&log).ok())
+        // A subagent's log is a turn of some other session. Showing it as a
+        // session of its own offers to continue a conversation nobody had.
+        .filter(|session| session.parent.is_none())
+        .take(limit)
+        .collect())
 }
 
 /// The most recent session that actually holds a conversation.
@@ -216,135 +272,74 @@ pub fn latest_session(home: &AbsPath) -> Result<Option<SessionSummary>, RolloutE
 }
 
 /// Read one session's log and rebuild what a session needs to continue it.
+///
+/// The history a resume starts from is the last `ModelRequest` plus everything
+/// after it, so a log whose cache says where that line begins is read from
+/// there. On a long session that is the difference between reading the last
+/// turn and reading every turn twice over.
 pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, RolloutError> {
     let path = session_path(home, id)?;
-    let envelopes = read_log(&path)?;
-    let events: Vec<SessionEvent> = envelopes.into_iter().map(|line| line.event).collect();
+    let meta = crate::meta::SessionMeta::refreshed(&path)?;
+    meta.write(&path);
+
+    let events: Vec<SessionEvent> = match meta.baseline {
+        Some(from) => read_log_from(&path, from)?,
+        // No step was ever logged, so the whole log is the tail: what a person
+        // said before the first request still has to reach the resumed session.
+        None => read_log(&path)?,
+    }
+    .into_iter()
+    .map(|line| line.event)
+    .collect();
+
     Ok(ResumedSession {
         id,
-        cwd: started_in(&events),
-        model: model_from_log(&events),
-        reasoning_effort: reasoning_effort_from_log(&events),
-        approval_policy: approval_policy_from_log(&events),
-        history: history_from_log(&events),
-        usage: usage_from_log(&events),
-        context_input: context_input_from_log(&events),
-        path,
-    })
-}
-
-/// The model the session was last talking to.
-///
-/// The last `ModelRequest` that named one wins, because a session can switch
-/// models mid-conversation and resuming should pick up where it left off, not
-/// where it started. `SessionStart` is the fallback for a log written before
-/// `ModelRequest` carried its own model.
-fn model_from_log(events: &[SessionEvent]) -> Option<String> {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match event {
-            SessionEvent::ModelRequest { model, .. } => model.clone(),
-            _ => None,
-        })
-        .or_else(|| {
-            events.iter().find_map(|event| match event {
-                SessionEvent::SessionStart { model, .. } => Some(model.clone()),
-                _ => None,
-            })
-        })
-}
-
-/// How hard the model was last asked to think.
-fn reasoning_effort_from_log(events: &[SessionEvent]) -> Option<keke_protocol::ReasoningEffort> {
-    events.iter().rev().find_map(|event| match event {
-        SessionEvent::ModelRequest {
-            reasoning_effort, ..
-        } => *reasoning_effort,
-        _ => None,
-    })
-}
-
-/// The approval policy the last logged turn ran under.
-///
-/// A wire spelling this build does not recognise — an older or newer one —
-/// falls back to none rather than failing the resume: an approval mode is a
-/// convenience to restore, not a fact the session cannot continue without.
-fn approval_policy_from_log(events: &[SessionEvent]) -> Option<keke_config_types::ApprovalPolicy> {
-    events.iter().rev().find_map(|event| match event {
-        SessionEvent::TurnStart {
-            approval_policy, ..
-        } => approval_policy
+        cwd: meta.cwd.clone(),
+        model: meta.current_model(),
+        reasoning_effort: meta.reasoning_effort,
+        approval_policy: meta
+            .approval_policy
             .as_deref()
             .and_then(keke_config_types::ApprovalPolicy::parse),
-        _ => None,
+        history: history_from_log(&events),
+        usage: meta.usage,
+        context_input: meta.context(),
+        path,
     })
 }
 
 /// Where one session's log is, in whichever project directory holds it.
 ///
-/// The id does not say which project the session belongs to, so the listing is
-/// what resolves it. An id nothing on disk answers to is a missing file.
+/// The id does not say which project the session belongs to, so the directories
+/// are what resolve it — by name, without opening anything. An id nothing on
+/// disk answers to is a missing file.
 fn session_path(home: &AbsPath, id: SessionId) -> Result<PathBuf, RolloutError> {
-    list_sessions(home)?
+    log_paths(home)?
         .into_iter()
-        .find(|session| session.id == id)
-        .map(|session| session.path)
+        .find(|log| log.id == id)
+        .map(|log| log.path)
         .ok_or_else(|| RolloutError::Io {
             path: sessions_dir(home)
-                .join(format!("{id}.jsonl"))
+                .join(id.to_string())
                 .display()
                 .to_string(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "no log for this session"),
         })
 }
 
-fn summarize(path: &Path) -> Result<SessionSummary, RolloutError> {
-    let id = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| uuid::Uuid::parse_str(stem).ok())
-        .map(SessionId::from)
-        .ok_or_else(|| RolloutError::Io {
-            path: path.display().to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "a session log is named by its id",
-            ),
-        })?;
-
-    let envelopes = read_log(path)?;
-    let updated_at = envelopes
-        .last()
-        .map(|line| line.at.clone())
-        .unwrap_or_default();
-    let events: Vec<SessionEvent> = envelopes.into_iter().map(|line| line.event).collect();
-    let turns = events
-        .iter()
-        .filter(|event| matches!(event, SessionEvent::TurnStart { .. }))
-        .count();
-    let summary = events
-        .iter()
-        .find_map(|event| match event {
-            SessionEvent::TurnStart { input, .. } => Some(one_line(&input.text())),
-            _ => None,
-        })
-        .unwrap_or_default();
-
+/// Describe one session from its cache, folding whatever the cache has not seen
+/// and leaving the result behind for the next reader.
+fn summarize(log: &LogPath) -> Result<SessionSummary, RolloutError> {
+    let meta = crate::meta::SessionMeta::refreshed(&log.path)?;
+    meta.write(&log.path);
     Ok(SessionSummary {
-        id,
-        path: path.to_path_buf(),
-        cwd: started_in(&events),
-        updated_at,
-        summary,
-        turns,
-    })
-}
-
-fn started_in(events: &[SessionEvent]) -> Option<String> {
-    events.iter().find_map(|event| match event {
-        SessionEvent::SessionStart { cwd, .. } => Some(cwd.clone()),
-        _ => None,
+        id: log.id,
+        path: log.path.clone(),
+        cwd: meta.cwd,
+        updated_at: meta.updated_at,
+        summary: meta.summary,
+        turns: meta.turns,
+        parent: meta.parent,
     })
 }
 
@@ -405,46 +400,24 @@ fn flush(history: &mut Vec<Message>, results: &mut Vec<ContentBlock>) {
     });
 }
 
-/// What a session has spent, summed over the turns that finished.
+/// What a session has spent, summed over the turns that finished and the
+/// subagents they delegated to.
+///
+/// `TurnEnd` and `SubagentEnd` only. A step's usage is counted again by the
+/// `TurnEnd` that closes its turn, and a child's `TurnEnd`s are in the child's
+/// log, which this never reads — so no token here is billed twice.
 #[must_use]
 pub fn usage_from_log(events: &[SessionEvent]) -> Usage {
     let mut total = Usage::default();
     for event in events {
-        if let SessionEvent::TurnEnd { usage, .. } = event {
-            total.add(*usage);
-        }
-    }
-    total
-}
-
-/// The latest request's context size, which the summed `TurnEnd` figures
-/// cannot say. Prefers the last single step; some providers report nothing per
-/// step and only account at turn end, in which case that turn's figure is the
-/// best on record — a coarse sum of the turn's requests beats reporting zero.
-#[must_use]
-pub(crate) fn context_input_from_log(events: &[SessionEvent]) -> u64 {
-    let mut fallback = 0;
-    for event in events.iter().rev() {
         match event {
-            SessionEvent::ModelResponse { usage, .. } if usage.input_tokens > 0 => {
-                return usage.input_tokens;
-            }
-            SessionEvent::TurnEnd { usage, .. } if usage.input_tokens > 0 => {
-                fallback = usage.input_tokens;
+            SessionEvent::TurnEnd { usage, .. } | SessionEvent::SubagentEnd { usage, .. } => {
+                total.add(*usage);
             }
             _ => {}
         }
     }
-    fallback
-}
-
-fn one_line(text: &str) -> String {
-    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flattened.chars().count() <= 60 {
-        return flattened;
-    }
-    let kept: String = flattened.chars().take(59).collect();
-    format!("{kept}…")
+    total
 }
 
 #[cfg(test)]
@@ -564,37 +537,70 @@ mod tests {
         assert_eq!(history_from_log(&events), vec![Message::user("hello")]);
     }
 
-    /// Write a log holding `turns` turns, and return its home.
-    fn home_with(sessions: &[(SessionId, usize)]) -> (tempfile::TempDir, AbsPath) {
+    /// The events one line each, as the recorder would have written them.
+    fn as_log(events: &[SessionEvent]) -> String {
+        let mut log = String::new();
+        for event in events {
+            let envelope = keke_protocol::SessionEventEnvelope {
+                at: "2026-08-23T00:00:00Z".to_string(),
+                event: event.clone(),
+            };
+            log.push_str(&serde_json::to_string(&envelope).expect("serialize"));
+            log.push('\n');
+        }
+        log
+    }
+
+    fn turns_of(count: usize) -> Vec<SessionEvent> {
+        (0..count)
+            .map(|_| SessionEvent::TurnStart {
+                turn: TurnId::new(),
+                input: Message::user("hi"),
+                approval_policy: None,
+            })
+            .collect()
+    }
+
+    fn empty_home() -> (tempfile::TempDir, AbsPath) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
         let home = AbsPath::new(root).expect("absolute");
         std::fs::create_dir_all(sessions_dir(&home)).expect("sessions dir");
+        (dir, home)
+    }
 
+    /// Write one session's log in the layout the recorder writes, with no
+    /// cache beside it: every reader has to work from the log alone.
+    fn write_session(home: &AbsPath, id: SessionId, events: &[SessionEvent]) {
+        let dir = project_dir(home, Path::new("/Users/x/projects/keke")).join(id.to_string());
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(dir.join(crate::meta::LOG_FILE), as_log(events)).expect("write");
+    }
+
+    /// Write a log holding `turns` turns, and return its home.
+    fn home_with(sessions: &[(SessionId, usize)]) -> (tempfile::TempDir, AbsPath) {
+        let (dir, home) = empty_home();
         for (id, turns) in sessions {
-            let mut log = String::new();
-            for _ in 0..*turns {
-                let envelope = keke_protocol::SessionEventEnvelope {
-                    at: "2026-08-23T00:00:00Z".to_string(),
-                    event: SessionEvent::TurnStart {
-                        turn: TurnId::new(),
-                        input: Message::user("hi"),
-                        approval_policy: None,
-                    },
-                };
-                log.push_str(&serde_json::to_string(&envelope).expect("serialize"));
-                log.push('\n');
-            }
-            let dir = project_dir(&home, Path::new("/Users/x/projects/keke"));
-            std::fs::create_dir_all(&dir).expect("project dir");
-            std::fs::write(dir.join(format!("{id}.jsonl")), log).expect("write");
+            write_session(&home, *id, &turns_of(*turns));
         }
         (dir, home)
     }
 
-    /// A session's log sits with the typing history of the same project.
+    /// Fold events into the cache the way a reader of that log would.
+    fn folded(events: &[SessionEvent]) -> crate::meta::SessionMeta {
+        let (_dir, home) = empty_home();
+        let id = SessionId::new();
+        write_session(&home, id, events);
+        let path = project_dir(&home, Path::new("/Users/x/projects/keke"))
+            .join(id.to_string())
+            .join(crate::meta::LOG_FILE);
+        crate::meta::SessionMeta::refreshed(&path).expect("folds")
+    }
+
+    /// A session's log sits under the project directory that holds the typing
+    /// history, one level down in the directory the session owns.
     #[tokio::test]
-    async fn a_log_is_written_beside_the_project_prompt_history() {
+    async fn a_log_is_written_under_the_project_prompt_history() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
         let home = AbsPath::new(root).expect("absolute");
@@ -606,8 +612,13 @@ mod tests {
             .expect("creates");
 
         assert_eq!(
-            recorder.path().parent(),
+            recorder.path().parent().and_then(Path::parent),
             crate::prompt_history_path(&home, cwd).parent()
+        );
+        assert_eq!(
+            recorder.path().parent().and_then(Path::file_name),
+            Some(std::ffi::OsStr::new(&id.to_string())),
+            "a session owns the directory its log lives in"
         );
     }
 
@@ -654,6 +665,211 @@ mod tests {
         ));
     }
 
+    /// The cache is derived, so throwing it away must change no answer. This
+    /// is the property that keeps `meta.json` from becoming a second source of
+    /// truth (`AGENTS.md` invariant 6).
+    #[test]
+    fn a_listing_is_the_same_with_the_cache_and_without_it() {
+        let id = SessionId::new();
+        let (_dir, home) = home_with(&[(id, 3)]);
+
+        let cold = list_sessions(&home).expect("reads");
+        let cache = project_dir(&home, Path::new("/Users/x/projects/keke"))
+            .join(id.to_string())
+            .join(crate::meta::META_FILE);
+        assert!(cache.is_file(), "a reader leaves a cache behind");
+        let warm = list_sessions(&home).expect("reads");
+        std::fs::remove_file(&cache).expect("removes");
+        let again = list_sessions(&home).expect("reads");
+
+        for listing in [&warm, &again] {
+            assert_eq!(listing.len(), cold.len());
+            assert_eq!(listing[0].id, cold[0].id);
+            assert_eq!(listing[0].turns, cold[0].turns);
+            assert_eq!(listing[0].summary, cold[0].summary);
+        }
+    }
+
+    /// The fold is incremental, so a session that grew by a turn must count
+    /// that turn once — not again from the start, and not twice.
+    #[test]
+    fn folding_a_grown_log_counts_only_what_is_new() {
+        let id = SessionId::new();
+        let (_dir, home) = home_with(&[(id, 2)]);
+        assert_eq!(list_sessions(&home).expect("reads")[0].turns, 2);
+
+        let log = project_dir(&home, Path::new("/Users/x/projects/keke"))
+            .join(id.to_string())
+            .join(crate::meta::LOG_FILE);
+        let mut text = std::fs::read_to_string(&log).expect("reads");
+        text.push_str(&as_log(&turns_of(1)));
+        std::fs::write(&log, text).expect("writes");
+
+        assert_eq!(list_sessions(&home).expect("reads")[0].turns, 3);
+        assert_eq!(list_sessions(&home).expect("reads")[0].turns, 3);
+    }
+
+    /// A subagent's log has the shape of a session and is not one: it is a
+    /// turn of the session that spawned it. Offering it would invite a person
+    /// to continue a conversation nobody had.
+    #[test]
+    fn a_subagent_s_log_is_not_offered_for_resume() {
+        let (_dir, home) = empty_home();
+        let parent = SessionId::new();
+        let child = SessionId::new();
+        write_session(&home, parent, &turns_of(1));
+        let mut child_log = vec![SessionEvent::SessionStart {
+            cwd: "/Users/x/projects/keke".to_string(),
+            provider: "test".to_string(),
+            model: "test-model".to_string(),
+            parent: Some(parent),
+        }];
+        child_log.extend(turns_of(1));
+        write_session(&home, child, &child_log);
+
+        let listed: Vec<SessionId> = list_sessions(&home)
+            .expect("reads")
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(listed, vec![parent]);
+        assert!(matches!(
+            find_session(&home, &child.to_string()).expect("reads"),
+            SessionMatch::None
+        ));
+    }
+
+    /// A child's tokens are the parent's, counted where the parent logged
+    /// them and nowhere else — the child's own turns are in the child's log,
+    /// which the parent's fold never reads.
+    #[test]
+    fn a_subagent_s_tokens_are_billed_to_its_parent_once() {
+        let turn = TurnId::new();
+        let spent = Usage {
+            input_tokens: 100,
+            output_tokens: 10,
+            ..Usage::default()
+        };
+        let events = vec![
+            SessionEvent::TurnEnd {
+                turn,
+                stop_reason: StopReason::EndTurn,
+                usage: spent,
+            },
+            SessionEvent::SubagentEnd {
+                turn,
+                agent: "agent_1".to_string(),
+                session: Some(SessionId::new()),
+                status: "completed".to_string(),
+                summary: "done".to_string(),
+                usage: spent,
+            },
+        ];
+        assert_eq!(folded(&events).usage.total(), 220);
+        assert_eq!(usage_from_log(&events).total(), 220);
+    }
+
+    /// The history a resume rebuilds is the last request plus its tail, so
+    /// reading from the cached offset has to produce exactly what reading the
+    /// whole log produces.
+    #[test]
+    fn a_resume_from_the_cached_offset_rebuilds_the_same_history() {
+        let (_dir, home) = empty_home();
+        let id = SessionId::new();
+        let turn = TurnId::new();
+        let events = vec![
+            SessionEvent::TurnStart {
+                turn,
+                input: Message::user("first"),
+                approval_policy: Some("never".to_string()),
+            },
+            SessionEvent::ModelRequest {
+                turn,
+                messages: vec![Message::user("stale")],
+                tools: Vec::new(),
+                reasoning_effort: None,
+                model: None,
+            },
+            SessionEvent::ModelRequest {
+                turn,
+                messages: vec![Message::user("what the model last saw")],
+                tools: Vec::new(),
+                reasoning_effort: None,
+                model: Some("newer-model".to_string()),
+            },
+            SessionEvent::ModelResponse {
+                turn,
+                message: Message::assistant("answered"),
+                stop_reason: StopReason::EndTurn,
+                usage: Usage {
+                    input_tokens: 4_242,
+                    ..Usage::default()
+                },
+            },
+        ];
+        write_session(&home, id, &events);
+
+        let resumed = load_session(&home, id).expect("loads");
+        assert_eq!(
+            resumed.history,
+            vec![
+                Message::user("what the model last saw"),
+                Message::assistant("answered"),
+            ]
+        );
+        assert_eq!(resumed.model.as_deref(), Some("newer-model"));
+        assert_eq!(resumed.context_input, 4_242);
+        assert_eq!(
+            resumed.approval_policy,
+            Some(keke_config_types::ApprovalPolicy::Never),
+            "the last turn's policy is before the baseline and still restored"
+        );
+    }
+
+    /// Sessions written before a session owned a directory are still listed
+    /// and still resumable. There is no migration to run.
+    #[test]
+    fn a_log_from_the_flat_layout_is_still_resumable() {
+        let (_dir, home) = empty_home();
+        let id = SessionId::new();
+        let dir = project_dir(&home, Path::new("/Users/x/projects/keke"));
+        std::fs::create_dir_all(&dir).expect("project dir");
+        std::fs::write(dir.join(format!("{id}.jsonl")), as_log(&turns_of(2))).expect("write");
+
+        assert_eq!(list_sessions(&home).expect("reads")[0].turns, 2);
+        assert!(matches!(
+            find_session(&home, &id.to_string()).expect("reads"),
+            SessionMatch::One(session) if session.id == id
+        ));
+        assert!(
+            dir.join(format!("{id}.meta.json")).is_file(),
+            "a flat log shares its directory, so its cache is named after it"
+        );
+        assert!(
+            !dir.join(crate::meta::META_FILE).exists(),
+            "one cache per session: never one file the siblings overwrite"
+        );
+        // A second session in the same directory keeps its own.
+        let other = SessionId::new();
+        std::fs::write(dir.join(format!("{other}.jsonl")), as_log(&turns_of(5))).expect("write");
+        let listed = list_sessions(&home).expect("reads");
+        let turns: Vec<usize> = listed.iter().map(|session| session.turns).collect();
+        assert_eq!(turns.iter().copied().max(), Some(5));
+        assert_eq!(turns.iter().copied().min(), Some(2));
+    }
+
+    /// A surface that draws a page asks for a page, and pays for a page.
+    #[test]
+    fn a_limited_listing_stops_at_the_limit() {
+        let (_dir, home) = home_with(&[
+            (SessionId::new(), 1),
+            (SessionId::new(), 1),
+            (SessionId::new(), 1),
+        ]);
+        assert_eq!(list_recent(&home, 2).expect("reads").len(), 2);
+        assert_eq!(list_sessions(&home).expect("reads").len(), 3);
+    }
+
     #[test]
     fn a_prefix_ignores_dashes_and_case() {
         assert_eq!(normalize("01A0-2D66"), "01a02d66");
@@ -675,10 +891,7 @@ mod tests {
                 approval_policy: Some("never".to_string()),
             },
         ];
-        assert_eq!(
-            approval_policy_from_log(&events),
-            Some(keke_config_types::ApprovalPolicy::Never)
-        );
+        assert_eq!(folded(&events).approval_policy.as_deref(), Some("never"));
     }
 
     /// A log written before this field existed has no opinion, and resuming
@@ -691,7 +904,7 @@ mod tests {
             input: Message::user("hi"),
             approval_policy: None,
         }];
-        assert_eq!(approval_policy_from_log(&events), None);
+        assert_eq!(folded(&events).approval_policy, None);
     }
 
     /// The summed turn figures answer "what did it cost"; the context window
@@ -725,7 +938,7 @@ mod tests {
                 usage: step,
             },
         ];
-        assert_eq!(context_input_from_log(&events), 254_935);
+        assert_eq!(folded(&events).context(), 254_935);
         assert_eq!(usage_from_log(&events).input_tokens, 1_154_935);
 
         // A provider that accounts only at turn end still gets a figure.
@@ -734,8 +947,8 @@ mod tests {
             stop_reason: StopReason::Cancelled,
             usage: step,
         }];
-        assert_eq!(context_input_from_log(&silent), 254_935);
-        assert_eq!(context_input_from_log(&[]), 0);
+        assert_eq!(folded(&silent).context(), 254_935);
+        assert_eq!(folded(&[]).context(), 0);
     }
 
     #[test]

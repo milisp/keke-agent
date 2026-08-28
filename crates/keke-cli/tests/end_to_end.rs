@@ -60,17 +60,22 @@ impl Fixture {
         };
         entries
             .filter_map(|entry| Some(entry.ok()?.path()))
-            .flat_map(|path| {
-                let Ok(inner) = std::fs::read_dir(&path) else {
-                    return vec![path];
-                };
-                inner
-                    .filter_map(|entry| Some(entry.ok()?.path()))
-                    .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-                    .collect()
-            })
+            // A session owns a directory under its project's, so a log is two
+            // levels down: sessions/<project>/<session>/rollout.jsonl.
+            .flat_map(|project| read_dir(&project))
+            .flat_map(|session| read_dir(&session))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
             .collect()
     }
+}
+
+fn read_dir(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]

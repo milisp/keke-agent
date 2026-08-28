@@ -261,6 +261,7 @@ pub struct SessionBuilder {
     cwd: Option<PathBuf>,
     updates: Option<tokio::sync::mpsc::UnboundedSender<TurnUpdate>>,
     resume: Option<Resumed>,
+    parent: Option<SessionId>,
 }
 
 /// The session a build continues instead of starting.
@@ -321,6 +322,17 @@ impl SessionBuilder {
         self
     }
 
+    /// Name the session this one is a child of.
+    ///
+    /// Set for a subagent, so its log says what it is. A child's log looks
+    /// exactly like a person's — same turns, same cwd — and a listing that
+    /// cannot tell them apart offers to continue a conversation nobody had.
+    #[must_use]
+    pub fn parent(mut self, parent: SessionId) -> Self {
+        self.parent = Some(parent);
+        self
+    }
+
     /// Discard any resume this builder carries.
     ///
     /// Lets a caller keep a builder around as a recipe — same config,
@@ -363,6 +375,7 @@ impl SessionBuilder {
                 cwd: cwd.display().to_string(),
                 provider: config.model.provider.clone(),
                 model: config.model.model.clone(),
+                parent: self.parent,
             })
             .await?;
 

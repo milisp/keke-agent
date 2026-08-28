@@ -29,6 +29,7 @@ use keke_protocol::ContentBlock;
 use keke_protocol::Message;
 use keke_protocol::Role;
 use keke_protocol::SessionEvent;
+use keke_protocol::SessionId;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCallId;
 use keke_protocol::Usage;
@@ -369,7 +370,7 @@ async fn a_subagent_is_reported_once_and_then_is_gone() {
 
     let cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
     let id = host
-        .spawn("SUB once".to_string(), cancelled)
+        .spawn(SessionId::new(), "SUB once".to_string(), cancelled)
         .expect("spawns");
 
     let report = host.collect(&id).await.expect("collects");
@@ -456,7 +457,11 @@ async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
 
     let cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
     let id = host
-        .spawn("SUB watched\nsecond line".to_string(), cancelled)
+        .spawn(
+            SessionId::new(),
+            "SUB watched\nsecond line".to_string(),
+            cancelled,
+        )
         .expect("spawns");
 
     let started = rows.recv().await.expect("start published");
