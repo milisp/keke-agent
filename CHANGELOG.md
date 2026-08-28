@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-27
+
+### Added
+- Local signing script; macOS Developer ID signing and notarization are now
+  integrated into the release workflow.
+- `--last` flag and cwd filtering for `resume`.
+
+### Changed
+- The composer wraps to its box width, and its rows register for selection.
+- Selection tracks rows across multiple widgets; wide-glyph columns render
+  correctly.
+- Safety information reorganized and project READMEs simplified.
+
+## [0.1.9] - 2026-08-27
+
+### Added
+- Named provider instances, multi-account credentials, and per-repo provider
+  selection.
+
+### Changed
+- Configuration details moved out of the README into a dedicated config guide.
+
+## [0.1.8] - 2026-08-27
+
+### Added
+- Subagents: isolated child sessions a model can start and collect results
+  from, drawn live under the turn status.
+- Markdown rendering for assistant responses.
+
+## [0.1.7] - 2026-08-26
+
+### Added
+- Turn status line with spinner, elapsed time, and context usage; full
+  reasoning ladder fallback.
+
+### Changed
+- Model configuration is tied to a specific provider, preventing invalid
+  cross-provider persistence.
+
+### Fixed
+- Token usage accounting.
+
+## [0.1.6] - 2026-08-26
+
+### Fixed
+- npm OIDC trusted publishing in CI.
+
+## [0.1.5] - 2026-08-26
+
+### Added
+- Header bar displaying the current directory and model context window usage.
+- Model list caching for declared and Ollama providers.
+- Ollama provider support.
+- Interactive model picker overlay for `/model`.
+- ACP authentication protocol support, with a login UI for CLI connections.
+- Plugin slash commands advertised over ACP `session/update`.
+- `new_session` for a full agent state reset and history clearance.
+
+### Changed
+- Configuration keys and internal naming migrated from kebab-case to
+  snake_case.
+- `CredentialNeed` introduced to enforce credential requirements during
+  provider declaration and improve key-variable suggestions.
+
+## [0.1.4] - 2026-08-25
+
+### Added
+- Custom CA certs, proxy auth, and custom headers for declared providers.
+- `--format json` option for the `exec` command, with end-to-end testing.
+- Esc key interrupts busy turns and handles cancellation during text
+  streaming.
+- Fuzzy file search, ported from grok-build into a new `keke-fuzzy-file-search`
+  crate and integrated into the TUI.
+
 ## [0.1.3] - 2026-08-24
 
 ### Added
