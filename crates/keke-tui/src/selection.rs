@@ -5,13 +5,24 @@
 //! keke's to give back: so the drag is answered here, over what the frame
 //! actually drew, and the release puts it on the clipboard.
 //!
-//! Columns are counted in `char`s of the drawn line. A double-width glyph is
-//! therefore off by one for the rest of its row — visible in CJK text, and the
-//! price of not carrying a width table for a highlight nobody measures.
+//! Rows are keyed by absolute screen row rather than an offset into a single
+//! block, because more than one widget hands its text here — the transcript
+//! body and the composer are drawn in separate, non-adjacent areas of the
+//! frame, and a sparse map is what lets both contribute without one
+//! overwriting the other or the gap between them meaning anything.
+//!
+//! A mouse column arrives in terminal cells, but a double-width glyph — CJK
+//! text, most visibly — is one `char` and two cells. Every column is walked
+//! through [`char_at_cell`] before it is used as a `char` index, so a
+//! selection that starts or ends past a wide glyph lands on the right
+//! character instead of drifting by one for the rest of the row.
+
+use std::collections::BTreeMap;
 
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use unicode_width::UnicodeWidthChar as _;
 
 /// A point in the drawn body, as `(row, column)` in screen cells.
 type Point = (u16, u16);
@@ -27,17 +38,28 @@ pub(crate) struct Selection {
     /// The selected span, anchor first. Outlives the drag so a reader can see
     /// what they copied.
     range: Option<(Point, Point)>,
-    /// The plain text of each row of the body, as this frame drew it.
-    rows: Vec<String>,
-    /// Where the body starts, so a screen row can be found in `rows`.
-    top: u16,
+    /// The plain text of each drawn row, keyed by its absolute screen row.
+    rows: BTreeMap<u16, String>,
 }
 
 impl Selection {
-    /// Told by `draw` what the body holds, so a drag has something to cut from.
+    /// Told by `draw` what the transcript body holds, so a drag has something
+    /// to cut from. Replaces every row handed in by a previous frame,
+    /// including ones contributed by [`Self::add_rows`].
     pub(crate) fn set_rows(&mut self, top: u16, rows: Vec<String>) {
-        self.top = top;
-        self.rows = rows;
+        self.rows.clear();
+        self.add_rows(top, rows);
+    }
+
+    /// Told by `draw` what another area — the composer, say — holds this
+    /// frame, alongside whatever [`Self::set_rows`] already contributed.
+    pub(crate) fn add_rows(&mut self, top: u16, rows: Vec<String>) {
+        for (i, row) in rows.into_iter().enumerate() {
+            let Ok(offset) = u16::try_from(i) else {
+                break;
+            };
+            self.rows.insert(top.saturating_add(offset), row);
+        }
     }
 
     pub(crate) fn press(&mut self, at: Point) {
@@ -81,7 +103,6 @@ impl Selection {
     pub(crate) fn clear(&mut self) {
         *self = Self {
             rows: std::mem::take(&mut self.rows),
-            top: self.top,
             ..Self::default()
         };
     }
@@ -99,10 +120,10 @@ impl Selection {
         };
         (start.0..=end.0)
             .filter_map(|row| {
-                let text = self.rows.get(usize::from(row.checked_sub(self.top)?))?;
+                let text = self.rows.get(&row)?;
                 let width = text.chars().count();
                 let from = if row == start.0 {
-                    usize::from(start.1).min(width)
+                    char_at_cell(text, usize::from(start.1))
                 } else {
                     0
                 };
@@ -110,7 +131,7 @@ impl Selection {
                 // character has selected it, which is what the highlight under
                 // the pointer says.
                 let to = if row == end.0 {
-                    (usize::from(end.1) + 1).min(width)
+                    (char_at_cell(text, usize::from(end.1)) + 1).min(width)
                 } else {
                     width
                 };
@@ -123,10 +144,10 @@ impl Selection {
         let rows: Vec<String> = self
             .spans()
             .into_iter()
-            .map(|(row, from, to)| {
-                let text = &self.rows[usize::from(row - self.top)];
+            .filter_map(|(row, from, to)| {
+                let text = self.rows.get(&row)?;
                 let cut: String = text.chars().take(to).skip(from).collect();
-                cut.trim_end().to_string()
+                Some(cut.trim_end().to_string())
             })
             .collect();
         rows.join("\n").trim_end().to_string()
@@ -175,4 +196,20 @@ fn split(span: Span<'static>, column: &mut usize, from: usize, to: usize) -> Vec
         pieces.push(Span::styled(cut(mid_to..chars.len()), span.style));
     }
     pieces
+}
+
+/// The `char` index of the glyph occupying screen `cell` in `text`, clamped to
+/// the row's length. A wide glyph occupies two cells; either one resolves to
+/// its single `char` index, which is what keeps a drag that starts or ends on
+/// the second cell of a CJK character from cutting into the wrong character.
+fn char_at_cell(text: &str, cell: usize) -> usize {
+    let mut width = 0usize;
+    for (index, ch) in text.chars().enumerate() {
+        let w = ch.width().unwrap_or(0).max(1);
+        if cell < width + w {
+            return index;
+        }
+        width += w;
+    }
+    text.chars().count()
 }
