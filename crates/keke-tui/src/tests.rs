@@ -357,7 +357,7 @@ fn a_long_prompt_keeps_its_cursor_on_screen() {
         app.input
             .set_text(&format!("{}line {at}", app.input.text() + "\n"));
     }
-    let rows = crate::draw::input::rows(&app);
+    let rows = crate::draw::input::rows(&app, 80);
     // Bounded: the transcript keeps the screen no matter how long the prompt.
     assert_eq!(rows, crate::draw::input::MAX_ROWS + 2);
 

@@ -71,7 +71,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // turn runs, and collapses to nothing when idle.
             Constraint::Length(turn_status::rows(app)),
             Constraint::Length(subagents::rows(app)),
-            Constraint::Length(input::rows(app)),
+            Constraint::Length(input::rows(app, frame.area().width)),
             Constraint::Length(1),
         ])
         .split(frame.area());
