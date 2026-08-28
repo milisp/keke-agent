@@ -77,14 +77,64 @@ pub struct SessionSummary {
     pub parent: Option<SessionId>,
 }
 
+/// The shortest handle anyone is asked to type. Below this, two homes that
+/// differ only by a few sessions would print handles of different lengths for
+/// the same session, which is worse than printing a character too many.
+const MIN_ABBREVIATION: usize = 8;
+
 impl SessionSummary {
-    /// The leading part of the id, which is what `--list` prints and what a
-    /// person types back. Long enough to be unique in practice, short enough to
-    /// copy by eye.
+    /// The trailing part of the id, cut to `width` — what a listing prints and
+    /// what a person types back.
+    ///
+    /// The tail, not the head, because that is where a UUIDv7 keeps what makes
+    /// it different. Its leading characters are a timestamp, and the `uuid`
+    /// crate resolves ties inside one millisecond with a counter in the low
+    /// bits: sessions started back to back agree to the last few characters and
+    /// disagree only at the end. Abbreviating from the front asked a person to
+    /// type 23 characters on a real home, and eight of them named five
+    /// different sessions.
+    ///
+    /// The width comes from [`abbreviation`] over the whole listing rather than
+    /// from this session alone: how much of an id is enough is a fact about
+    /// what it is being told apart from.
     #[must_use]
-    pub fn short_id(&self) -> String {
-        self.id.to_string().chars().take(8).collect()
+    pub fn abbreviated(&self, width: usize) -> String {
+        tail(&self.id.to_string(), width)
     }
+}
+
+/// The last `width` characters of `id`.
+fn tail(id: &str, width: usize) -> String {
+    let skip = id.chars().count().saturating_sub(width);
+    id.chars().skip(skip).collect()
+}
+
+/// How much of an id a listing has to print for every row to name one session.
+///
+/// Git's rule, for git's reason: an id nobody can type back is not an id. What
+/// is printed is what `keke resume` takes, so the listing has to print enough
+/// to tell apart what it is printing — and no more.
+///
+/// Two rows can carry the same id: a session resumed under a different
+/// directory logs under that project too. No width separates those, and the
+/// full id would not either, so they are counted once.
+#[must_use]
+pub fn abbreviation(ids: impl IntoIterator<Item = SessionId>) -> usize {
+    let ids: std::collections::HashSet<String> = ids.into_iter().map(|id| id.to_string()).collect();
+    let full = ids.iter().map(String::len).max().unwrap_or(0);
+
+    for width in MIN_ABBREVIATION..full {
+        // A handle opening on a dash carries no more than the one before it,
+        // and looks like something mistyped rather than something to copy.
+        if ids.iter().any(|id| tail(id, width).starts_with('-')) {
+            continue;
+        }
+        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+        if ids.iter().all(|id| seen.insert(tail(id, width))) {
+            return width;
+        }
+    }
+    full.max(MIN_ABBREVIATION)
 }
 
 /// Everything needed to continue a session.
@@ -133,21 +183,26 @@ pub enum SessionMatch {
 
 /// Resolve what a person typed to one session.
 ///
-/// A full id works, and so does any prefix of one — a UUID is not something
-/// anyone retypes correctly, and `--list` prints the short form for exactly
-/// this. Matching is case-insensitive and ignores dashes, so a prefix copied
-/// with or without them behaves the same.
+/// A full id works, and so does either end of one — a UUID is not something
+/// anyone retypes correctly. Both ends, because the two are what a person has
+/// to hand: `--list` prints the tail, since that is where a UUIDv7 differs,
+/// while an id pasted from a log path or an error message leads with its head.
+/// Matching is case-insensitive and ignores dashes, so a handle copied with or
+/// without them behaves the same.
 pub fn find_session(home: &AbsPath, typed: &str) -> Result<SessionMatch, RolloutError> {
     let needle = normalize(typed);
     if needle.is_empty() {
         return Ok(SessionMatch::None);
     }
-    // Matched on the name before anything is read: a prefix names at most a
+    // Matched on the name before anything is read: a handle names at most a
     // handful of sessions, and summarizing the rest to discard them is what
     // made resuming by id cost a scan of every log on disk.
     let matched: Vec<SessionSummary> = log_paths(home)?
         .into_iter()
-        .filter(|log| normalize(&log.id.to_string()).starts_with(&needle))
+        .filter(|log| {
+            let id = normalize(&log.id.to_string());
+            id.starts_with(&needle) || id.ends_with(&needle)
+        })
         .filter_map(|log| summarize(&log).ok())
         // A log with no turns holds no conversation, so it is not a candidate
         // for continuing one — and counting it would make a prefix ambiguous
@@ -868,6 +923,53 @@ mod tests {
         ]);
         assert_eq!(list_recent(&home, 2).expect("reads").len(), 2);
         assert_eq!(list_sessions(&home).expect("reads").len(), 3);
+    }
+
+    /// Ids minted close together share their leading characters, because a
+    /// UUIDv7 opens with a timestamp. A listing that printed eight of them
+    /// would print one name for two sessions, and `keke resume` would refuse
+    /// exactly what the listing told the person to type.
+    #[test]
+    fn a_listing_prints_enough_of_an_id_to_resume_by_it() {
+        let ids: Vec<SessionId> = (0..8).map(|_| SessionId::new()).collect();
+        let width = abbreviation(ids.iter().copied());
+
+        let (_dir, home) = empty_home();
+        for id in &ids {
+            write_session(&home, *id, &turns_of(1));
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for id in &ids {
+            let printed = SessionSummary {
+                id: *id,
+                path: PathBuf::new(),
+                updated_at: String::new(),
+                summary: String::new(),
+                turns: 1,
+                parent: None,
+                cwd: None,
+            }
+            .abbreviated(width);
+            assert!(!printed.starts_with('-'), "{printed} opens on a dash");
+            assert!(seen.insert(printed.clone()), "{printed} names two sessions");
+
+            // What is printed is what resume takes back.
+            assert!(
+                matches!(
+                    find_session(&home, &printed).expect("reads"),
+                    SessionMatch::One(session) if session.id == *id
+                ),
+                "`{printed}` does not resolve to the session it names"
+            );
+        }
+    }
+
+    /// Nothing is gained by printing more of an id than tells them apart.
+    #[test]
+    fn one_session_is_abbreviated_to_the_minimum() {
+        assert_eq!(abbreviation([SessionId::new()]), MIN_ABBREVIATION);
+        assert_eq!(abbreviation([]), MIN_ABBREVIATION);
     }
 
     #[test]

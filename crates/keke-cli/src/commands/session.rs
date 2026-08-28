@@ -50,14 +50,19 @@ pub(super) async fn resume(
             );
             return Ok(());
         }
+        // Wide enough that every row names one session and no wider. What is
+        // printed is what `keke resume` takes back, so a listing that printed
+        // the same id on two rows would be inviting a person to type something
+        // that cannot resolve.
+        let width = keke_core::abbreviation(conversations.iter().map(|it| it.id));
         println!(
-            "{:<10} {:<20} {:>5}  STARTED WITH",
+            "{:<width$} {:<20} {:>5}  STARTED WITH",
             "ID", "UPDATED", "TURNS"
         );
         for session in conversations {
             println!(
-                "{:<10} {:<20} {:>5}  {}",
-                session.short_id(),
+                "{:<width$} {:<20} {:>5}  {}",
+                session.abbreviated(width),
                 session.updated_at.get(..19).unwrap_or("-"),
                 session.turns,
                 session.summary
@@ -77,9 +82,13 @@ pub(super) async fn resume(
             // Invariant 8: two claimants and no way to choose is an error, not
             // a pick — continuing the wrong conversation is silent and costly.
             keke_core::SessionMatch::Ambiguous(candidates) => {
+                // Printed long enough to tell the candidates apart, which is
+                // the whole use of this message: naming them all the same way
+                // reports the problem and withholds the fix.
+                let width = keke_core::abbreviation(candidates.iter().map(|it| it.id));
                 let named = candidates
                     .iter()
-                    .map(|session| format!("  {}  {}", session.short_id(), session.summary))
+                    .map(|session| format!("  {}  {}", session.abbreviated(width), session.summary))
                     .collect::<Vec<_>>()
                     .join("\n");
                 bail!("`{typed}` matches {} sessions:\n{named}", candidates.len());
