@@ -294,6 +294,21 @@ so what a client can list is what `keke resume --list` lists and what it resumes
 is what `keke resume` resumes. There is no second record for the two to
 disagree about.
 
+A session owns a directory — `sessions/<project>/<session-id>/` — holding
+`rollout.jsonl` and a `meta.json` beside it. The log is the record; `meta.json`
+is a fold of it, and deleting one costs a rescan and changes no answer. It
+exists because a log carries the whole model-visible history on every step and
+therefore grows with the square of the turns: listing sessions by parsing them
+meant reading every byte of every conversation to print four columns. The fold
+is incremental — it records how far it has read — and it notes the offset of the
+last `ModelRequest`, which is where the history a resume rebuilds begins, so
+continuing a long session reads its last turn rather than all of them.
+
+A subagent's log is one of these too, and `SessionStart` names its parent. A
+child's log otherwise looks exactly like a person's, and a listing that could
+not tell them apart would offer to continue a conversation nobody had. Its
+tokens are billed to the parent, once, where the parent logged `SubagentEnd`.
+
 ### Asking a person
 
 `ApprovalPolicy` decides *whether* to ask, from the tool's own declared

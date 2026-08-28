@@ -35,16 +35,22 @@ pub enum RolloutError {
 pub struct RolloutRecorder {
     path: PathBuf,
     file: tokio::fs::File,
+    /// The derived summary, folded as events are written rather than by
+    /// re-reading what was just appended.
+    meta: crate::meta::SessionMeta,
 }
 
 impl RolloutRecorder {
     /// Create the log for `session` under `home`, in `cwd`'s project directory.
+    ///
+    /// A session owns a directory rather than a file, so the log has somewhere
+    /// to keep what is derived from it.
     pub async fn create(
         home: &AbsPath,
         cwd: &Path,
         session: SessionId,
     ) -> Result<Self, RolloutError> {
-        let dir = crate::project_dir(home, cwd);
+        let dir = crate::project_dir(home, cwd).join(session.to_string());
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|source| RolloutError::Io {
@@ -52,7 +58,7 @@ impl RolloutRecorder {
                 source,
             })?;
 
-        let path = dir.join(format!("{session}.jsonl"));
+        let path = dir.join(crate::meta::LOG_FILE);
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -63,7 +69,18 @@ impl RolloutRecorder {
                 source,
             })?;
 
-        Ok(Self { path, file })
+        // A resumed session appends to a log it did not write, so the summary
+        // it continues from is whatever that log already says.
+        let meta = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || crate::meta::SessionMeta::refreshed(&path))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_else(crate::meta::SessionMeta::new)
+        };
+
+        Ok(Self { path, file, meta })
     }
 
     /// Where this log lives.
@@ -94,7 +111,27 @@ impl RolloutRecorder {
         self.file.flush().await.map_err(|source| RolloutError::Io {
             path: self.path.display().to_string(),
             source,
-        })
+        })?;
+
+        self.meta.append(line.len() as u64, &envelope);
+        // Written at the points a listing would show something different, not
+        // on every event: the cache exists to be read cheaply, and a session
+        // that dies between two of these is caught up by one fold of the tail
+        // rather than by a rescan.
+        if matches!(
+            envelope.event,
+            SessionEvent::SessionStart { .. } | SessionEvent::TurnEnd { .. }
+        ) {
+            self.meta.write(&self.path);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RolloutRecorder {
+    /// A session that ends between two turns still leaves a current cache.
+    fn drop(&mut self) {
+        self.meta.write(&self.path);
     }
 }
 
@@ -104,10 +141,28 @@ impl RolloutRecorder {
 /// the load: refusing to open a session because one line is from a newer
 /// version would be a worse failure than resuming without it.
 pub fn read_log(path: &Path) -> Result<Vec<SessionEventEnvelope>, RolloutError> {
-    let text = std::fs::read_to_string(path).map_err(|source| RolloutError::Io {
+    read_log_from(path, 0)
+}
+
+/// Read a log back from byte `from`, which must be where a line begins.
+///
+/// The caller that has a cached offset for the last model request uses this to
+/// read the tail a resume needs instead of the whole log.
+pub fn read_log_from(path: &Path, from: u64) -> Result<Vec<SessionEventEnvelope>, RolloutError> {
+    let io = |source: std::io::Error| RolloutError::Io {
         path: path.display().to_string(),
         source,
-    })?;
+    };
+    let mut file = std::fs::File::open(path).map_err(io)?;
+    if from > 0 {
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(from)).map_err(io)?;
+    }
+    let mut text = String::new();
+    {
+        use std::io::Read;
+        file.read_to_string(&mut text).map_err(io)?;
+    }
 
     Ok(text
         .lines()

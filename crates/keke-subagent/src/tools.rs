@@ -172,7 +172,7 @@ impl Tool for SpawnAgent {
 
         let id = self
             .host
-            .spawn(task.clone(), Arc::clone(&ctx.cancelled))
+            .spawn(self.ctx.session, task.clone(), Arc::clone(&ctx.cancelled))
             .map_err(tool_error)?;
         self.record_start(&id, &task);
 

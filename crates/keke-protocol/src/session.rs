@@ -30,6 +30,15 @@ pub enum SessionEvent {
         cwd: String,
         provider: String,
         model: String,
+        /// The session that spawned this one, when it is a subagent's.
+        ///
+        /// A child keeps its own log, which is indistinguishable from a
+        /// person's session by everything else in it: same shape, same turns,
+        /// same cwd. Without this, `keke resume --list` offers to continue a
+        /// conversation nobody had. A log written before this field existed, or
+        /// one belonging to a session a person started, simply has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<SessionId>,
     },
     /// A turn began, with the user input that started it.
     TurnStart {

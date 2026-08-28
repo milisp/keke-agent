@@ -224,10 +224,16 @@ impl SubagentHost {
     /// parent's turn on session construction or on the concurrency permit.
     pub fn spawn(
         self: &Arc<Self>,
+        parent: SessionId,
         task: String,
         parent_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<AgentId, SubagentError> {
-        let recipe = self.recipe.get().ok_or(SubagentError::Unattached)?.clone();
+        let recipe = self
+            .recipe
+            .get()
+            .ok_or(SubagentError::Unattached)?
+            .clone()
+            .parent(parent);
         let id = format!("agent_{}", self.next.fetch_add(1, Ordering::SeqCst));
 
         let permits = Arc::clone(&self.permits);
