@@ -2,6 +2,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use keke_paths::AbsPath;
+use keke_plugin::McpTransport;
 use keke_plugin::ResolvedMcpServer;
 use serde_json::Value;
 use serde_json::json;
@@ -10,6 +11,7 @@ use tokio::sync::OnceCell;
 use crate::McpOptions;
 use crate::client::Connection;
 use crate::client::RpcError;
+use crate::http::HttpConnection;
 
 /// The MCP revisions this client speaks, best first. Not a deployment choice:
 /// each entry is a claim about the code below, so this is a constant rather
@@ -97,12 +99,11 @@ fn versions_in(value: Option<&Value>) -> Vec<String> {
 pub(crate) struct McpServer {
     plugin: String,
     name: String,
-    command: String,
-    args: Vec<String>,
-    /// The environment as the manifest wrote it, `${VAR}` references intact.
-    /// Expansion happens in [`Self::spawn`] and the result is never stored, so
-    /// no value here and no `Debug` output can carry a secret.
-    env: Vec<(String, String)>,
+    /// How the server is reached, as configured. Any `${VAR}` reference in it
+    /// is still a reference: expansion happens at the moment of use and the
+    /// result is never stored, so no value here and no `Debug` output can carry
+    /// a secret.
+    transport: McpTransport,
     root: AbsPath,
     options: McpOptions,
     session: OnceCell<Result<Arc<Session>, String>>,
@@ -114,8 +115,35 @@ pub(crate) struct McpServer {
 /// meaningful without the other: sending modern `_meta` down a legacy
 /// connection, or omitting it on a modern one, are both malformed.
 struct Session {
-    connection: Arc<Connection>,
+    connection: Wire,
     era: Era,
+}
+
+/// An open connection, whichever transport carries it.
+///
+/// The eras above, the framing, and the timeouts are all properties of the
+/// protocol rather than of the pipe, so everything from `connect` upward is
+/// written once against this and knows nothing about processes or URLs.
+#[derive(Clone, Debug)]
+enum Wire {
+    Stdio(Arc<Connection>),
+    Http(Arc<HttpConnection>),
+}
+
+impl Wire {
+    async fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+        match self {
+            Self::Stdio(connection) => connection.request(method, params).await,
+            Self::Http(connection) => connection.request(method, params).await,
+        }
+    }
+
+    async fn notify(&self, method: &str, params: Value) -> Result<(), RpcError> {
+        match self {
+            Self::Stdio(connection) => connection.notify(method, params).await,
+            Self::Http(connection) => connection.notify(method, params).await,
+        }
+    }
 }
 
 impl std::fmt::Debug for McpServer {
@@ -126,12 +154,7 @@ impl std::fmt::Debug for McpServer {
         f.debug_struct("McpServer")
             .field("plugin", &self.plugin)
             .field("name", &self.name)
-            .field("command", &self.command)
-            .field("args", &self.args)
-            .field(
-                "env",
-                &self.env.iter().map(|(key, _)| key).collect::<Vec<_>>(),
-            )
+            .field("transport", &self.transport.describe())
             .field("root", &self.root)
             .finish_non_exhaustive()
     }
@@ -158,9 +181,7 @@ impl McpServer {
         Self {
             plugin: resolved.plugin.clone(),
             name: resolved.name.clone(),
-            command: resolved.command.clone(),
-            args: resolved.args.clone(),
-            env: resolved.env.clone(),
+            transport: resolved.transport.clone(),
             root: resolved.plugin_root.clone(),
             options,
             session: OnceCell::new(),
@@ -255,7 +276,7 @@ impl McpServer {
 
     async fn call_with_timeout(
         &self,
-        connection: &Connection,
+        connection: &Wire,
         method: &str,
         params: Value,
         millis: u64,
@@ -280,7 +301,7 @@ impl McpServer {
 
     /// Spawn the server and work out which era it speaks.
     async fn start(&self) -> Result<Arc<Session>, String> {
-        let connection = self.spawn_and_attach()?;
+        let connection = self.open().await?;
 
         // The probe and the legacy handshake share the one budget the
         // deployment set for startup, half each, because in the worst case both
@@ -302,10 +323,10 @@ impl McpServer {
                     connection
                 } else {
                     // A server that exits on an unknown method leaves nothing to
-                    // send `initialize` down. Re-spawning is the only way to give
+                    // send `initialize` down. Re-opening is the only way to give
                     // such a server the legacy opening it was waiting for, and it
                     // costs a process only in this one case.
-                    self.spawn_and_attach()?
+                    self.open().await?
                 };
                 self.initialize(&connection, half).await?;
                 Ok(Arc::new(Session {
@@ -316,16 +337,56 @@ impl McpServer {
         }
     }
 
-    fn spawn_and_attach(&self) -> Result<Arc<Connection>, String> {
-        let child = self.spawn().map_err(|error| {
+    /// This server's OAuth credential, when the host composed a place to keep
+    /// one. A failure to build it is not a failure to connect: plenty of remote
+    /// servers need no token at all, and one that does will say so with a 401.
+    fn credential(&self, url: &str) -> Option<Arc<crate::auth::ServerAuth>> {
+        let home = self.options.auth.clone()?;
+        match crate::auth::ServerAuth::new(home, &self.name, url) {
+            Ok(auth) => Some(Arc::new(auth)),
+            Err(reason) => {
+                tracing::warn!(server = %self.name, %reason, "no credential store for this server");
+                None
+            }
+        }
+    }
+
+    /// Open a connection, by whichever means this server is reached.
+    async fn open(&self) -> Result<Wire, String> {
+        let context = |error: String| {
             format!(
-                "could not start MCP server `{}` from plugin `{}`: {error}",
+                "could not reach MCP server `{}` from plugin `{}`: {error}",
                 self.name, self.plugin
             )
-        })?;
-        Connection::attach(child)
-            .map(Arc::new)
-            .map_err(|error| error.to_string())
+        };
+        match &self.transport {
+            McpTransport::Stdio { command, args, env } => {
+                let child = self
+                    .spawn(command, args, env)
+                    .map_err(|error| context(error.to_string()))?;
+                Connection::attach(child)
+                    .map(|connection| Wire::Stdio(Arc::new(connection)))
+                    .map_err(|error| context(error.to_string()))
+            }
+            McpTransport::Http { url, headers } => HttpConnection::streamable(
+                url,
+                crate::http::expand(headers),
+                self.credential(url),
+                &self.name,
+            )
+            .map(|connection| Wire::Http(Arc::new(connection)))
+            .map_err(context),
+            McpTransport::Sse { url, headers } => HttpConnection::sse(
+                url,
+                crate::http::expand(headers),
+                self.credential(url),
+                &self.name,
+                self.options.startup_timeout_millis,
+            )
+            .await
+            .map(|connection| Wire::Http(Arc::new(connection)))
+            .map_err(context),
+        }
     }
 
     /// Ask `server/discover` and read the era off the answer.
@@ -335,7 +396,7 @@ impl McpServer {
     /// error we cannot act on. Those are stated rather than swallowed: a server
     /// that silently contributes no tools looks exactly like a server that has
     /// none.
-    async fn probe(&self, connection: &Connection, millis: u64) -> Result<Probe, String> {
+    async fn probe(&self, connection: &Wire, millis: u64) -> Result<Probe, String> {
         let version = MODERN_VERSIONS.first().copied().unwrap_or(LEGACY_VERSION);
         let params = json!({"_meta": self.meta(version)});
 
@@ -407,7 +468,7 @@ impl McpServer {
     }
 
     /// The legacy opening handshake.
-    async fn initialize(&self, connection: &Connection, millis: u64) -> Result<(), String> {
+    async fn initialize(&self, connection: &Wire, millis: u64) -> Result<(), String> {
         let handshake = self
             .call_with_timeout(
                 connection,
@@ -471,10 +532,15 @@ impl McpServer {
 
     /// Spawn the child with its environment expanded and its plugin root as the
     /// working directory, so a server can find the files it ships with.
-    fn spawn(&self) -> Result<tokio::process::Child, std::io::Error> {
-        let mut command = tokio::process::Command::new(&self.command);
+    fn spawn(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> Result<tokio::process::Child, std::io::Error> {
+        let mut command = tokio::process::Command::new(program);
         command
-            .args(&self.args)
+            .args(args)
             .current_dir(self.root.as_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -484,8 +550,8 @@ impl McpServer {
             .stderr(Stdio::null())
             .kill_on_drop(true);
 
-        for (key, raw) in &self.env {
-            let value = expand(raw);
+        for (key, raw) in env {
+            let value = expand_vars(raw);
             // An empty value is an absent one, never a configured one
             // (`AGENTS.md` invariant 8) — passing `TOKEN=""` would let a server
             // believe it was given a credential.
@@ -504,7 +570,7 @@ impl McpServer {
 ///
 /// Done here rather than during plugin resolution so a resolved plugin set —
 /// which is long-lived, cloned and logged — never holds an expanded secret.
-fn expand(raw: &str) -> String {
+pub(crate) fn expand_vars(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(start) = rest.find("${") {
@@ -526,7 +592,7 @@ mod tests {
     use super::Era;
     use super::LEGACY_VERSION;
     use super::MODERN_VERSIONS;
-    use super::expand;
+    use super::expand_vars as expand;
     use super::is_modern_error;
     use super::shared_era;
 

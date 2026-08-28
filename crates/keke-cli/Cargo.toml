@@ -15,6 +15,7 @@ path = "src/main.rs"
 keke-acp = { workspace = true }
 keke-tui = { workspace = true }
 keke-auth-api = { workspace = true }
+keke-oauth = { workspace = true }
 keke-auth-codex = { workspace = true }
 keke-auth-grok = { workspace = true }
 keke-config = { workspace = true }

@@ -54,7 +54,7 @@ pub(crate) enum RpcError {
 /// Shared with the reader task rather than reachable from it through the
 /// [`Connection`], so the reader never keeps the child alive: dropping the
 /// connection kills the child, the reader sees EOF, and it ends on its own.
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>>;
+pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>>;
 
 /// A live connection to one MCP server process.
 ///
@@ -176,7 +176,7 @@ async fn read_loop(stdout: ChildStdout, pending: Pending) {
     }
 }
 
-fn answer(message: &Value) -> Result<Value, RpcError> {
+pub(crate) fn answer(message: &Value) -> Result<Value, RpcError> {
     if let Some(error) = message.get("error") {
         return Err(RpcError::Peer {
             code: error.get("code").and_then(Value::as_i64).unwrap_or(0),

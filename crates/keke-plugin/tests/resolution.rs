@@ -62,7 +62,7 @@ fn a_plugin_written_for_claude_code_loads_unchanged() {
     assert_eq!(plugin.commands.len(), 1);
     assert_eq!(plugin.commands[0].name, "ship");
     assert_eq!(plugin.mcp_servers.len(), 1);
-    assert_eq!(plugin.mcp_servers[0].command, "node");
+    assert_eq!(plugin.mcp_servers[0].transport.describe(), "node server.js");
     assert_eq!(plugin.hooks.len(), 1);
     assert_eq!(plugin.hooks[0].event, HookEvent::PreToolUse);
 }
@@ -641,4 +641,72 @@ fn a_store_written_before_installs_existed_still_loads() {
         serde_json::to_value(&store).expect("re-encodes"),
         serde_json::json!({"/plugins/acme": {"name": "acme", "approved": ["hook Stop [*]: ./x.sh"]}})
     );
+}
+
+#[test]
+fn a_remote_server_resolves_by_its_url_and_is_approved_as_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("acme");
+    write(&root.join("plugin.json"), r#"{"name": "acme"}"#);
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {
+            "vercel": {"type": "http", "url": "https://mcp.vercel.com"},
+            "old": {"type": "sse", "url": "https://legacy.test/sse",
+                    "headers": {"Authorization": "Bearer ${TOKEN}"}}
+        }}"#,
+    );
+    let set = set_of(dir.path(), "acme", PluginScope::Project);
+    let plugin = set.get("acme").expect("resolved");
+
+    assert_eq!(plugin.mcp_servers.len(), 2);
+    // Reaching a URL is as much a thing to approve as running a program, and
+    // the header's value is a secret that never reaches the store.
+    assert_eq!(
+        plugin.executables(),
+        vec![
+            "mcp old: sse https://legacy.test/sse (headers: Authorization)",
+            "mcp vercel: http https://mcp.vercel.com",
+        ]
+    );
+}
+
+#[test]
+fn an_entry_naming_nothing_reachable_is_dropped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("acme");
+    write(&root.join("plugin.json"), r#"{"name": "acme"}"#);
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {
+            "no-command": {},
+            "no-url": {"type": "http"},
+            "unknown": {"type": "carrier-pigeon", "url": "https://a.test"},
+            "fine": {"command": "node"}
+        }}"#,
+    );
+    let set = set_of(dir.path(), "acme", PluginScope::Project);
+    let names: Vec<&str> = set
+        .get("acme")
+        .expect("resolved")
+        .mcp_servers
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect();
+
+    assert_eq!(names, vec!["fine"]);
+}
+
+#[test]
+fn a_directory_can_be_read_under_a_name_it_does_not_have() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join(".keke");
+    write(&root.join("commands/review.md"), "review the diff\n");
+
+    // `.keke` is not a valid plugin name, which is exactly why a caller that
+    // knows what the directory is gets to say.
+    assert!(keke_plugin::load(&root, PluginScope::User).is_err());
+    let named = keke_plugin::load_named(&root, PluginScope::User, Some("local")).expect("loads");
+    assert_eq!(named.name, "local");
+    assert_eq!(named.commands.len(), 1);
 }

@@ -1,0 +1,23 @@
+[package]
+name = "keke-oauth"
+description = "The parts of an OAuth login that are the RFCs' rather than any vendor's: PKCE and the loopback redirect."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-auth-api = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+url = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -490,7 +490,18 @@ impl Composed {
         // `spawn_agent` with its own, the same way it can shadow a built-in.
         let subagents = keke_subagent::install(&mut extensions, subagent_limits);
         keke_skills::install(&mut extensions, &plugins);
-        keke_mcp::install_with(&mut extensions, &plugins, timeouts.into());
+        // The credential home is handed in rather than discovered: where the
+        // harness keeps state is the composition root's to know, and a remote
+        // MCP server's token belongs in the same directory as every other
+        // login's.
+        keke_mcp::install_with(
+            &mut extensions,
+            &plugins,
+            keke_mcp::McpOptions {
+                auth: Some(keke_mcp::AuthHome::new(home)),
+                ..timeouts.into()
+            },
+        );
         keke_hooks::install_with(&mut extensions, &plugins, timeouts);
 
         // The surface's approval bridge registers last so a plugin hook cannot

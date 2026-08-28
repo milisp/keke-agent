@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `keke mcp add|list|get|remove`, for configuring MCP servers without authoring
+  a plugin — including remote ones:
+  `keke mcp add --transport http vercel https://mcp.vercel.com`.
+- Remote MCP transports: streamable HTTP and the older HTTP+SSE.
+- OAuth for remote MCP servers: `keke mcp login <name>` discovers the
+  authorization server (RFC 9728), registers a client (RFC 7591), and completes
+  a PKCE flow in the browser; tokens refresh on expiry and on a 401. `keke mcp
+  add` offers to sign in as soon as a remote server is configured.
+- `/mcp` lists the servers, what each is reached by, and which need signing in;
+  `/mcp login <name>` runs the flow from inside the interface.
+- `keke-oauth`, holding PKCE and the loopback redirect once instead of once per
+  vendor auth crate.
+- `$KEKE_HOME`, `~/.claude`, `.keke/`, and `.claude/` are read for `commands/`,
+  `skills/`, and `.mcp.json`, so a slash command is a markdown file dropped into
+  a directory. What the project directory contributes is held back until
+  `keke plugin trust workspace`.
+
 ## [0.1.10] - 2026-08-27
 
 ### Added

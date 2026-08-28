@@ -38,6 +38,11 @@ RANK = {
     # dependencies of its own; ranked with the other tier-0.5 utilities so any
     # surface may use it
     "keke-fuzzy-file-search": 7,
+    # PKCE and the loopback redirect: what every OAuth login needs and no
+    # issuer decides. Above the contracts because it reports `AuthError`, below
+    # the vendor auth plugins *and* `keke-mcp`, which is the point — an MCP
+    # server behind OAuth is not a vendor and cannot depend on one.
+    "keke-oauth": 8,
     # tier 1 - engine
     "keke-config": 10,
     "keke-credentials": 10,

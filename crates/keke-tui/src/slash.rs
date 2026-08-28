@@ -41,6 +41,8 @@ pub enum Builtin {
     Provider,
     /// Puts the last reply on the system clipboard.
     Copy,
+    /// Lists the MCP servers and their state, and signs in to a remote one.
+    Mcp,
 }
 
 /// One entry in the command list.
@@ -170,6 +172,11 @@ fn builtins() -> Vec<SlashCommand> {
             Builtin::Copy,
             "copy",
             "copy the last reply to the clipboard",
+        ),
+        (
+            Builtin::Mcp,
+            "mcp",
+            "manage the MCP servers, or `login <name>` to authorize a remote one",
         ),
         (Builtin::Quit, "quit", "leave keke"),
     ]

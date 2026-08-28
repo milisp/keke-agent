@@ -54,12 +54,30 @@ impl Choice for ProviderChoice {
     }
 }
 
+/// An MCP server, as something to pick.
+///
+/// Filtering matches the name a person types at `/mcp login` and the transport
+/// line they read on screen, so "vercel" and "https" both narrow the list.
+impl Choice for crate::mcp::McpServerStatus {
+    fn key(&self) -> &str {
+        &self.name
+    }
+
+    fn label(&self) -> &str {
+        &self.transport
+    }
+}
+
 /// Which list the open overlay is showing. Held on the picker rather than
 /// beside it so there is no way to be open on one list and reading the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerKind {
     Model,
     Provider,
+    /// MCP servers. Unlike the other two, enter does not switch anything — it
+    /// authorizes the highlighted server, which is the one thing about an MCP
+    /// server a person actually has to do from here.
+    Mcp,
 }
 
 /// Which row is highlighted, and what has been typed to narrow the list.

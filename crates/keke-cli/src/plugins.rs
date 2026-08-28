@@ -61,6 +61,52 @@ fn roots(home: &HomeLayout) -> Vec<(AbsPath, PluginScope, Origin)> {
     roots
 }
 
+/// Directories that are a person's own rather than a plugin package, and the
+/// name each contributes under.
+///
+/// A person who wants one slash command or one MCP server should not have to
+/// author a plugin to get it: dropping `commands/review.md` into `~/.keke`, or
+/// running `keke mcp add`, is the whole gesture. What those directories hold is
+/// exactly a plugin's convention content, so they are read as packages — which
+/// also means the workspace one passes through the same trust gate as anything
+/// else the repository ships (`AGENTS.md` invariant 13).
+///
+/// The names are ones no published plugin is likely to claim, because a
+/// collision here would be reported as the same plugin installed twice.
+pub(crate) fn local_roots(
+    home: &HomeLayout,
+) -> Vec<(std::path::PathBuf, &'static str, PluginScope)> {
+    let mut roots = vec![(
+        home.home.as_path().to_path_buf(),
+        "local",
+        PluginScope::User,
+    )];
+    if let Some(claude) = dirs::home_dir() {
+        roots.push((claude.join(".claude"), "claude", PluginScope::User));
+    }
+    roots.push((
+        home.workspace_root.as_path().join(".keke"),
+        "workspace",
+        PluginScope::Project,
+    ));
+    roots.push((
+        home.workspace_root.as_path().join(".claude"),
+        "claude-workspace",
+        PluginScope::Project,
+    ));
+    roots
+}
+
+/// Whether a person's directory holds anything keke would read from it.
+///
+/// Checked before loading so an empty `~/.keke` does not become a plugin that
+/// contributes nothing and shows up in `keke plugin list` regardless.
+fn has_local_content(root: &std::path::Path) -> bool {
+    root.join(keke_plugin::COMMANDS_DIR).is_dir()
+        || root.join(keke_plugin::SKILLS_DIR).is_dir()
+        || root.join(keke_plugin::MCP_FILE).is_file()
+}
+
 /// Resolve every installed plugin.
 ///
 /// A broken plugin fails startup rather than being skipped with a warning. That
@@ -115,6 +161,20 @@ pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
                 continue;
             }
             plugins.push(plugin);
+        }
+    }
+
+    for (root, name, scope) in local_roots(home) {
+        if !has_local_content(&root) {
+            continue;
+        }
+        match keke_plugin::load_named(&root, scope, Some(name)) {
+            Ok(plugin) => plugins.push(plugin),
+            // Same division as above: keke's own directory failing is keke's to
+            // state, another harness's is not.
+            Err(error) => {
+                eprintln!("keke: skipping {}: {error}", root.display());
+            }
         }
     }
 

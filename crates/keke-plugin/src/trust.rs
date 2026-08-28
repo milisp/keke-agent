@@ -91,18 +91,11 @@ impl ResolvedPlugin {
             lines.push(format!("hook {} [{when}]: {}", hook.event, hook.command));
         }
         for server in &self.mcp_servers {
-            let mut line = format!("mcp {}: {}", server.name, server.command);
-            for arg in &server.args {
-                line.push(' ');
-                line.push_str(arg);
-            }
-            if !server.env.is_empty() {
-                let names: Vec<&str> = server.env.iter().map(|(name, _)| name.as_str()).collect();
-                line.push_str(" (env: ");
-                line.push_str(&names.join(", "));
-                line.push(')');
-            }
-            lines.push(line);
+            lines.push(format!(
+                "mcp {}: {}",
+                server.name,
+                server.transport.describe()
+            ));
         }
         lines.sort();
         lines

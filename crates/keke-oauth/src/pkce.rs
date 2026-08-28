@@ -5,13 +5,14 @@ use sha2::Digest as _;
 use sha2::Sha256;
 
 /// A PKCE verifier and its S256 challenge (RFC 7636).
-pub(crate) struct Pkce {
+pub struct Pkce {
     pub verifier: String,
     pub challenge: String,
 }
 
 impl Pkce {
-    pub(crate) fn generate() -> Self {
+    #[must_use]
+    pub fn generate() -> Self {
         let verifier = random_token(32);
         let digest = Sha256::digest(verifier.as_bytes());
         Self {
@@ -26,7 +27,8 @@ impl Pkce {
 /// Used for the PKCE verifier and the `state` parameter, both of which are
 /// unguessable-or-nothing: a predictable `state` is a working CSRF against the
 /// loopback callback.
-pub(crate) fn random_token(bytes: usize) -> String {
+#[must_use]
+pub fn random_token(bytes: usize) -> String {
     let mut buffer = vec![0u8; bytes];
     rand::rng().fill_bytes(&mut buffer);
     URL_SAFE_NO_PAD.encode(buffer)

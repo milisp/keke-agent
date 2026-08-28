@@ -1,33 +1,23 @@
-//! Authorization code + PKCE over a loopback redirect (RFC 8252 §7.3).
+//! ChatGPT's authorization-code login, over the shared loopback redirect.
 //!
-//! The port is bound *before* the authorize URL is built, because the port
-//! number is part of the `redirect_uri` the issuer will check; binding
-//! afterwards would leave a window where the URL names a port we do not own.
-
-use std::time::Duration;
+//! What is here is what the issuer decides. The redirect server itself, PKCE,
+//! and the state check are `keke-oauth`'s — the same code every issuer needs.
 
 use keke_auth_api::AuthError;
 use keke_auth_api::LoginUi;
+use keke_oauth::Loopback;
+use keke_oauth::Pkce;
+use keke_oauth::random_token;
 use reqwest::Client;
-use tokio::io::AsyncReadExt as _;
-use tokio::io::AsyncWriteExt as _;
-use tokio::net::TcpListener;
 use url::Url;
 
 use keke_credentials::AuthTokens;
 
 use crate::CodexAuthConfig;
 use crate::endpoint::exchange;
-use crate::pkce::Pkce;
-use crate::pkce::random_token;
 
 use crate::ported::codex::authorize;
 use crate::ported::codex::authorize::CALLBACK_PATH;
-/// A request line plus headers; anything larger is not a browser redirect.
-const MAX_REQUEST_BYTES: usize = 8 * 1024;
-
-const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Signed in</title>\
-<p>Signed in. You can close this tab and return to the terminal.";
 
 /// Claim the one loopback port this client's redirect URI is registered at.
 ///
@@ -35,21 +25,21 @@ const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Signed in</ti
 /// use means another login is in flight, and the caller falls back to the
 /// device-code flow rather than opening a browser at an address the issuer
 /// will refuse.
-pub(crate) async fn bind(port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(("127.0.0.1", port)).await
+pub(crate) async fn bind(port: u16) -> std::io::Result<Loopback> {
+    Loopback::bind(port, CALLBACK_PATH).await
 }
 
 pub(crate) async fn run(
     http: &Client,
     config: &CodexAuthConfig,
     ui: &dyn LoginUi,
-    listener: TcpListener,
+    loopback: Loopback,
 ) -> Result<AuthTokens, AuthError> {
-    let port = listener
-        .local_addr()
-        .map_err(|err| AuthError::Other(format!("loopback address unavailable: {err}")))?
-        .port();
-    let redirect_uri = authorize::redirect_uri(port);
+    // Upstream's registration names `localhost`, which is not what
+    // `Loopback::redirect_uri` builds — an issuer that compares the string
+    // would refuse it — so the URI is the ported builder's and only the port
+    // comes from the listener.
+    let redirect_uri = authorize::redirect_uri(loopback.port()?);
 
     let pkce = Pkce::generate();
     let state = random_token(16);
@@ -58,9 +48,7 @@ pub(crate) async fn run(
     ui.open_browser(url.as_str());
     ui.notice("waiting for the browser to complete sign-in");
 
-    let code = tokio::time::timeout(config.login_timeout, await_callback(listener, &state))
-        .await
-        .map_err(|_| AuthError::Cancelled)??;
+    let code = loopback.await_code(&state, config.login_timeout).await?;
 
     let tokens = exchange(
         http,
@@ -100,135 +88,11 @@ fn authorize_url(
         .map_err(|err| AuthError::Other(format!("authorize endpoint is not a URL: {err}")))
 }
 
-/// Serve exactly one callback and return its `code`.
-async fn await_callback(listener: TcpListener, state: &str) -> Result<String, AuthError> {
-    loop {
-        let (mut socket, _) = listener
-            .accept()
-            .await
-            .map_err(|err| AuthError::Other(format!("loopback accept failed: {err}")))?;
-
-        let Some(target) = read_request_target(&mut socket).await else {
-            continue;
-        };
-        // Browsers ask for /favicon.ico on the same connection budget; only the
-        // callback ends the wait.
-        let Ok(url) = Url::parse(&format!("http://127.0.0.1{target}")) else {
-            continue;
-        };
-        if url.path() != CALLBACK_PATH {
-            let _ = respond(&mut socket, "404 Not Found", "Not found.").await;
-            continue;
-        }
-
-        let outcome = classify(&url, state);
-        let _ = match &outcome {
-            Ok(_) => respond(&mut socket, "200 OK", DONE_PAGE).await,
-            Err(err) => respond(&mut socket, "400 Bad Request", &err.to_string()).await,
-        };
-        return outcome;
-    }
-}
-
-fn classify(url: &Url, state: &str) -> Result<String, AuthError> {
-    let mut code = None;
-    let mut returned_state = None;
-    let mut error = None;
-    let mut description = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => returned_state = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            "error_description" => description = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    if let Some(error) = error {
-        let detail = description.unwrap_or_else(|| error.clone());
-        return Err(match error.as_str() {
-            "access_denied" => AuthError::Cancelled,
-            _ => AuthError::Rejected(detail),
-        });
-    }
-    // Anything on 127.0.0.1 can reach this port; without the state check a
-    // local process could feed us its own authorization code.
-    if returned_state.as_deref() != Some(state) {
-        return Err(AuthError::Rejected(
-            "the redirect did not carry the state this login issued".into(),
-        ));
-    }
-    code.ok_or_else(|| AuthError::Rejected("the redirect carried no authorization code".into()))
-}
-
-/// Read the request target from the first line, bounded so a client that never
-/// sends a blank line cannot hold the login open.
-async fn read_request_target(socket: &mut tokio::net::TcpStream) -> Option<String> {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 1024];
-    loop {
-        let read = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut chunk))
-            .await
-            .ok()?
-            .ok()?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if buffer.windows(4).any(|w| w == b"\r\n\r\n") || buffer.len() >= MAX_REQUEST_BYTES {
-            break;
-        }
-    }
-
-    let text = String::from_utf8_lossy(&buffer);
-    let mut parts = text.lines().next()?.split(' ');
-    let method = parts.next()?;
-    let target = parts.next()?;
-    (method == "GET").then(|| target.to_string())
-}
-
-async fn respond(
-    socket: &mut tokio::net::TcpStream,
-    status: &str,
-    body: &str,
-) -> std::io::Result<()> {
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    socket.write_all(response.as_bytes()).await?;
-    socket.shutdown().await
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
-
-    fn callback(query: &str) -> Url {
-        Url::parse(&format!("http://127.0.0.1/callback?{query}")).unwrap()
-    }
-
-    #[test]
-    fn a_redirect_with_a_foreign_state_is_rejected() {
-        let err = classify(&callback("code=abc&state=someone-else"), "ours").unwrap_err();
-        assert!(matches!(err, AuthError::Rejected(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn a_denied_redirect_reads_as_cancellation() {
-        let err = classify(&callback("error=access_denied&state=ours"), "ours").unwrap_err();
-        assert!(matches!(err, AuthError::Cancelled), "got {err:?}");
-    }
-
-    #[test]
-    fn a_matching_redirect_yields_the_code() {
-        assert_eq!(
-            classify(&callback("code=abc&state=ours"), "ours").unwrap(),
-            "abc"
-        );
-    }
 
     #[test]
     fn the_authorize_url_carries_the_s256_challenge() {

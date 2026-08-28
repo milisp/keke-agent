@@ -22,6 +22,18 @@ pub enum Notice {
         verification_uri: String,
     },
     Message(String),
+    /// A server's token was just stored. Carries the name rather than only
+    /// prose because the status list has to stop saying "not signed in".
+    SignedIn(String),
+    /// How one MCP server's login is going.
+    ///
+    /// Named rather than anonymous prose because this belongs on that server's
+    /// row: a login someone started from the overlay is a thing happening to a
+    /// row they are looking at, not a remark in the conversation.
+    McpProgress {
+        name: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for Notice {
@@ -33,6 +45,8 @@ impl fmt::Display for Notice {
                 verification_uri,
             } => write!(f, "enter code {code} at {verification_uri}"),
             Notice::Message(message) => f.write_str(message),
+            Notice::SignedIn(name) => write!(f, "signed in to `{name}`"),
+            Notice::McpProgress { name, message } => write!(f, "`{name}`: {message}"),
         }
     }
 }
@@ -50,11 +64,73 @@ impl TuiLoginUi {
     }
 }
 
+/// Send progress to a stream someone else already owns.
+///
+/// A flow the interface starts itself — `/mcp login` — reports into the same
+/// channel the startup login uses, so there is one path to the transcript
+/// rather than two that could render differently.
+impl From<UnboundedSender<Notice>> for TuiLoginUi {
+    fn from(notices: UnboundedSender<Notice>) -> Self {
+        Self { notices }
+    }
+}
+
+/// A [`LoginUi`] whose progress lands on one MCP server's row.
+///
+/// The same flow as [`TuiLoginUi`] — it opens the same browser — but everything
+/// it has to say is tagged with the server it is about, so the overlay can show
+/// it in place instead of the transcript growing a line per step for something
+/// the person is already watching.
+pub(crate) struct McpLoginUi {
+    name: String,
+    notices: UnboundedSender<Notice>,
+}
+
+impl McpLoginUi {
+    #[must_use]
+    pub(crate) fn new(name: String, notices: UnboundedSender<Notice>) -> Self {
+        Self { name, notices }
+    }
+
+    fn progress(&self, message: String) {
+        let _ = self.notices.send(Notice::McpProgress {
+            name: self.name.clone(),
+            message,
+        });
+    }
+}
+
+impl LoginUi for McpLoginUi {
+    fn open_browser(&self, url: &str) {
+        // The URL is reported even when the browser opens: a spawn that fails
+        // says nothing, and on a headless box there is nothing to open at all.
+        self.progress(format!("sign in at {url}"));
+        #[cfg(not(test))]
+        let _ = keke_oauth::open_in_browser(url);
+    }
+
+    fn show_device_code(&self, code: &str, verification_uri: &str) {
+        self.progress(format!("enter code {code} at {verification_uri}"));
+    }
+
+    fn notice(&self, message: &str) {
+        self.progress(message.to_string());
+    }
+}
+
 impl LoginUi for TuiLoginUi {
-    /// Never launches a browser: the alternate screen owns the terminal, and a
-    /// spawned browser that steals focus mid-turn is worse than a URL to copy.
+    /// Opens a browser *and* sends the URL to the transcript.
+    ///
+    /// Spawning writes nothing to the terminal, so it is safe under the
+    /// alternate screen; printing is not, which is why the URL goes to the
+    /// transcript rather than to stdout. The notice is not a fallback — a
+    /// headless box or a failed spawn says nothing, so the person must have the
+    /// URL either way.
     fn open_browser(&self, url: &str) {
         let _ = self.notices.send(Notice::OpenBrowser(url.to_string()));
+        // A test asserting the notice must not pop a real browser open.
+        #[cfg(not(test))]
+        let _ = keke_oauth::open_in_browser(url);
     }
 
     fn show_device_code(&self, code: &str, verification_uri: &str) {

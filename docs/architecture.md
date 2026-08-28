@@ -63,7 +63,12 @@ else is written against.
 Above the contracts and below the vendor plugins that configure them.
 `keke-wire` speaks the three inference wire formats; `keke-catalog` keeps a
 provider's model list on disk so a picker is drawn without a round trip, and is
-still drawn when the vendor cannot be reached at all.
+still drawn when the vendor cannot be reached at all. `keke-oauth` holds PKCE
+and the loopback redirect — the parts of a login the RFCs decide rather than an
+issuer. It sits here rather than in a vendor auth crate because an MCP server
+behind OAuth is not a vendor and cannot depend on one; before it existed, that
+code was in `keke-auth-codex` and `keke-auth-grok` twice, byte-identical apart
+from which config struct it read.
 
 ### Tier 1 — engine
 
@@ -364,6 +369,65 @@ Discovery covers `$KEKE_HOME/plugins/` and `~/.claude/plugins/` at user scope,
 and `.keke/plugins/` and `.claude/plugins/` at project scope. The scope survives
 resolution because a plugin the repository controls is not equivalent to one the
 person installed, and a trust decision needs that distinction.
+
+### A person's own directory is read as a package
+
+Wanting one slash command or one MCP server should not mean authoring a plugin.
+So `$KEKE_HOME` itself, `~/.claude`, `.keke/`, and `.claude/` are read as
+packages too, under the names `local`, `claude`, `workspace`, and
+`claude-workspace` — a `commands/review.md` dropped into `~/.keke` is `/review`,
+and `keke mcp add` writes an ordinary `.mcp.json` beside it.
+
+There is deliberately no second format and no second discovery path. The
+consequence that matters is the one at the workspace: a server added with
+`keke mcp add --scope project` is in the repository, so it is held back by the
+same gate as anything else the repository ships, and `keke plugin trust
+workspace` is how a person allows it.
+
+### Signing in to a remote server
+
+An MCP server behind OAuth answers with `401` and a `WWW-Authenticate` header
+naming where its metadata lives, and from there the spec is ordinary OAuth 2.1
+with three RFCs on top: protected-resource metadata (RFC 9728) names the
+authorization server, dynamic client registration (RFC 7591) obtains a
+`client_id` — these servers issue none in advance, so there is nothing for a
+person to configure — and resource indicators (RFC 8707) keep the token bound to
+the server it was minted for.
+
+Two rules shape it:
+
+- **A browser never opens by itself.** Discovery happens inside a turn, and a
+  turn that takes over the screen of someone reading something else is a worse
+  failure than one that says it needs a login. So a 401 during a turn reports
+  `keke mcp login <name>` and stops there; the flow runs only when a person asks
+  for it. In the TUI it also does not *launch* a browser — the alternate screen
+  owns the terminal, which is the same reason a provider login shows its URL
+  instead of opening one.
+- **A registration is not a credential.** A `client_id` from dynamic
+  registration is public by construction, so it lives in a plain
+  `mcp-clients.json` and survives `logout`; the tokens go to the same 0600
+  per-vendor store every provider login writes to, filed under the server's name
+  *and* a digest of its URL — two projects each with a `github` server must not
+  share a token.
+
+### A server is a URL or a program
+
+`.mcp.json` entries carry the ecosystem's `type`: `stdio` (the default, and what
+every entry written before remote transports existed is), `http` for the
+streamable HTTP transport, and `sse` for the older long-lived-`GET` one. Which
+of the two remote shapes a server implements is not something a person should
+have to know before they can add it, so keke speaks both.
+
+`McpTransport` is an enum rather than a struct of optional fields, because the
+two shapes share nothing: a stdio server has no URL and a remote one has no
+child to spawn. Above the connection, nothing knows the difference — the
+protocol eras, the framing, and the budgets are properties of MCP, not of the
+pipe.
+
+Secrets stay references. A `${VAR}` in an environment value or a header is
+expanded at the moment of use and the result is never stored, so a resolved
+plugin set — long-lived, cloned, logged — never holds one, and what a person is
+asked to approve names variables and headers without their values.
 
 ### Cloning a repository is not consent
 

@@ -22,6 +22,12 @@ drift the way the README status line did.
   spawn for one task and collect one answer from; cannot themselves spawn
   subagents.
 - **Markdown rendering** for assistant responses in the TUI.
+- **Remote MCP servers, with OAuth login** — streamable-HTTP and HTTP+SSE
+  transports, `keke mcp add|list|get|remove` for configuring servers without
+  authoring a plugin, and `keke mcp login <name>` / `/mcp login <name>`
+  running RFC 9728 discovery + RFC 7591 client registration + PKCE, with
+  token refresh on expiry and on 401. `keke-oauth` holds the PKCE and
+  loopback-redirect logic once instead of once per vendor auth crate.
 
 ## In progress / next
 
@@ -29,7 +35,7 @@ drift the way the README status line did.
   (GitHub or filesystem server), drive it from the TUI so the agent actually
   triggers a tool call, and confirm `ApprovalReviewContributor`/`ToolGuard`
   intercept as expected (invariant 7) and the resulting `SessionEvent`s are
-  complete (invariant 6). The transport and tool-call plumbing exist
+  complete (invariant 6). The transport, OAuth, and tool-call plumbing exist
   (`keke-mcp`); what's missing is a verified real-plugin run.
 
 ## How to use this file

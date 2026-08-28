@@ -197,6 +197,15 @@ pub(super) async fn tui(
         },
         seed,
         prompts,
+        keke_tui::Mcp {
+            // A row that cannot be built is no reason to refuse a session:
+            // `/mcp` then reports nothing, which is what a person with no
+            // servers sees anyway.
+            servers: super::mcp::statuses(&config.home).unwrap_or_default(),
+            sign_in: Some(std::sync::Arc::new(super::mcp::SignIn {
+                home: config.home.clone(),
+            })),
+        },
     )
     .await
 }

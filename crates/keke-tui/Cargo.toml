@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 keke-acp = { workspace = true }
 keke-auth-api = { workspace = true }
+keke-oauth = { workspace = true }
 keke-config = { workspace = true }
 keke-config-types = { workspace = true }
 keke-fuzzy-file-search = { workspace = true }

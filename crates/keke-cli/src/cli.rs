@@ -61,11 +61,128 @@ pub(crate) enum Command {
     Models(VendorArgs),
     /// Report what keke resolved: config, credentials, and available tools.
     Doctor,
+    /// Manage the MCP servers keke offers the model as tools.
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
     /// Inspect the runtime plugins installed on this machine.
     Plugin {
         #[command(subcommand)]
         action: PluginAction,
     },
+}
+
+const MCP_ADD_AFTER_HELP: &str = "\
+Examples:
+  # A local server: everything after `--` is the command keke runs
+  keke mcp add xcode -- xcrun mcpbridge
+
+  # ... with environment it needs, forwarded from your own shell
+  keke mcp add postgres -e DATABASE_URL='${DATABASE_URL}' -- npx -y @modelcontextprotocol/server-postgres
+
+  # A remote server
+  keke mcp add --transport http vercel https://mcp.vercel.com
+
+  # ... with a header, keeping the token out of the file
+  keke mcp add --transport http api https://mcp.example.com/mcp --header 'Authorization: Bearer ${API_TOKEN}'
+
+  # Written into the project instead of your own directory. A server configured
+  # there is the repository's, so it is held back until it is trusted.
+  keke mcp add --scope project github -- npx -y @modelcontextprotocol/server-github";
+
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum McpAction {
+    /// Configure a server.
+    #[command(after_help = MCP_ADD_AFTER_HELP)]
+    Add(McpAddArgs),
+    /// List every server keke would offer, wherever it was configured.
+    List,
+    /// Sign in to a remote server, in a browser.
+    ///
+    /// Only ever run because a person asked: a turn that opened a browser by
+    /// itself would take over the screen of someone who was reading something
+    /// else.
+    Login {
+        /// The server's name, as `list` prints it.
+        name: String,
+    },
+    /// Discard the token stored for a remote server.
+    Logout {
+        /// The server's name, as `list` prints it.
+        name: String,
+    },
+    /// Show one server in full.
+    Get {
+        /// The server's name, as `list` prints it.
+        name: String,
+    },
+    /// Forget a server keke configured. A plugin's own server is the plugin's.
+    Remove {
+        /// The server's name, as `list` prints it.
+        name: String,
+        /// Which file to remove it from. Both are searched if omitted.
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+    },
+}
+
+/// How a server is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum McpTransportArg {
+    /// Run a program here and speak over its stdin and stdout.
+    Stdio,
+    /// Connect to a URL with the streamable HTTP transport.
+    Http,
+    /// Connect to a URL with the older HTTP+SSE transport.
+    Sse,
+}
+
+/// Which file a server is written to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum McpScope {
+    /// Your own directory: available in every project.
+    User,
+    /// `.keke/.mcp.json` in this project, shared with whoever clones it.
+    Project,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct McpAddArgs {
+    /// What the server is called. Its tools are offered under this name.
+    pub name: String,
+
+    /// The URL, for `--transport http` or `--transport sse`.
+    pub url: Option<String>,
+
+    /// The program to run, for a stdio server. Everything after `--`.
+    #[arg(last = true)]
+    pub command: Vec<String>,
+
+    #[arg(long, value_enum, default_value_t = McpTransportArg::Stdio)]
+    pub transport: McpTransportArg,
+
+    #[arg(long, value_enum, default_value_t = McpScope::User)]
+    pub scope: McpScope,
+
+    /// `KEY=VALUE` passed to a stdio server. A `${VAR}` in the value is read
+    /// from your environment when the server starts, so the file holds the
+    /// reference and never the secret. Repeatable.
+    #[arg(long, short = 'e')]
+    pub env: Vec<String>,
+
+    /// `Name: value` sent with every request to a remote server. `${VAR}` is
+    /// read the same way. Repeatable.
+    #[arg(long = "header", short = 'H')]
+    pub headers: Vec<String>,
+
+    /// Replace an existing server of this name without being asked.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Do not offer to sign in to a remote server after adding it.
+    #[arg(long)]
+    pub no_login: bool,
 }
 
 #[derive(Debug, clap::Subcommand)]

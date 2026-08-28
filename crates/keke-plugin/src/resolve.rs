@@ -234,6 +234,19 @@ fn looks_like_a_plugin(root: &Path) -> bool {
 /// and its contributions from the convention paths. That is how most published
 /// plugins are actually shaped.
 pub fn load(root: &Path, scope: PluginScope) -> Result<ResolvedPlugin, PluginError> {
+    load_named(root, scope, None)
+}
+
+/// Read a package under a name of the caller's choosing.
+///
+/// `None` takes the name from the manifest or the directory, which is
+/// [`load`]. A caller passes a name when the directory has none to give: a
+/// person's own `~/.keke` is not called `.keke` to them, it is called `user`.
+pub fn load_named(
+    root: &Path,
+    scope: PluginScope,
+    name_override: Option<&str>,
+) -> Result<ResolvedPlugin, PluginError> {
     let canonical = std::fs::canonicalize(root).map_err(|source| PluginError::Read {
         path: root.display().to_string(),
         source,
@@ -245,9 +258,9 @@ pub fn load(root: &Path, scope: PluginScope) -> Result<ResolvedPlugin, PluginErr
 
     let (manifest, unsupported) = read_manifest(&root)?;
 
-    let name = manifest
-        .name
-        .clone()
+    let name = name_override
+        .map(str::to_string)
+        .or_else(|| manifest.name.clone())
         .or_else(|| {
             root.as_path()
                 .file_name()
@@ -435,6 +448,22 @@ fn read_hooks(
     Ok(hooks)
 }
 
+/// The servers a parsed `.mcp.json` names, dropping entries that name nothing
+/// reachable.
+pub(crate) fn servers_in(file: McpFile, plugin: &str, root: &AbsPath) -> Vec<ResolvedMcpServer> {
+    file.mcp_servers
+        .into_iter()
+        .filter_map(|(name, entry)| {
+            Some(ResolvedMcpServer {
+                plugin: plugin.to_string(),
+                name,
+                transport: entry.transport()?,
+                plugin_root: root.clone(),
+            })
+        })
+        .collect()
+}
+
 fn read_mcp_servers(
     root: &AbsPath,
     plugin: &str,
@@ -453,19 +482,7 @@ fn read_mcp_servers(
         }
     };
 
-    Ok(file
-        .mcp_servers
-        .into_iter()
-        .filter(|(_, entry)| !entry.command.is_empty())
-        .map(|(name, entry)| ResolvedMcpServer {
-            plugin: plugin.to_string(),
-            name,
-            command: entry.command,
-            args: entry.args,
-            env: entry.env.into_iter().collect(),
-            plugin_root: root.clone(),
-        })
-        .collect())
+    Ok(servers_in(file, plugin, root))
 }
 
 /// Read a component that is either inlined in the manifest, named by it, or

@@ -10,11 +10,15 @@
 //! `tools/call`; the rest of the protocol has nowhere to go in this engine, and
 //! a dependency for it would be a dependency to keep in step forever.
 
+mod auth;
 mod backend;
 mod client;
+mod http;
 mod server;
 mod tool;
 
+pub use auth::AuthHome;
+pub use auth::ServerAuth;
 pub use tool::McpArgs;
 pub use tool::McpToolOutput;
 
@@ -39,8 +43,13 @@ use tool::McpTool;
 /// (`AGENTS.md` invariant 9): both numbers are things a deployment can
 /// reasonably want to change — a server that shells out to a package manager
 /// needs a longer call budget than one that reads a file.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct McpOptions {
+    /// Where a remote server's OAuth tokens are kept. `None` disables signing
+    /// in — a host with no state directory has nowhere to put a token, and
+    /// holding one in memory for one process would ask the person to sign in
+    /// again every run.
+    pub auth: Option<AuthHome>,
     /// How long a server has to answer `initialize` and `tools/list`. A server
     /// that overruns this contributes no tools rather than stalling the session.
     pub startup_timeout_millis: u64,
@@ -49,6 +58,9 @@ pub struct McpOptions {
     pub call_timeout_millis: u64,
 }
 
+/// The default budgets are the configured ones, never zero: a derived
+/// `Default` here would hand every server a 0ms deadline, which reads as every
+/// server being broken.
 impl Default for McpOptions {
     fn default() -> Self {
         Self::from(PluginTimeouts::default())
@@ -61,6 +73,7 @@ impl From<PluginTimeouts> for McpOptions {
         Self {
             startup_timeout_millis: timeouts.mcp_startup_millis,
             call_timeout_millis: timeouts.mcp_call_millis,
+            auth: None,
         }
     }
 }
@@ -148,7 +161,7 @@ pub fn install_with(
 ) {
     let servers: Vec<Arc<McpServer>> = plugins
         .mcp_servers()
-        .map(|resolved| Arc::new(McpServer::new(resolved, options)))
+        .map(|resolved| Arc::new(McpServer::new(resolved, options.clone())))
         .collect();
 
     if servers.is_empty() {

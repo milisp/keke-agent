@@ -8,22 +8,31 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+keke-auth-api = { workspace = true }
 keke-config-types = { workspace = true }
+keke-credentials = { workspace = true }
+keke-oauth = { workspace = true }
 keke-paths = { workspace = true }
 keke-plugin = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
 keke-tool = { workspace = true }
 futures = { workspace = true }
+reqwest = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
+url = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+keke-auth-api = { workspace = true }
+reqwest = { workspace = true }
 tempfile = { workspace = true }
+url = { workspace = true }
+wiremock = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]

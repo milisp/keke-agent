@@ -361,12 +361,14 @@ fn plugin_with_server(
         mcp_servers: vec![ResolvedMcpServer {
             plugin: name.to_string(),
             name: server.to_string(),
-            command: command.to_string_lossy().into_owned(),
-            args: Vec::new(),
-            env: env
-                .into_iter()
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect(),
+            transport: keke_plugin::McpTransport::Stdio {
+                command: command.to_string_lossy().into_owned(),
+                args: Vec::new(),
+                env: env
+                    .into_iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect(),
+            },
             plugin_root: root,
         }],
         unsupported: Vec::new(),
@@ -817,6 +819,7 @@ async fn a_silent_legacy_server_is_reached_by_falling_back() {
         keke_mcp::McpOptions {
             startup_timeout_millis: 6_000,
             call_timeout_millis: 5_000,
+            ..keke_mcp::McpOptions::default()
         },
     );
 

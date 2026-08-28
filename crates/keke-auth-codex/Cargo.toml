@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 keke-auth-api = { workspace = true }
 keke-credentials = { workspace = true }
+keke-oauth = { workspace = true }
 keke-paths = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }

@@ -6,6 +6,7 @@
 
 mod acp;
 mod exec;
+mod mcp;
 mod plugin;
 mod session;
 mod vendor;
@@ -151,6 +152,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Command::Logout(args) => vendor::logout(args, composed).await,
         Command::Models(args) => vendor::models(args, composed).await,
         Command::Doctor => vendor::doctor(config, composed),
+        Command::Mcp { action } => mcp::mcp(action, config).await,
         Command::Plugin { action } => plugin::plugin(action, config),
     }
 }

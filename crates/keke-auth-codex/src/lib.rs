@@ -16,7 +16,6 @@ mod device;
 mod endpoint;
 mod jwt;
 mod loopback;
-mod pkce;
 mod ported;
 mod tokens;
 

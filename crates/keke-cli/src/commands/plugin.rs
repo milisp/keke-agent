@@ -94,17 +94,10 @@ pub(super) fn plugin(action: PluginAction, config: Config) -> Result<()> {
             if !plugin.mcp_servers.is_empty() {
                 println!("\nmcp servers:");
                 for server in &plugin.mcp_servers {
-                    println!(
-                        "  {}: {} {}",
-                        server.name,
-                        server.command,
-                        server.args.join(" ")
-                    );
-                    // Names only. A value here could be a secret, and this
-                    // output is the kind of thing people paste into an issue.
-                    for (key, _) in &server.env {
-                        println!("    env {key}");
-                    }
+                    // `describe` names variables and headers without their
+                    // values: this output is the kind of thing people paste
+                    // into an issue.
+                    println!("  {}: {}", server.name, server.transport.describe());
                 }
             }
             if !plugin.hooks.is_empty() {

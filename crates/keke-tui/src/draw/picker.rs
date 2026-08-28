@@ -72,6 +72,40 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
             " providers \u{2014} type to filter, enter switches, esc cancels ",
             rows,
         )
+    } else if let Some(picker) = app.mcp_picker() {
+        let rows = app
+            .picker_mcp()
+            .into_iter()
+            .map(|server| {
+                // Trust comes before a token: a server that will not be reached
+                // at all should not send anyone off to authenticate with it.
+                // A login in flight is the freshest thing there is to say
+                // about a row, so it displaces the standing status.
+                let state = if let Some(activity) = app.mcp_activity(&server.name) {
+                    activity.to_string()
+                } else if !server.allowed {
+                    format!("held back \u{2014} keke plugin trust {}", server.plugin)
+                } else if !server.remote {
+                    "local".to_string()
+                } else if server.signed_in {
+                    "signed in".to_string()
+                } else {
+                    "not signed in \u{2014} enter".to_string()
+                };
+                Row {
+                    // The mark means "nothing to do here", which for a server
+                    // is a reachable one that needs no token.
+                    current: server.allowed && (!server.remote || server.signed_in),
+                    label: server.name.clone(),
+                    detail: format!("{}  \u{b7}  {state}", server.transport),
+                }
+            })
+            .collect::<Vec<_>>();
+        (
+            picker,
+            " mcp servers \u{2014} type to filter, enter signs in, esc closes ",
+            rows,
+        )
     } else {
         return;
     };

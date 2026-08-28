@@ -15,6 +15,7 @@ mod history;
 mod input;
 mod keys;
 mod login;
+pub mod mcp;
 mod picker;
 mod ported;
 mod scroll;
@@ -53,6 +54,8 @@ pub use login::Notice;
 pub use picker::ProviderChoice;
 
 pub use login::TuiLoginUi;
+pub use mcp::McpServerStatus;
+pub use mcp::McpSignIn;
 pub use scroll::Scrollback;
 pub use slash::PluginCommand;
 pub use slash::SlashCommand;
@@ -111,6 +114,16 @@ pub struct SessionDefaults {
     pub config_home: keke_paths::AbsPath,
 }
 
+/// The MCP servers this session has, and how to authorize one.
+///
+/// A struct rather than two more parameters on [`run`]: they are one subject,
+/// and a surface that had the list without the capability would offer a login
+/// it cannot perform.
+pub struct Mcp {
+    pub servers: Vec<McpServerStatus>,
+    pub sign_in: Option<Arc<dyn McpSignIn>>,
+}
+
 /// Run the interface until the person quits.
 ///
 /// `updates` is the agent's stream; the app also produces its own, so both are
@@ -127,9 +140,16 @@ pub async fn run(
     models: Models,
     resumed: Resumed,
     history: PromptHistory,
+    mcp: Mcp,
 ) -> anyhow::Result<()> {
     let (app, local) = App::new(conversation);
+    // The login stream is created here rather than by whoever starts a flow,
+    // because the event loop is what drains it — a sender handed out without a
+    // reader would leave a person watching nothing happen.
+    let (notices, notice_stream) = tokio::sync::mpsc::unbounded_channel();
     let mut app = app
+        .with_mcp(mcp.servers, mcp.sign_in)
+        .with_notices(notices)
         .with_banner()
         .with_commands(commands)
         .with_approval_policy(defaults.approval)
@@ -144,7 +164,7 @@ pub async fn run(
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no
     // echo is worse than whatever went wrong.
-    let outcome = event_loop(&mut terminal, app, updates, local).await;
+    let outcome = event_loop(&mut terminal, app, updates, local, notice_stream).await;
     leave(&mut terminal)?;
     outcome
 }
@@ -217,6 +237,7 @@ async fn event_loop(
     mut app: App,
     mut updates: UnboundedReceiver<Update>,
     mut local: UnboundedReceiver<Update>,
+    mut notices: UnboundedReceiver<Notice>,
 ) -> anyhow::Result<()> {
     let mut input = EventStream::new();
     let mut capturing = app.mouse_capture();
@@ -237,6 +258,7 @@ async fn event_loop(
             () = tick => { app.tick_file_search(); }
             Some(update) = updates.recv() => app.apply(update),
             Some(update) = local.recv() => app.apply(update),
+            Some(notice) = notices.recv() => app.apply_notice(notice),
             event = input.next() => match event {
                 Some(Ok(Event::Key(key))) => app.handle_key(key),
                 Some(Ok(Event::Mouse(mouse))) => app.handle_mouse(mouse),

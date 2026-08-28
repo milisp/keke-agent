@@ -58,6 +58,18 @@ pub struct App {
     pub input: InputBox,
     pub scroll: Scrollback,
     pub commands: SlashCommands,
+    /// The MCP servers, as the host described them at startup.
+    mcp: Vec<crate::mcp::McpServerStatus>,
+    /// How to sign in to one, when the host can. `None` in a surface with no
+    /// credential store — `/mcp` then still lists, it just cannot authorize.
+    sign_in: Option<Arc<dyn crate::mcp::McpSignIn>>,
+    /// What a login is doing, per server, while it is doing it. Keyed by name
+    /// so a report arriving late lands on the row it is about rather than on
+    /// whichever row happens to be highlighted.
+    mcp_activity: std::collections::HashMap<String, String>,
+    /// Where a login flow's progress goes. Held so a sign-in started from
+    /// `/mcp` reaches the transcript the same way a startup login's does.
+    notices: Option<UnboundedSender<Notice>>,
     /// `@`-completion: fuzzy file/folder search over the current line.
     pub file_search: FileSearchState,
     /// What was typed in this project before, and where the arrow keys are
@@ -165,6 +177,10 @@ impl App {
                 input: InputBox::default(),
                 scroll: Scrollback::default(),
                 commands: SlashCommands::default(),
+                mcp: Vec::new(),
+                mcp_activity: std::collections::HashMap::new(),
+                sign_in: None,
+                notices: None,
                 file_search: FileSearchState::new(
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 ),
@@ -199,6 +215,25 @@ impl App {
             },
             local_updates,
         )
+    }
+
+    /// The MCP servers `/mcp` reports, and how to authorize one.
+    #[must_use]
+    pub fn with_mcp(
+        mut self,
+        servers: Vec<crate::mcp::McpServerStatus>,
+        sign_in: Option<Arc<dyn crate::mcp::McpSignIn>>,
+    ) -> Self {
+        self.mcp = servers;
+        self.sign_in = sign_in;
+        self
+    }
+
+    /// Where login progress is sent, for flows the interface starts itself.
+    #[must_use]
+    pub fn with_notices(mut self, notices: UnboundedSender<Notice>) -> Self {
+        self.notices = Some(notices);
+        self
     }
 
     /// The command list a person completes against. Composed by the host,
@@ -624,6 +659,27 @@ impl App {
     /// These go in the transcript because a login URL or a device code has to
     /// stay put long enough to be read off the screen and typed elsewhere.
     pub fn apply_notice(&mut self, notice: Notice) {
+        // An MCP login reports onto its own row. While the overlay is open the
+        // person is already looking at that row, so saying it again in the
+        // transcript is noise in the conversation about something that is not
+        // part of it.
+        match &notice {
+            Notice::SignedIn(name) => {
+                if let Some(server) = self.mcp.iter_mut().find(|server| &server.name == name) {
+                    server.signed_in = true;
+                }
+                self.mcp_activity.remove(name);
+            }
+            Notice::McpProgress { name, message } => {
+                self.mcp_activity.insert(name.clone(), message.clone());
+            }
+            _ => {}
+        }
+        if matches!(notice, Notice::SignedIn(_) | Notice::McpProgress { .. })
+            && self.mcp_picker().is_some()
+        {
+            return;
+        }
         self.transcript.push(Cell::Notice(notice.to_string()));
     }
 
@@ -1022,6 +1078,49 @@ impl App {
         self.picker = Some(picker);
     }
 
+    /// Open the MCP overlay, or say why there is nothing to open.
+    ///
+    /// Nothing configured is not an empty box: it is a session where the answer
+    /// is a command to run, so [`crate::mcp::nothing_configured`] says that instead.
+    pub fn open_mcp_picker(&mut self) {
+        if self.mcp.is_empty() {
+            self.transcript
+                .push(Cell::Notice(crate::mcp::nothing_configured()));
+            return;
+        }
+        // Start on the first server that needs something done to it, since
+        // that is what a person came here for.
+        let mut picker = crate::picker::Picker::new(crate::picker::PickerKind::Mcp);
+        if let Some(at) = self
+            .mcp
+            .iter()
+            .position(|server| server.allowed && server.remote && !server.signed_in)
+        {
+            picker.move_selection(at as isize, self.mcp.len());
+        }
+        self.picker = Some(picker);
+    }
+
+    /// The MCP overlay, if that is the one that is open.
+    #[must_use]
+    pub fn mcp_picker(&self) -> Option<&crate::picker::Picker> {
+        self.picker
+            .as_ref()
+            .filter(|picker| picker.kind() == crate::picker::PickerKind::Mcp)
+    }
+
+    /// The MCP rows the overlay is showing this frame, after its filter.
+    #[must_use]
+    pub fn picker_mcp(&self) -> Vec<&crate::mcp::McpServerStatus> {
+        let Some(picker) = self.mcp_picker() else {
+            return Vec::new();
+        };
+        self.mcp
+            .iter()
+            .filter(|server| picker.matches(*server))
+            .collect()
+    }
+
     /// The model overlay, if that is the one that is open.
     #[must_use]
     pub fn model_picker(&self) -> Option<&crate::picker::Picker> {
@@ -1073,6 +1172,7 @@ impl App {
         match self.picker.as_ref().map(crate::picker::Picker::kind) {
             Some(crate::picker::PickerKind::Model) => self.picker_models().len(),
             Some(crate::picker::PickerKind::Provider) => self.picker_providers().len(),
+            Some(crate::picker::PickerKind::Mcp) => self.picker_mcp().len(),
             None => 0,
         }
     }
@@ -1122,6 +1222,17 @@ impl App {
                 if let Some(wanted) = wanted {
                     self.close_picker();
                     self.set_provider_aloud(&wanted);
+                }
+            }
+            // The overlay stays open: signing in to one server is rarely the
+            // only thing a person came here to do, and a box that vanishes on
+            // enter makes them retype `/mcp` to see whether it worked.
+            Some(crate::picker::PickerKind::Mcp) => {
+                let wanted = self.picker_mcp().get(at).map(|server| server.name.clone());
+                if let Some(wanted) = wanted
+                    && let Err(refusal) = self.mcp_login(&wanted)
+                {
+                    self.mcp_activity.insert(wanted, refusal);
                 }
             }
             None => {}
@@ -1202,6 +1313,7 @@ impl App {
             SlashAction::Builtin(Builtin::New) => self.start_new_session(),
             SlashAction::Builtin(Builtin::Quit) => self.should_quit = true,
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
+            SlashAction::Builtin(Builtin::Mcp) => self.mcp_command(arguments),
             SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {
                 Ok(Some(effort)) => self.set_reasoning_effort_aloud(effort),
                 Ok(None) => {
@@ -1243,6 +1355,91 @@ impl App {
                     .push(Cell::Error(format!("reading {}: {error}", path.display()))),
             },
         }
+    }
+
+    /// `/mcp`, and `/mcp login <name>`.
+    ///
+    /// The bare form opens the overlay, because "which servers are there and is
+    /// anything wrong with them" is a question, and an answer printed into the
+    /// transcript scrolls away while the person is still acting on it. The
+    /// spelled-out form stays: a name typed in full is an instruction.
+    fn mcp_command(&mut self, arguments: &str) {
+        let arguments = arguments.trim();
+        if arguments.is_empty() {
+            self.open_mcp_picker();
+            return;
+        }
+
+        let Some(name) = arguments.strip_prefix("login").map(str::trim) else {
+            self.transcript.push(Cell::Error(format!(
+                "/mcp takes nothing, or `login <name>` — not {arguments:?}"
+            )));
+            return;
+        };
+        if name.is_empty() {
+            self.transcript
+                .push(Cell::Error("which server? `/mcp login <name>`".to_string()));
+            return;
+        }
+
+        if let Err(refusal) = self.mcp_login(name) {
+            self.transcript.push(Cell::Error(refusal));
+        } else {
+            self.transcript
+                .push(Cell::Notice(format!("authorizing `{name}`...")));
+        }
+    }
+
+    /// Start the browser flow for one server, or say why it cannot start.
+    ///
+    /// Shared by `/mcp login <name>` and by enter on an overlay row so the two
+    /// cannot come to different conclusions about whether a server can be
+    /// signed in to. The refusal is returned rather than printed because those
+    /// two callers show it in different places: one in the transcript, where
+    /// the command was typed, and one on the row it is about.
+    fn mcp_login(&mut self, name: &str) -> Result<(), String> {
+        let Some(server) = self.mcp.iter().find(|server| server.name == name) else {
+            return Err(format!("no MCP server named `{name}` — /mcp lists them"));
+        };
+        if !server.allowed {
+            return Err(format!(
+                "`{name}` is held back until trusted — `keke plugin trust {}`",
+                server.plugin
+            ));
+        }
+        if !server.remote {
+            return Err(format!(
+                "`{name}` is a program on this machine; there is nothing to sign in to"
+            ));
+        }
+
+        let (Some(sign_in), Some(notices)) = (self.sign_in.clone(), self.notices.clone()) else {
+            return Err(format!(
+                "this interface cannot sign in — run `keke mcp login {name}` in a terminal"
+            ));
+        };
+
+        let name = name.to_string();
+        self.mcp_activity
+            .insert(name.clone(), "authorizing...".to_string());
+        tokio::spawn(async move {
+            let ui = Arc::new(crate::login::McpLoginUi::new(name.clone(), notices.clone()));
+            let outcome = sign_in.sign_in(name.clone(), ui).await;
+            let _ = notices.send(match outcome {
+                Ok(()) => Notice::SignedIn(name.clone()),
+                Err(reason) => Notice::McpProgress {
+                    name,
+                    message: format!("could not sign in: {reason}"),
+                },
+            });
+        });
+        Ok(())
+    }
+
+    /// What a login is saying about `name` right now, if anything.
+    #[must_use]
+    pub fn mcp_activity(&self, name: &str) -> Option<&str> {
+        self.mcp_activity.get(name).map(String::as_str)
     }
 
     fn help_text(&self) -> String {

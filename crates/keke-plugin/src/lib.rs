@@ -32,16 +32,21 @@
 pub(crate) use keke_paths::AbsPath;
 
 mod contributions;
+mod local;
 mod manifest;
 mod marketplace;
 mod resolve;
 mod trust;
 
 pub use contributions::HookEvent;
+pub use contributions::McpFile;
+pub use contributions::McpServerEntry;
+pub use contributions::McpTransport;
 pub use contributions::ResolvedCommand;
 pub use contributions::ResolvedHook;
 pub use contributions::ResolvedMcpServer;
 pub use contributions::ResolvedSkill;
+pub use local::McpDocument;
 pub use manifest::Author;
 pub use manifest::COMMANDS_DIR;
 pub use manifest::HOOKS_FILE;
@@ -67,6 +72,7 @@ pub use resolve::PluginSet;
 pub use resolve::ResolvedPlugin;
 pub use resolve::discover;
 pub use resolve::load;
+pub use resolve::load_named;
 pub use trust::InstallSource;
 pub use trust::PluginRecord;
 pub use trust::Trust;

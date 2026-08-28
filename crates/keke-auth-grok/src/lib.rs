@@ -17,7 +17,6 @@ mod discovery;
 mod endpoint;
 mod jwt;
 mod loopback;
-mod pkce;
 mod tokens;
 
 #[cfg(test)]

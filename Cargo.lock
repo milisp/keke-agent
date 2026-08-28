@@ -1625,6 +1625,7 @@ dependencies = [
  "base64",
  "keke-auth-api",
  "keke-credentials",
+ "keke-oauth",
  "keke-paths",
  "rand 0.9.5",
  "reqwest",
@@ -1646,6 +1647,7 @@ dependencies = [
  "base64",
  "keke-auth-api",
  "keke-credentials",
+ "keke-oauth",
  "keke-paths",
  "rand 0.9.5",
  "reqwest",
@@ -1693,6 +1695,7 @@ dependencies = [
  "keke-credentials",
  "keke-hooks",
  "keke-mcp",
+ "keke-oauth",
  "keke-paths",
  "keke-plugin",
  "keke-plugin-api",
@@ -1814,12 +1817,16 @@ name = "keke-mcp"
 version = "0.1.10"
 dependencies = [
  "futures",
+ "keke-auth-api",
  "keke-config-types",
+ "keke-credentials",
+ "keke-oauth",
  "keke-paths",
  "keke-plugin",
  "keke-plugin-api",
  "keke-protocol",
  "keke-tool",
+ "reqwest",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -1827,6 +1834,21 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "keke-oauth"
+version = "0.1.10"
+dependencies = [
+ "base64",
+ "keke-auth-api",
+ "rand 0.9.5",
+ "reqwest",
+ "sha2",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2022,6 +2044,7 @@ dependencies = [
  "keke-config",
  "keke-config-types",
  "keke-fuzzy-file-search",
+ "keke-oauth",
  "keke-paths",
  "keke-protocol",
  "keke-provider-api",

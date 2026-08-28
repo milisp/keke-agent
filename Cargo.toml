@@ -21,6 +21,7 @@ keke-tool = { path = "crates/keke-tool" }
 keke-wire = { path = "crates/keke-wire" }
 keke-catalog = { path = "crates/keke-catalog" }
 keke-fuzzy-file-search = { path = "crates/keke-fuzzy-file-search" }
+keke-oauth = { path = "crates/keke-oauth" }
 
 # --- tier 1: engine ---
 keke-acp = { path = "crates/keke-acp" }
