@@ -61,6 +61,10 @@ pub enum Cell {
     Error(String),
     /// Out-of-band host chatter — a login URL, a device code.
     Notice(String),
+    /// The startup banner: pre-laid-out lines, shown once at the top of a
+    /// fresh scrollback. Held as whole lines rather than wrapped prose since
+    /// its icon column has to stay aligned with the text beside it.
+    Banner(Vec<String>),
 }
 
 #[derive(Debug, Default)]
@@ -86,6 +90,13 @@ impl Transcript {
 
     pub fn last(&self) -> Option<&Cell> {
         self.cells.last()
+    }
+
+    /// Whether a person has sent anything yet. The startup banner pushes a
+    /// `Cell::Banner` before the first prompt, so this is not `!is_empty()` —
+    /// it specifically means "the conversation has started".
+    pub fn has_user_message(&self) -> bool {
+        self.cells.iter().any(|cell| matches!(cell, Cell::User(_)))
     }
 
     pub fn push(&mut self, cell: Cell) {

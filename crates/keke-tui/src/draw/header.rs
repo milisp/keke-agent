@@ -6,6 +6,8 @@
 //! truncating. It uses input tokens because that is the axis the window
 //! constrains; output is billed separately and does not crowd it.
 
+use std::path::Path;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -21,15 +23,29 @@ use crate::draw::status::tokens;
 /// against the border.
 const RIGHT_MARGIN: usize = 1;
 
-pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    // Tilde-shorten against home so the bar stays readable anywhere.
-    let mut cwd = app.cwd().to_string_lossy().to_string();
+/// `/home/g/keke` → `~/keke`, so a path reads the way a person would type it
+/// rather than the way the OS hands it back. Shared by the header bar and the
+/// startup banner — both display the same workspace path.
+pub(crate) fn tilde(path: &Path) -> String {
+    let path = path.to_string_lossy().to_string();
     if let Some(home) = std::env::var_os("HOME") {
         let home = home.to_string_lossy().to_string();
-        if let Some(rest) = cwd.strip_prefix(&home) {
-            cwd = format!("~{rest}");
+        if let Some(rest) = path.strip_prefix(&home) {
+            return format!("~{rest}");
         }
     }
+    path
+}
+
+pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
+    // Before the first prompt, the startup banner already names the
+    // workspace; showing it a second time up here is noise the header does
+    // not need until there is a conversation to give it meaning.
+    let mut cwd = if app.transcript.has_user_message() {
+        tilde(app.cwd())
+    } else {
+        String::new()
+    };
 
     // Right-aligned by padding from the left: one paragraph, no second
     // layout pass, and truncation falls out of the widget.

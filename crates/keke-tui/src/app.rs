@@ -217,6 +217,18 @@ impl App {
         self
     }
 
+    /// The three-line startup banner, once, at the top of the scrollback.
+    ///
+    /// A surface call, not part of `new`: state tests build an `App` and
+    /// expect an empty transcript to assert against, and a banner naming a
+    /// real version and shelling out to `git` has nothing to do with that.
+    #[must_use]
+    pub fn with_banner(mut self) -> Self {
+        let lines = crate::banner::startup(self.cwd());
+        self.transcript.push(Cell::Banner(lines));
+        self
+    }
+
     /// Where `$KEKE_HOME` is, so a typed `/model` or `/effort`, or the
     /// shift-tab approval-mode gesture, writes the new value back to
     /// `config.toml` and outlives this process.

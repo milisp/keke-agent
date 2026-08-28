@@ -7,6 +7,7 @@
 //! terminal.
 
 mod app;
+mod banner;
 mod clipboard;
 pub(crate) mod draw;
 mod file_search;
@@ -129,6 +130,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let (app, local) = App::new(conversation);
     let mut app = app
+        .with_banner()
         .with_commands(commands)
         .with_approval_policy(defaults.approval)
         .with_reasoning_effort(defaults.effort)

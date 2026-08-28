@@ -135,6 +135,16 @@ pub(crate) fn render(
                     width,
                 );
             }
+            // Drawn verbatim, one line each: it is fixed-layout art, not
+            // prose, so wrapping it would misalign the icon against the text
+            // beside it.
+            Cell::Banner(lines) => {
+                out.lines.extend(
+                    lines
+                        .iter()
+                        .map(|line| Line::styled(line.clone(), Style::new().fg(THINKING))),
+                );
+            }
         }
         if spaced {
             out.lines.push(Line::default());
