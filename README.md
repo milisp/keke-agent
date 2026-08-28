@@ -3,14 +3,14 @@
 [中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
 keke is a local terminal coding agent built for zero-vendor lock-in. 
-Works with subscriptions you already have, standard API keys, or self-hosted local models.
+Works with subscriptions you already have (ChatGPT, Grok), standard API keys, or self-hosted local models.k
 
 ## Why keke?
 
 - **Protocol: ACP for every client**
   Speaks the open Agent Client Protocol for both external client integrations and its internal TUI/agent seam.
 - **Multi-Account & Per-Directory Routing**
-  Login to multiple subscription accounts (e.g., work and personal) and automatically route requests based on workspace directory path.
+  Login to multiple subscription accounts (e.g., ChatGPT, Grok, work/personal) and automatically route requests based on workspace directory path.
 - **Script & CI First (`keke exec`)**
   Supports one-shot execution out of the box for non-interactive scripting and automated CI pipelines.
 - **Vendor-Isolated Engine**
