@@ -117,7 +117,10 @@ pub struct App {
     /// `usage`, each request resends the whole conversation, so a step's
     /// `input_tokens` is not an increment — it *is* the current context size.
     context_input: u64,
-    show_thinking: bool,
+    /// Whether the model is currently emitting a reasoning delta. Not kept as
+    /// transcript text — only `turn_status` reads it, to show "thought" in
+    /// place of "working" while it is true.
+    thinking: bool,
     /// Whether keke is asking the terminal for mouse events. On, because the
     /// wheel and the jump-to-bottom button need them. The terminal's own
     /// drag-select is then behind that terminal's bypass modifier — shift in
@@ -202,7 +205,7 @@ impl App {
                 last_turn: None,
                 usage: Usage::default(),
                 context_input: 0,
-                show_thinking: true,
+                thinking: false,
                 mouse_capture: true,
                 follow_button: None,
                 expanded: std::collections::HashSet::new(),
@@ -396,16 +399,14 @@ impl App {
         self.flash = Some((text.into(), Instant::now()));
     }
 
-    pub fn show_thinking(&self) -> bool {
-        self.show_thinking
+    /// Whether the model is mid-reasoning right now, for `turn_status` to
+    /// show in place of "working".
+    pub fn is_thinking(&self) -> bool {
+        self.thinking
     }
 
     pub fn should_quit(&self) -> bool {
         self.should_quit
-    }
-
-    pub fn toggle_thinking(&mut self) {
-        self.show_thinking = !self.show_thinking;
     }
 
     pub fn mouse_capture(&self) -> bool {
@@ -451,14 +452,16 @@ impl App {
             }
             Update::TextDelta(text) => {
                 self.begin_turn();
+                self.thinking = false;
                 self.transcript.push_text_delta(&text);
             }
-            Update::ThinkingDelta(text) => {
+            Update::ThinkingDelta(_) => {
                 self.begin_turn();
-                self.transcript.push_thinking_delta(&text);
+                self.thinking = true;
             }
             Update::ToolCallStarted(call) => {
                 self.begin_turn();
+                self.thinking = false;
                 self.transcript.start_tool(&call);
             }
             Update::ToolCallEnded(result) => {
@@ -608,6 +611,7 @@ impl App {
 
     fn end_turn(&mut self) {
         self.turn = Turn::Idle;
+        self.thinking = false;
         if let Some(started) = self.started.take() {
             self.last_turn = Some(started.elapsed());
         }

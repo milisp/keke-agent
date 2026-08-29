@@ -70,12 +70,6 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Blue),
         ));
     }
-    if !app.show_thinking() {
-        spans.push(Span::styled(
-            "· thinking hidden ",
-            Style::new().fg(Color::DarkGray),
-        ));
-    }
     // Whatever keke just did on this person's behalf, briefly. Last, because
     // it is the only thing here that is news rather than state.
     if let Some(flash) = app.flash() {

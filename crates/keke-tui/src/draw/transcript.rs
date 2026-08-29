@@ -60,48 +60,29 @@ fn worst(status: ToolStatus, running: ToolStatus) -> ToolStatus {
     }
 }
 
-pub(crate) fn render(
-    cells: &[Cell],
-    width: u16,
-    show_thinking: bool,
-    expanded: &HashSet<usize>,
-) -> Rendered {
+pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> Rendered {
     let width = usize::from(width.max(8));
     let mut out = Rendered::default();
     let mut index = 0;
     while index < cells.len() {
         let cell = &cells[index];
-        let mut spaced = true;
         match cell {
             Cell::User(text) => {
                 push_block(&mut out.lines, "› ", text, Style::new().fg(USER), width);
             }
+            // Prose that follows reasoning usually starts with the blank line
+            // that separated the two on the wire. That separator is not part
+            // of the answer, and drawn it is an empty row where the reasoning
+            // used to be, so the block is trimmed to its own text.
             Cell::Assistant(text) => {
+                let text = text.trim_matches('\n');
+                if text.is_empty() {
+                    index += 1;
+                    continue;
+                }
                 out.lines
                     .extend(markdown::render(text, width, Style::new(), ""));
             }
-            // The cell still being streamed is the one being read, so it stays
-            // open; a finished thought collapses to a line that says it
-            // happened and can be opened again.
-            Cell::Thinking(text) if show_thinking => {
-                let style = Style::new().fg(THINKING).add_modifier(Modifier::ITALIC);
-                let streaming = index + 1 == cells.len();
-                if streaming || expanded.contains(&index) {
-                    if !streaming {
-                        out.toggles.push((out.lines.len(), index));
-                        out.lines.push(header("✻", "Thought", "", true, style));
-                    }
-                    out.lines.extend(markdown::render(text, width, style, "  "));
-                } else {
-                    out.toggles.push((out.lines.len(), index));
-                    let count = text.split('\n').count();
-                    let noun = if count == 1 { "line" } else { "lines" };
-                    let summary = format!("{count} {noun}");
-                    out.lines
-                        .push(header("✻", "Thought", &summary, false, style));
-                }
-            }
-            Cell::Thinking(_) => spaced = false,
             Cell::Tool(tool) if matches!(tool.state, CallState::Running) => {
                 out.lines.extend(tool_lines(tool, width));
             }
@@ -146,9 +127,7 @@ pub(crate) fn render(
                 );
             }
         }
-        if spaced {
-            out.lines.push(Line::default());
-        }
+        out.lines.push(Line::default());
         index += 1;
     }
     out

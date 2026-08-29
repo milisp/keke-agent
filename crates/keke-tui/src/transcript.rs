@@ -52,9 +52,6 @@ pub struct PermissionCell {
 pub enum Cell {
     User(String),
     Assistant(String),
-    /// Reasoning. Held separately from `Assistant` so hiding it is a filter
-    /// rather than a re-parse of prose that may legitimately contain anything.
-    Thinking(String),
     Tool(ToolCell),
     Permission(PermissionCell),
     /// A `Update::Failed`, or a local error. Never terminal.
@@ -113,16 +110,6 @@ impl Transcript {
             Some(Cell::Assistant(text)) if !self.sealed => text.push_str(delta),
             _ => {
                 self.cells.push(Cell::Assistant(delta.to_string()));
-                self.sealed = false;
-            }
-        }
-    }
-
-    pub fn push_thinking_delta(&mut self, delta: &str) {
-        match self.cells.last_mut() {
-            Some(Cell::Thinking(text)) if !self.sealed => text.push_str(delta),
-            _ => {
-                self.cells.push(Cell::Thinking(delta.to_string()));
                 self.sealed = false;
             }
         }
@@ -240,14 +227,11 @@ impl Transcript {
     /// The keyboard's answer to a click: after a run of calls scrolls past,
     /// what a person reaches for is that run — not one picked from a list.
     pub fn last_expandable(&self) -> Option<usize> {
-        let last = self.cells.len().saturating_sub(1);
         self.cells
             .iter()
             .enumerate()
             .rev()
             .find_map(|(index, cell)| match cell {
-                // The thought still arriving is drawn open already.
-                Cell::Thinking(_) if index != last => Some(index),
                 Cell::Tool(tool) if !matches!(tool.state, CallState::Running) => {
                     let verb = verb(&tool.name).0;
                     // Only the first call of a run carries the header.

@@ -57,13 +57,22 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let label = match app.turn() {
-        crate::app::Turn::AwaitingPermission => ("waiting for approval", Color::Yellow),
-        _ => ("working", Color::Magenta),
+        crate::app::Turn::AwaitingPermission => "waiting for approval".to_string(),
+        _ if app.is_thinking() => format!(
+            "thinking with {} effort",
+            crate::slash::effort_name(app.reasoning_effort())
+        ),
+        _ => "working".to_string(),
+    };
+    let color = match app.turn() {
+        crate::app::Turn::AwaitingPermission => Color::Yellow,
+        _ if app.is_thinking() => Color::Cyan,
+        _ => Color::Magenta,
     };
     let frame_index = usize::try_from(elapsed.as_millis() / 120).unwrap_or(0);
     let spinner = SPINNER[frame_index % SPINNER.len()];
     let line = Line::from(vec![
-        Span::styled(format!("{spinner} {} ", label.0), Style::new().fg(label.1)),
+        Span::styled(format!("{spinner} {label} "), Style::new().fg(color)),
         Span::styled(
             format!("· {} ", format_duration(elapsed)),
             Style::new().fg(Color::DarkGray),

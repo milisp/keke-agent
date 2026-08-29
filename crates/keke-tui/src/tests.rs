@@ -292,27 +292,6 @@ fn a_cancelled_turn_stops_every_running_spinner() {
     assert_eq!(running, 0);
 }
 
-#[test]
-fn hiding_thinking_is_a_filter_not_a_deletion() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    app.apply(Update::ThinkingDelta("weighing options".to_string()));
-    app.apply(Update::TextDelta("the answer".to_string()));
-
-    let none = std::collections::HashSet::new();
-    let shown = crate::draw::transcript::render(app.transcript.cells(), 40, true, &none);
-    let hidden = crate::draw::transcript::render(app.transcript.cells(), 40, false, &none);
-    assert!(shown.lines.len() > hidden.lines.len());
-    // The cell is still there; only the rendering changed.
-    app.handle_key(control('t'));
-    assert!(!app.show_thinking());
-    assert!(
-        app.transcript
-            .cells()
-            .iter()
-            .any(|cell| matches!(cell, Cell::Thinking(_)))
-    );
-}
-
 #[tokio::test]
 async fn copying_takes_the_last_reply_and_hands_it_over_once() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
@@ -552,7 +531,7 @@ fn tool_arguments_collapse_to_one_line() {
 #[test]
 fn wrapped_text_keeps_its_block_shape() {
     let cells = vec![Cell::User("a b c d e f g h i j".to_string())];
-    let lines = crate::draw::transcript::render(&cells, 12, true, &Default::default()).lines;
+    let lines = crate::draw::transcript::render(&cells, 12, &Default::default()).lines;
     let rendered: Vec<String> = lines
         .iter()
         .map(|line| {
@@ -1004,7 +983,7 @@ fn emacs_keys_move_and_delete_in_the_prompt() {
 
 /// Flatten a rendered transcript to plain strings.
 fn rendered(app: &App) -> Vec<String> {
-    crate::draw::transcript::render(app.transcript.cells(), 80, true, app.expanded())
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded())
         .lines
         .iter()
         .map(|line| {
@@ -1066,7 +1045,7 @@ fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_reads(&mut app, 3);
     // The map of what is on screen is a frame's, so draw one first.
-    crate::draw::transcript::render(app.transcript.cells(), 80, true, app.expanded());
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
     app.toggle_last_expandable();
 
     let lines = rendered(&app);
@@ -1101,26 +1080,19 @@ fn a_failure_in_a_run_is_visible_without_expanding_it() {
 }
 
 #[test]
-fn a_finished_thought_collapses_while_the_one_still_arriving_stays_open() {
+fn a_reasoning_delta_never_reaches_the_transcript() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::ThinkingDelta("weighing options".to_string()));
     assert!(
-        rendered(&app)
+        !rendered(&app)
             .iter()
             .any(|line| line.contains("weighing options")),
-        "the thought being streamed is the one being read"
+        "reasoning text is not a transcript cell; only turn_status marks it"
     );
+    assert!(app.is_thinking());
 
     app.apply(Update::TextDelta("the answer".to_string()));
-    let lines = rendered(&app);
-    assert!(
-        !lines.iter().any(|line| line.contains("weighing options")),
-        "{lines:?}"
-    );
-    assert!(
-        lines.iter().any(|line| line.contains("Thought")),
-        "{lines:?}"
-    );
+    assert!(!app.is_thinking(), "prose ends the thinking state");
 }
 
 /// A drag over the transcript is a selection, and letting go copies it —

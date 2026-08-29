@@ -65,7 +65,6 @@ impl App {
             KeyCode::Esc if self.close_subagent() => {}
             KeyCode::Esc if self.turn().is_busy() => self.interrupt(),
             KeyCode::Char('d') if control => self.quit(),
-            KeyCode::Char('t') if control => self.toggle_thinking(),
             KeyCode::Char('l') if control => self.scroll.follow(),
             KeyCode::Char('o') if control => self.toggle_last_expandable(),
             KeyCode::PageUp => self.scroll.page_up(),

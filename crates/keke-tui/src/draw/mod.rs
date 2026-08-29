@@ -80,12 +80,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6],
     );
 
-    let rendered = transcript::render(
-        app.transcript.cells(),
-        body.width,
-        app.show_thinking(),
-        app.expanded(),
-    );
+    let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
     app.scroll
         .measure(rendered.lines.len(), usize::from(body.height));
     let offset = app.scroll.offset();
