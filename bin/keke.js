@@ -9,6 +9,7 @@ const PLATFORM_PACKAGE_BY_KEY = {
   "linux-x64": "@milisp/keke-linux-x64",
   "linux-arm64": "@milisp/keke-linux-arm64",
   "win32-x64": "@milisp/keke-win32-x64",
+  "win32-arm64": "@milisp/keke-win32-arm64",
 };
 
 const { platform, arch } = process;

@@ -48,6 +48,9 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             npm-dir: win32-x64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            npm-dir: win32-arm64
 
     runs-on: ${{ matrix.os }}
     steps:
