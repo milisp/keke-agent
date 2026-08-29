@@ -19,6 +19,7 @@ use agent_client_protocol::schema::v1::AuthenticateResponse;
 use agent_client_protocol::schema::v1::AvailableCommand;
 use agent_client_protocol::schema::v1::AvailableCommandsUpdate;
 use agent_client_protocol::schema::v1::CancelNotification;
+use agent_client_protocol::schema::v1::ConfigOptionUpdate;
 use agent_client_protocol::schema::v1::ContentBlock;
 use agent_client_protocol::schema::v1::ContentChunk;
 use agent_client_protocol::schema::v1::Implementation;
@@ -61,13 +62,14 @@ use keke_protocol::ToolStatus;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::Entry;
 use super::SessionFactory;
 use super::Sessions;
 use super::answer_for;
 use super::apply;
 use super::choices;
 use super::enrol;
-use crate::Conversation;
+use super::note_mode;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::SessionListing;
@@ -318,7 +320,7 @@ fn start(
     // responses the pump is about to wait on.
     cx.spawn(pump(
         id.clone(),
-        opened.conversation,
+        Arc::clone(&entry),
         opened.updates,
         outcome_tx,
         cx.clone(),
@@ -374,7 +376,7 @@ fn rendered(choices: &[super::Choice]) -> Vec<SessionConfigOption> {
 fn category_for(id: &str) -> SessionConfigOptionCategory {
     if id == super::REASONING_EFFORT {
         SessionConfigOptionCategory::ThoughtLevel
-    } else if id == super::APPROVAL_POLICY {
+    } else if id == super::APPROVAL_POLICY || id == super::SESSION_MODE {
         SessionConfigOptionCategory::Mode
     } else {
         SessionConfigOptionCategory::Model
@@ -440,7 +442,7 @@ fn prompt_text(blocks: &[ContentBlock]) -> String {
 /// Forward one conversation's updates to the client for as long as it lives.
 async fn pump(
     id: SessionId,
-    conversation: Arc<dyn Conversation>,
+    entry: Arc<Entry>,
     mut updates: UnboundedReceiver<Update>,
     outcomes: UnboundedSender<StopReason>,
     cx: ConnectionTo<agent_client_protocol::Client>,
@@ -451,12 +453,19 @@ async fn pump(
             // ACP has no place for token accounting today, and inventing a
             // message for it would be keke's dialect rather than the protocol.
             Update::TokensUsed(_) => {}
-            // A mode the agent changed on its own. Whether either protocol
-            // version can push a config-option change to a client without
-            // being asked is decided in `choices`; until it can, a client
-            // learns the new mode the next time it reads the session's
-            // options.
-            Update::ModeChanged(_) => {}
+            // A mode the agent entered on its own — or the confirmation of one
+            // a client asked for. `session/update` carries the whole option set
+            // back, so the client's picker follows without asking, and
+            // `Selected` is moved first so a later read agrees with what was
+            // just sent.
+            Update::ModeChanged(mode) => {
+                let options = rendered(&note_mode(&entry, mode));
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options)),
+                )?;
+            }
             Update::TextDelta(text) => {
                 notify(&cx, &id, SessionUpdate::AgentMessageChunk(chunk(text)))?;
             }
@@ -518,7 +527,9 @@ async fn pump(
                     // reading of no answer.
                     Err(_) => PermissionAnswer::Deny,
                 };
-                conversation.respond_to_permission(&permission, answer);
+                entry
+                    .conversation
+                    .respond_to_permission(&permission, answer);
             }
             Update::TurnEnded(reason) => {
                 let _ = outcomes.send(reason);
@@ -589,6 +600,29 @@ mod tests {
             ContentBlock::Text(TextContent::new("second")),
         ];
         assert_eq!(prompt_text(&blocks), "first\nsecond");
+    }
+
+    /// Both versions render from `super::choices`, so what they offer cannot
+    /// drift; what could is which menu each option lands in. The session mode
+    /// belongs beside the approval mode, not in the model picker.
+    #[test]
+    fn the_session_mode_is_a_mode_category_option() {
+        assert_eq!(
+            category_for(crate::agent::SESSION_MODE),
+            SessionConfigOptionCategory::Mode
+        );
+        assert_eq!(
+            category_for(crate::agent::APPROVAL_POLICY),
+            SessionConfigOptionCategory::Mode
+        );
+        assert_eq!(
+            category_for(crate::agent::REASONING_EFFORT),
+            SessionConfigOptionCategory::ThoughtLevel
+        );
+        assert_eq!(
+            category_for(crate::agent::MODEL),
+            SessionConfigOptionCategory::Model
+        );
     }
 
     /// A cancelled permission request is not a selection, so it must not be
