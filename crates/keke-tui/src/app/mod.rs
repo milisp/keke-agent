@@ -110,6 +110,9 @@ pub struct App {
     /// screen and they have stopped watching the clock.
     started: Option<Instant>,
     last_turn: Option<Duration>,
+    /// Wall-clock time the last turn ended, for "done 10:41 PM" beside the
+    /// elapsed duration — `Instant` has no wall-clock reading of its own.
+    last_turn_finished_at: Option<chrono::DateTime<chrono::Local>>,
     /// Tokens this session has spent, including whatever a resumed log already
     /// accounted for.
     usage: Usage,
@@ -203,6 +206,7 @@ impl App {
                 turn: Turn::Idle,
                 started: None,
                 last_turn: None,
+                last_turn_finished_at: None,
                 usage: Usage::default(),
                 context_input: 0,
                 thinking: false,
@@ -372,6 +376,12 @@ impl App {
             Some(started) => Some(started.elapsed()),
             None => self.last_turn,
         }
+    }
+
+    /// Wall-clock time the last turn finished, for the idle status row.
+    /// `None` while a turn is running or before the first one has ended.
+    pub fn last_turn_finished_at(&self) -> Option<chrono::DateTime<chrono::Local>> {
+        self.last_turn_finished_at
     }
 
     /// Whether a turn is on the clock, so the caller redraws on a timer rather
@@ -614,6 +624,7 @@ impl App {
         self.thinking = false;
         if let Some(started) = self.started.take() {
             self.last_turn = Some(started.elapsed());
+            self.last_turn_finished_at = Some(chrono::Local::now());
         }
     }
 

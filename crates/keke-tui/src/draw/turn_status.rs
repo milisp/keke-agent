@@ -1,11 +1,12 @@
 //! The one-row turn status line, shown between the transcript and the composer
 //! only while a turn is on the clock — hidden (zero height) when idle.
 //!
-//! Layout: `⠋ working · 1m10s · ⇣43.5k`
-//! - Spinner plus state label on the left
-//! - Elapsed time beside it, compacted (`12s`, `1m10s`, `1h10m`, `1d3h`)
-//! - Used context tokens just past the clock, where the eye already is; the
-//!   window figure stays in the header
+//! Layout: `⠋ working · 1m10s · ⇣43.5k · thinking with medium effort`
+//! - Spinner, state label, and elapsed time, compacted
+//!   (`12s`, `1m10s`, `1h10m`, `1d3h`)
+//! - Context tokens right after the clock, where the eye already is
+//! - While the model is reasoning, the effort level trails the tokens as one
+//!   phrase ("thinking with medium effort") rather than leading the line
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -31,13 +32,12 @@ pub(crate) fn rows(app: &App) -> u16 {
 pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let elapsed = app.elapsed().unwrap_or_default();
 
-    // Used tokens only, inline after the clock rather than right-aligned:
-    // at the screen edge nobody reads them mid-turn. No window figure here —
-    // that stays the header's job. Absent until some input exists, so a fresh
-    // turn does not open with a dangling separator.
+    // Used tokens only, not the window figure — that stays the header's job.
+    // Absent until some input exists, so a fresh turn does not open with a
+    // dangling separator.
     let used = app.context_input();
     let context = if used > 0 {
-        format!("· ⇣{}", tokens(used))
+        format!("⇣{}", tokens(used))
     } else {
         String::new()
     };
@@ -45,24 +45,27 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     // Idle keeps the row as a quiet record of the finished turn; a fresh
     // session with no turn yet has no row at all.
     if !app.turn().is_busy() {
-        let line = Line::from(vec![
-            Span::styled("✓ done ", Style::new().fg(Color::Green)),
-            Span::styled(
-                format!("· worked for {} ", format_duration(elapsed)),
-                Style::new().fg(Color::DarkGray),
-            ),
-            Span::styled(context, Style::new().fg(Color::Cyan)),
-        ]);
-        frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
+        let done_at = app
+            .last_turn_finished_at()
+            .map(|at| format!(" · done {}", at.format("%-I:%M %p")))
+            .unwrap_or_default();
+        let mut spans = vec![Span::styled(
+            format!("Cooked for {}{done_at}", format_duration(elapsed)),
+            Style::new().fg(Color::DarkGray),
+        )];
+        if !context.is_empty() {
+            spans.push(Span::styled(
+                format!(" · {context}"),
+                Style::new().fg(Color::Cyan),
+            ));
+        }
+        frame.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
         return;
     }
+
     let label = match app.turn() {
-        crate::app::Turn::AwaitingPermission => "waiting for approval".to_string(),
-        _ if app.is_thinking() => format!(
-            "thinking with {} effort",
-            crate::slash::effort_name(app.reasoning_effort())
-        ),
-        _ => "working".to_string(),
+        crate::app::Turn::AwaitingPermission => "waiting for approval",
+        _ => "working",
     };
     let color = match app.turn() {
         crate::app::Turn::AwaitingPermission => Color::Yellow,
@@ -71,13 +74,30 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     };
     let frame_index = usize::try_from(elapsed.as_millis() / 120).unwrap_or(0);
     let spinner = SPINNER[frame_index % SPINNER.len()];
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!("{spinner} {label} "), Style::new().fg(color)),
         Span::styled(
-            format!("· {} ", format_duration(elapsed)),
+            format!("· {}", format_duration(elapsed)),
             Style::new().fg(Color::DarkGray),
         ),
-        Span::styled(context, Style::new().fg(Color::Cyan)),
-    ]);
-    frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
+    ];
+    if !context.is_empty() {
+        spans.push(Span::styled(
+            format!(" · {context}"),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
+    // Kept as one phrase — "thinking with medium effort" — trailing the
+    // token count rather than leading the line, since the clock and tokens
+    // are what the eye tracks turn over turn.
+    if app.is_thinking() {
+        spans.push(Span::styled(
+            format!(
+                " · thinking with {} effort",
+                crate::slash::effort_name(app.reasoning_effort())
+            ),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
+    frame.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
 }

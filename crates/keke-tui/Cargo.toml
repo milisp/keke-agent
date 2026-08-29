@@ -19,6 +19,7 @@ keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
+chrono = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 futures = { workspace = true }
 pulldown-cmark = { workspace = true }
