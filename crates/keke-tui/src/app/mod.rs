@@ -197,11 +197,15 @@ impl App {
     /// event loop selects over that alongside the agent's stream.
     pub fn new(conversation: Arc<dyn Conversation>) -> (Self, UnboundedReceiver<Update>) {
         let (local, local_updates) = tokio::sync::mpsc::unbounded_channel();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let transcript = keke_paths::AbsPath::new(&cwd)
+            .map(|cwd| Transcript::with_cwd(&cwd))
+            .unwrap_or_default();
         (
             Self {
                 conversation,
                 local,
-                transcript: Transcript::default(),
+                transcript,
                 input: InputBox::default(),
                 scroll: Scrollback::default(),
                 commands: SlashCommands::default(),
@@ -209,9 +213,7 @@ impl App {
                 mcp_activity: std::collections::HashMap::new(),
                 sign_in: None,
                 notices: None,
-                file_search: FileSearchState::new(
-                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                ),
+                file_search: FileSearchState::new(cwd),
                 history: PromptHistory::default(),
                 completion: 0,
                 picker: None,
@@ -553,7 +555,7 @@ impl App {
                 self.set_subagents(rows);
             }
             Update::SessionReset => {
-                self.transcript = Transcript::default();
+                self.transcript.clear();
                 self.set_subagents(Vec::new());
                 self.scroll.follow();
                 self.usage = Usage::default();

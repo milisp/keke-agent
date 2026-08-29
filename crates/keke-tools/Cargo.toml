@@ -17,6 +17,7 @@ ignore = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+similar = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
 
 [dev-dependencies]

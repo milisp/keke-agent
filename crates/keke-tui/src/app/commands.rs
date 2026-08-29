@@ -6,7 +6,6 @@ use crate::login::Notice;
 use crate::slash::Builtin;
 use crate::slash::SlashAction;
 use crate::transcript::Cell;
-use crate::transcript::Transcript;
 
 use super::App;
 use super::Update;
@@ -27,7 +26,7 @@ impl App {
             SlashAction::Builtin(Builtin::Clear) => {
                 // On screen only: the rollout log is the record, and a person
                 // clearing the view is not asking the agent to forget.
-                self.transcript = Transcript::default();
+                self.transcript.clear();
                 self.scroll.follow();
             }
             SlashAction::Builtin(Builtin::New) => self.start_new_session(),

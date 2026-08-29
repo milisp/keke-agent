@@ -1469,6 +1469,72 @@ fn a_failure_in_a_run_is_visible_without_expanding_it() {
 }
 
 #[test]
+fn a_running_call_is_open_without_any_toggle() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ToolCallStarted(call("c0", "read_file")));
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.contains("path=src/lib.rs")),
+        "a call in flight is shown open, as it happens, with no toggle needed: {lines:?}"
+    );
+}
+
+#[test]
+fn a_run_that_errored_stays_open_after_it_finishes() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ToolCallStarted(call("bad", "read_file")));
+    app.apply(Update::ToolCallEnded(ToolResult {
+        id: ToolCallId::new("bad"),
+        status: ToolStatus::Error,
+        content: Vec::new(),
+        value: None,
+    }));
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.contains("path=src/lib.rs")),
+        "an error stays open by default, not just its collapsed marker: {lines:?}"
+    );
+}
+
+#[test]
+fn a_clean_run_folds_away_once_it_finishes() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    finished_reads(&mut app, 3);
+
+    let lines = rendered(&app);
+    assert!(
+        !lines.iter().any(|line| line.contains("src/f2.rs")),
+        "a run that finished cleanly folds away without a manual collapse: {lines:?}"
+    );
+}
+
+#[test]
+fn toggling_a_run_that_errored_collapses_it() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ToolCallStarted(call("bad", "read_file")));
+    app.apply(Update::ToolCallEnded(ToolResult {
+        id: ToolCallId::new("bad"),
+        status: ToolStatus::Error,
+        content: Vec::new(),
+        value: None,
+    }));
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
+    app.toggle_last_expandable();
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.starts_with('✗')),
+        "the collapsed header still reports the failure: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("path=src/lib.rs")),
+        "the toggle flips relative to the default-open state: {lines:?}"
+    );
+}
+
+#[test]
 fn a_reasoning_delta_never_reaches_the_transcript() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::ThinkingDelta("weighing options".to_string()));

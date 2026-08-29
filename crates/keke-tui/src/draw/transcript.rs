@@ -19,7 +19,6 @@ use crate::transcript::CallState;
 use crate::transcript::Cell;
 use crate::transcript::PermissionCell;
 use crate::transcript::ToolCell;
-use crate::transcript::groups_with;
 use crate::transcript::verb;
 
 const USER: Color = Color::Cyan;
@@ -143,21 +142,16 @@ pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> R
                 out.lines
                     .extend(markdown::render(text, width, Style::new(), ""));
             }
-            Cell::Tool(tool) if matches!(tool.state, CallState::Running) => {
-                out.lines.extend(tool_lines(tool, width));
-            }
             Cell::Tool(first) => {
-                let verb = verb(&first.name).0;
+                let run = verb(&first.name).0;
                 let end = cells[index..]
                     .iter()
-                    .position(|cell| !groups_with(cell, verb))
+                    .position(|cell| !runs_with(cell, run))
                     .map_or(cells.len(), |offset| index + offset);
                 out.toggles.push((out.lines.len(), index));
-                out.lines.extend(group_lines(
-                    &cells[index..end],
-                    expanded.contains(&index),
-                    width,
-                ));
+                let group = &cells[index..end];
+                let open = default_open(group) ^ expanded.contains(&index);
+                out.lines.extend(group_lines(group, open, width));
                 index = end;
                 out.lines.push(Line::default());
                 continue;
@@ -227,13 +221,25 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     };
     let (verb, noun) = verb(&first.name);
+    let has_running = tools
+        .iter()
+        .any(|tool| matches!(tool.state, CallState::Running));
     let status = tools
         .iter()
         .fold(ToolStatus::Ok, |worst_so_far, tool| match tool.state {
             CallState::Finished(status) => worst(status, worst_so_far),
             CallState::Running => worst_so_far,
         });
-    let (marker, style) = marker(CallState::Finished(status));
+    // The spinner wins the header glyph while anything in the run is still
+    // going, even if an earlier call in it already failed — a finished
+    // failure keeps the group open (see `default_open`), but the run itself
+    // is not done yet, and a red header before that is true reads as if it
+    // were.
+    let (marker, style) = if has_running {
+        marker(CallState::Running)
+    } else {
+        marker(CallState::Finished(status))
+    };
     let summary = if tools.len() == 1 {
         first.summary.clone()
     } else {
@@ -286,18 +292,32 @@ fn marker(state: CallState) -> (&'static str, Style) {
     }
 }
 
-fn tool_lines(tool: &ToolCell, width: usize) -> Vec<Line<'static>> {
-    let (marker, style) = marker(tool.state);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{marker} "), style),
-        Span::styled(tool.name.clone(), style.add_modifier(Modifier::BOLD)),
-        Span::raw(" "),
-        Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
-    ])];
-    if let Some(detail) = &tool.detail {
-        push_block(&mut lines, "    ", detail, Style::new().fg(THINKING), width);
-    }
-    lines
+/// Whether a cell belongs in the run being gathered for drawing.
+///
+/// Unlike [`crate::transcript::groups_with`] — which only chains *finished*
+/// calls, for the keyboard's "reopen the last run" gesture — this also folds
+/// in a still-running call of the same kind, since two `read_file`s drawn
+/// back to back read as one action in progress, not two.
+fn runs_with(cell: &Cell, run: &str) -> bool {
+    matches!(cell, Cell::Tool(tool) if verb(&tool.name).0 == run)
+}
+
+/// Whether a run should be open before any manual toggle is applied.
+///
+/// A run still in flight is shown as it happens rather than behind a fold a
+/// person has to know to open. One that finished cleanly folds away, since by
+/// then it is confirmed and re-reading it adds nothing; one that ended in an
+/// error or a denial stays open, because that is exactly the case a person
+/// needs to see without hunting for it.
+fn default_open(group: &[Cell]) -> bool {
+    group.iter().any(|cell| match cell {
+        Cell::Tool(tool) => match tool.state {
+            CallState::Running => true,
+            CallState::Finished(ToolStatus::Error | ToolStatus::Denied) => true,
+            CallState::Finished(ToolStatus::Ok | ToolStatus::Cancelled) => false,
+        },
+        _ => false,
+    })
 }
 
 fn permission_lines(prompt: &PermissionCell, width: usize) -> Vec<Line<'static>> {

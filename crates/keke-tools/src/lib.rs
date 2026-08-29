@@ -400,6 +400,38 @@ mod tests {
             std::fs::read_to_string(ctx.workspace_root.as_path().join("deep/nested/file.txt"))
                 .expect("read back");
         assert_eq!(back, "hello\n");
+        assert!(out.diff.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_file_reports_line_diff_on_overwrite() {
+        let (_dir, ctx) = workspace();
+        WriteFile
+            .run(
+                ctx.clone(),
+                WriteFileArgs {
+                    path: "file.txt".into(),
+                    content: "a\nb\nc\n".into(),
+                },
+            )
+            .await
+            .expect("write");
+
+        let out = WriteFile
+            .run(
+                ctx.clone(),
+                WriteFileArgs {
+                    path: "file.txt".into(),
+                    content: "a\nx\nc\nd\n".into(),
+                },
+            )
+            .await
+            .expect("write");
+
+        assert!(!out.created);
+        let diff = out.diff.expect("diff");
+        assert_eq!(diff.added, 2);
+        assert_eq!(diff.removed, 1);
     }
 
     /// The engine only ever calls tools through `ToolDyn`, so at least one test

@@ -88,9 +88,49 @@ pub struct Transcript {
     /// Set by [`Transcript::seal`]; makes the next delta open a new cell
     /// instead of extending the one already on screen.
     sealed: bool,
+    /// Path components from the workspace root down to the directory the
+    /// session was launched from. Tool paths arrive workspace-relative — the
+    /// root is what the model needs, unambiguous regardless of where a
+    /// person happened to launch keke — but a person reads paths against
+    /// where they are sitting, so the transcript re-roots them for display.
+    /// Empty when the session was launched from the workspace root itself,
+    /// which is the common case and needs no rewriting.
+    cwd_prefix: Vec<String>,
 }
 
 impl Transcript {
+    /// Re-root tool paths for display against `cwd` rather than the
+    /// workspace root. Failure to resolve either just means no rewriting —
+    /// paths still display, workspace-relative, as they always did.
+    pub fn with_cwd(cwd: &keke_paths::AbsPath) -> Self {
+        let cwd_prefix = keke_config::resolve_workspace_root(cwd.as_path())
+            .ok()
+            .and_then(|root| cwd.strip_root(&root).ok())
+            .map(|rel| {
+                rel.as_str()
+                    .split('/')
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            cwd_prefix,
+            ..Self::default()
+        }
+    }
+
+    /// Drop everything shown so far, keeping the cwd rewrite in force.
+    ///
+    /// A person clearing the view is not asking the agent to forget — only
+    /// the on-screen record resets, so a fresh `Transcript::default()` here
+    /// would be wrong twice over: it drops the rollout along with the cwd
+    /// rewrite this session was constructed with.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+        self.sealed = false;
+    }
+
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
@@ -146,7 +186,7 @@ impl Transcript {
         self.cells.push(Cell::Tool(ToolCell {
             id: call.id.clone(),
             name: call.name.clone(),
-            summary: headline(&call.arguments),
+            summary: headline(&call.arguments, &self.cwd_prefix),
             arguments: summarize_arguments(&call.arguments),
             state: CallState::Running,
             detail: None,
@@ -163,8 +203,9 @@ impl Transcript {
         }) else {
             return false;
         };
+        let name = cell.name.clone();
         cell.state = CallState::Finished(result.status);
-        cell.detail = first_line(result);
+        cell.detail = detail_line(&name, result);
         true
     }
 
@@ -173,7 +214,7 @@ impl Transcript {
         self.cells.push(Cell::Permission(PermissionCell {
             id,
             name: call.name.clone(),
-            summary: headline(&call.arguments),
+            summary: headline(&call.arguments, &self.cwd_prefix),
             reason,
             answer: None,
         }));
@@ -351,17 +392,51 @@ const SALIENT: [&str; 6] = ["command", "path", "file_path", "pattern", "query", 
 /// Falls back to the full `key=value` form when no field stands out, so a tool
 /// keke has never heard of still shows something rather than nothing. Nothing
 /// here is keyed on a vendor: these are argument names, not tool identities.
-pub(crate) fn headline(arguments: &serde_json::Value) -> String {
+pub(crate) fn headline(arguments: &serde_json::Value, cwd_prefix: &[String]) -> String {
+    const PATH_KEYS: [&str; 2] = ["path", "file_path"];
     if let serde_json::Value::Object(fields) = arguments {
         for key in SALIENT {
             if let Some(serde_json::Value::String(text)) = fields.get(key)
                 && !text.trim().is_empty()
             {
-                return one_line(text, 120);
+                let text = if PATH_KEYS.contains(&key) {
+                    relative_to_cwd(text, cwd_prefix)
+                } else {
+                    text.clone()
+                };
+                return one_line(&text, 120);
             }
         }
     }
     summarize_arguments(arguments)
+}
+
+/// Re-root a workspace-relative path so it reads against `cwd_prefix` — the
+/// directory the session was launched from — instead of the workspace root.
+///
+/// A path under the prefix loses it (`crates/keke-tools/src/lib.rs` becomes
+/// `src/lib.rs` when launched from `crates/keke-tools`); one outside it grows
+/// `..` segments, so a glance at the leading `../` is what tells a reader the
+/// call reached outside where they are sitting — the one case where showing
+/// the fuller path earns its keep.
+fn relative_to_cwd(path: &str, cwd_prefix: &[String]) -> String {
+    if cwd_prefix.is_empty() {
+        return path.to_string();
+    }
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let common = parts
+        .iter()
+        .zip(cwd_prefix.iter())
+        .take_while(|(part, prefix)| **part == prefix.as_str())
+        .count();
+    let ups = cwd_prefix.len() - common;
+    let mut rerooted: Vec<&str> = std::iter::repeat_n("..", ups).collect();
+    rerooted.extend(&parts[common..]);
+    if rerooted.is_empty() {
+        ".".to_string()
+    } else {
+        rerooted.join("/")
+    }
 }
 
 /// Collapse tool arguments to one line.
@@ -403,6 +478,47 @@ fn first_line(result: &ToolResult) -> Option<String> {
     (!text.is_empty()).then(|| one_line(text, 120))
 }
 
+/// The collapsed line shown once a call finishes.
+///
+/// Most tools read fine as their own first line of output. `grep` does not: a
+/// hit's raw `file:line:code` text is the noisiest line in the transcript, and
+/// as a "detail" it reads as if that one line were the whole story. A count is
+/// what a reader actually wants before deciding whether to expand.
+fn detail_line(name: &str, result: &ToolResult) -> Option<String> {
+    if name == "grep" {
+        return grep_summary(result);
+    }
+    first_line(result)
+}
+
+fn grep_summary(result: &ToolResult) -> Option<String> {
+    let text = result
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })?
+        .trim();
+    if text.is_empty() || text.starts_with("no matches") {
+        return (!text.is_empty()).then(|| one_line(text, 120));
+    }
+    let truncated = text
+        .lines()
+        .next_back()
+        .is_some_and(|line| line.starts_with('…'));
+    let count = text
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('…'))
+        .count();
+    let noun = if count == 1 { "match" } else { "matches" };
+    Some(if truncated {
+        format!("{count}+ {noun}")
+    } else {
+        format!("{count} {noun}")
+    })
+}
+
 /// Flatten to a single line and ellipsize, counting characters rather than
 /// bytes so a multi-byte path is not cut mid-codepoint.
 fn one_line(text: &str, limit: usize) -> String {
@@ -412,4 +528,46 @@ fn one_line(text: &str, limit: usize) -> String {
     }
     let kept: String = flattened.chars().take(limit.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+#[cfg(test)]
+mod cwd_display_tests {
+    use super::*;
+
+    fn prefix(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| part.to_string()).collect()
+    }
+
+    #[test]
+    fn strips_the_prefix_for_a_path_under_cwd() {
+        let cwd_prefix = prefix(&["crates", "keke-tools"]);
+        assert_eq!(
+            relative_to_cwd("crates/keke-tools/src/write_file.rs", &cwd_prefix),
+            "src/write_file.rs"
+        );
+    }
+
+    #[test]
+    fn climbs_out_for_a_path_outside_cwd() {
+        let cwd_prefix = prefix(&["crates", "keke-tools"]);
+        assert_eq!(
+            relative_to_cwd("crates/keke-core/src/lib.rs", &cwd_prefix),
+            "../keke-core/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn leaves_paths_alone_when_launched_from_the_workspace_root() {
+        assert_eq!(
+            relative_to_cwd("crates/keke-core/src/lib.rs", &[]),
+            "crates/keke-core/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn headline_reroots_the_path_argument() {
+        let cwd_prefix = prefix(&["crates", "keke-tools"]);
+        let arguments = serde_json::json!({"path": "crates/keke-tools/src/write_file.rs"});
+        assert_eq!(headline(&arguments, &cwd_prefix), "src/write_file.rs");
+    }
 }

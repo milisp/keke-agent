@@ -28,13 +28,30 @@ pub struct WriteFileOutput {
     pub bytes: usize,
     /// Whether the file existed before this call.
     pub created: bool,
+    /// Lines added and removed relative to the previous contents.
+    ///
+    /// `None` for a new file — there is nothing to diff against, so "N lines
+    /// added, 0 removed" would just restate the line count under a busier
+    /// name.
+    pub diff: Option<LineDiff>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LineDiff {
+    pub added: usize,
+    pub removed: usize,
 }
 
 impl ToolOutput for WriteFileOutput {
     fn render(&self) -> Vec<ContentBlock> {
         let verb = if self.created { "created" } else { "updated" };
+        let changes = match &self.diff {
+            Some(diff) if diff.added == 0 && diff.removed == 0 => String::new(),
+            Some(diff) => format!(", +{} -{}", diff.added, diff.removed),
+            None => String::new(),
+        };
         vec![ContentBlock::text(format!(
-            "{verb} {} ({} bytes)",
+            "{verb} {} ({} bytes{changes})",
             self.path, self.bytes
         ))]
     }
@@ -66,6 +83,11 @@ impl Tool for WriteFile {
         let path = support::resolve(&ctx, &args.path)?;
         let display = support::display(&ctx.workspace_root, &path);
         let created = !path.as_path().exists();
+        let previous = if created {
+            None
+        } else {
+            tokio::fs::read_to_string(path.as_path()).await.ok()
+        };
 
         if let Some(parent) = path.as_path().parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|error| {
@@ -81,6 +103,20 @@ impl Tool for WriteFile {
             path: display,
             bytes: args.content.len(),
             created,
+            diff: previous.map(|previous| line_diff(&previous, &args.content)),
         })
     }
+}
+
+fn line_diff(before: &str, after: &str) -> LineDiff {
+    let mut added = 0;
+    let mut removed = 0;
+    for change in similar::TextDiff::from_lines(before, after).iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added += 1,
+            similar::ChangeTag::Delete => removed += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    LineDiff { added, removed }
 }
