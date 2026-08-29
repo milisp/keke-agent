@@ -25,6 +25,7 @@ use keke_protocol::ContentBlock;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
 use keke_protocol::ToolStatus;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ArcTool;
 use keke_tool::ToolCallContext;
 use keke_tool::ToolError;
@@ -135,15 +136,23 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
 
     // After the guards, so a guard's denial is already final and no answer here
     // can undo it, and before the body, so nothing runs unapproved.
-    if let Some(reason) = approval_reason(policy, &tool.capabilities())
-        && !memory.is_always_allowed(&call.name)
+    let mut approval_note = None;
+    let capabilities = tool.capabilities();
+    // A tool that exists to be decided is asked about every time. Remembering
+    // "allow always" for one would answer every later call on a person's
+    // behalf, which is the thing it said must not happen — a plan approved
+    // once would then approve every plan after it, unasked.
+    let standing = capabilities.approval == ApprovalRequirement::ByPolicy
+        && memory.is_always_allowed(&call.name);
+    if let Some(reason) = approval_reason(policy, &capabilities)
+        && !standing
     {
         let request = ApprovalRequest {
             call: call.clone(),
             reason,
         };
         match review(registry, ext_ctx, &request).await {
-            ApprovalDecision::Allow => {}
+            ApprovalDecision::Allow { note } => approval_note = note,
             ApprovalDecision::AllowAlways => memory.allow_always(&call.name),
             ApprovalDecision::Deny { reason } => {
                 return refuse(call, registry, ext_ctx, reason, false).await;
@@ -178,12 +187,24 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         None => running.await,
     };
     let result = match &outcome {
-        Ok(output) => ToolResult {
-            id: call.id.clone(),
-            status: ToolStatus::Ok,
-            content: output.model_output.clone(),
-            value: Some(output.value.clone()),
-        },
+        Ok(output) => {
+            let mut content = output.model_output.clone();
+            // Appended to what the tool said rather than replacing it: the
+            // person's words are about the call, not the call's answer, and a
+            // model that lost the tool's own output would be reading a
+            // comment on something it can no longer see.
+            if let Some(note) = &approval_note {
+                content.push(ContentBlock::text(format!(
+                    "The person approved this and added:\n\n{note}"
+                )));
+            }
+            ToolResult {
+                id: call.id.clone(),
+                status: ToolStatus::Ok,
+                content,
+                value: Some(output.value.clone()),
+            }
+        }
         Err(error) => ToolResult {
             id: call.id.clone(),
             status: error.status(),

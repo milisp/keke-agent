@@ -355,6 +355,7 @@ async fn a_plain_turn_streams_text_and_logs_everything() {
             SessionEvent::ModelRequest { .. } => "model_request",
             SessionEvent::ModelResponse { .. } => "model_response",
             SessionEvent::TurnEnd { .. } => "turn_end",
+            SessionEvent::ContextFragment { .. } => "context_fragment",
             _ => "other",
         })
         .collect();
@@ -363,6 +364,11 @@ async fn a_plain_turn_streams_text_and_logs_everything() {
         vec![
             "session_start",
             "turn_start",
+            // The system prompt is model-visible input that `model_request`
+            // does not carry, so each fragment of it is logged in assembled
+            // order, ahead of the request it is part of.
+            "context_fragment",
+            "context_fragment",
             "model_request",
             "model_response",
             "turn_end"
@@ -913,13 +919,49 @@ fn statuses(events: &[SessionEvent]) -> Vec<ToolStatus> {
 /// the test that says something does.
 #[tokio::test]
 async fn a_call_needing_approval_is_put_to_the_reviewer() {
-    let (events, asked) =
-        run_with_reviewer(Some(ApprovalDecision::Allow), ApprovalPolicy::OnRequest).await;
+    let (events, asked) = run_with_reviewer(
+        Some(ApprovalDecision::Allow { note: None }),
+        ApprovalPolicy::OnRequest,
+    )
+    .await;
     assert_eq!(
         asked,
         vec!["dangerous".to_string(), "dangerous".to_string()]
     );
     assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+}
+
+/// Someone who approves while asking for one thing to be different has
+/// instructed the work the call is about to do. The words have to reach the
+/// model with the answer — said afterwards they would arrive once the thing
+/// they were meant to shape had already been done.
+#[tokio::test]
+async fn what_a_person_says_while_approving_reaches_the_model_with_the_result() {
+    let (events, _asked) = run_with_reviewer(
+        Some(ApprovalDecision::Allow {
+            note: Some("keep it under fifty lines".to_string()),
+        }),
+        ApprovalPolicy::OnRequest,
+    )
+    .await;
+
+    let said: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::ToolCallEnd { result, .. } => Some(result),
+            _ => None,
+        })
+        .flat_map(|result| result.content.iter())
+        .filter_map(|block| match block {
+            keke_protocol::ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter()
+            .any(|text| text.contains("keep it under fifty lines")),
+        "the note is nowhere in what the model was told: {said:?}"
+    );
 }
 
 /// A prompt nobody is listening to is a denial, not a permission. A harness
@@ -936,8 +978,11 @@ async fn a_call_needing_approval_with_nobody_to_ask_is_refused() {
 
 #[tokio::test]
 async fn a_policy_of_never_does_not_ask() {
-    let (events, asked) =
-        run_with_reviewer(Some(ApprovalDecision::Allow), ApprovalPolicy::Never).await;
+    let (events, asked) = run_with_reviewer(
+        Some(ApprovalDecision::Allow { note: None }),
+        ApprovalPolicy::Never,
+    )
+    .await;
     assert!(
         asked.is_empty(),
         "nothing should have been asked: {asked:?}"
@@ -994,7 +1039,7 @@ async fn a_reviewer_cannot_undo_a_guard() {
 
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.tool_contributor(Arc::new(EchoPack));
-    let (reviewer, asked) = Reviewer::new(ApprovalDecision::Allow);
+    let (reviewer, asked) = Reviewer::new(ApprovalDecision::Allow { note: None });
     extensions.approval_review_contributor(reviewer);
     extensions.tool_guard(Box::new(|call| {
         (call.name == "dangerous").then(|| "the guard says no".to_string())

@@ -37,6 +37,12 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_keke"));
         command
             .env("KEKE_HOME", self.home.path())
+            // Plugin discovery also reads `~/.claude/plugins` for
+            // compatibility with Claude Code. Left pointed at the real home,
+            // whatever is installed there leaks into the assembled prompt and
+            // makes this test's fragment count a function of the machine it
+            // runs on rather than of the fixture.
+            .env("HOME", self.home.path())
             // The OS keyring is shared machine state; a test that read it would
             // pass or fail depending on who is logged in on this machine.
             .env("KEKE_CREDENTIAL_STORE", "file")
@@ -131,6 +137,12 @@ async fn exec_runs_a_tool_and_records_a_replayable_session() {
         vec![
             "session_start",
             "turn_start",
+            // The system prompt reaches the model but is not part of
+            // `model_request`, so each fragment of it is logged separately —
+            // identity and environment here (this fixture has no project
+            // instructions file and no plugins installed).
+            "context_fragment",
+            "context_fragment",
             "model_request",
             "model_response",
             "tool_call_start",

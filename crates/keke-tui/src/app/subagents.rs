@@ -141,7 +141,7 @@ impl App {
     }
 
     /// Put `text` on the clipboard and say so.
-    fn copy(&mut self, text: String) {
+    pub(super) fn copy(&mut self, text: String) {
         let lines = text.lines().count();
         self.set_flash(format!("copied {lines} lines"));
         self.pending_copy = Some(text);

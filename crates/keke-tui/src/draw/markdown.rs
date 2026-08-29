@@ -203,7 +203,7 @@ fn wrap_words(words: Vec<(String, Style)>, width: usize, prefix: &str) -> Vec<Li
 
 /// Plain-text wrap for code blocks: no style runs to track, but still breaks
 /// inside an overlong token so a long line doesn't push the pane wide.
-fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }

@@ -88,6 +88,21 @@ pub enum SessionEvent {
         turn: TurnId,
         result: ToolResult,
     },
+    /// Model-visible text an extension put in front of the model.
+    ///
+    /// A `ContextContributor`'s fragment reaches the request inside the *system*
+    /// prompt, which `ModelRequest` does not carry — it records `messages` and
+    /// `tools`. Without a line of its own, a fragment that changed how the model
+    /// behaved would be nowhere in the log, and *model-visible implies logged*
+    /// would hold only for the parts of the request that happen to be messages.
+    ContextFragment {
+        /// Absent when the fragment was assembled outside a turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<TurnId>,
+        /// The fragment's stable name, as its contributor gave it.
+        name: String,
+        text: String,
+    },
     /// History was compacted; `summary` replaced the elided messages.
     Compacted {
         turn: TurnId,

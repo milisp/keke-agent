@@ -52,6 +52,13 @@ impl App {
         // Whichever overlay is up owns the keyboard, letters
         // included: it filters as you type, and a keystroke that went into the
         // composer behind it would be invisible until the overlay closed.
+        // Both overlays own the keyboard while they are up: the turn is
+        // stopped on the plan review, so its letters answer it rather than
+        // being typed into a composer nobody is looking at.
+        if self.plan_review().is_some() && !control {
+            self.handle_plan_key(key);
+            return;
+        }
         if self.picker_open() && !control {
             self.handle_picker_key(key);
             return;
@@ -59,6 +66,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
+            KeyCode::Char('g') if control && self.plan_review().is_some() => self.edit_plan(),
             // Before the interrupt: a visible overlay owns escape, the way the
             // model picker above does. A subagent popup is open exactly while
             // the turn is busy, so without this it could never be closed.
@@ -89,8 +97,8 @@ impl App {
             KeyCode::Enter if shift || alt => self.input.insert_newline(),
             // Shift-Tab reaches a terminal as `BackTab`, except where it does
             // not; both spellings mean the same gesture.
-            KeyCode::BackTab => self.cycle_approval_policy(),
-            KeyCode::Tab if shift => self.cycle_approval_policy(),
+            KeyCode::BackTab => self.cycle_session_rung(),
+            KeyCode::Tab if shift => self.cycle_session_rung(),
             // The completion menu owns the keys only while it is open, so
             // nothing a person can press changes meaning without them seeing
             // the list it applies to.
@@ -231,6 +239,35 @@ impl App {
             KeyCode::Esc => self.close_picker(),
             KeyCode::Backspace => self.backspace_in_picker(),
             KeyCode::Char(ch) => self.type_into_picker(ch),
+            _ => {}
+        }
+    }
+
+    /// While the plan review is up, these keys drive it.
+    fn handle_plan_key(&mut self, key: KeyEvent) {
+        if self.plan_focus() == crate::app::plan::PlanFocus::Composer {
+            // Nothing here is a shortcut. The composer is where words go.
+            match key.code {
+                KeyCode::Esc => self.focus_plan_preview(),
+                KeyCode::Enter => self.submit_plan_composer(),
+                KeyCode::Char(ch) => self.input.insert_char(ch),
+                KeyCode::Backspace => self.input.backspace(),
+                KeyCode::Delete => self.input.delete(),
+                KeyCode::Left => self.input.move_left(),
+                KeyCode::Right => self.input.move_right(),
+                KeyCode::Home => self.input.move_home(),
+                KeyCode::End => self.input.move_end(),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Enter => self.commit_plan_row(),
+            KeyCode::Esc => self.quit_plan(),
+            KeyCode::Up => self.move_plan_policy(-1),
+            KeyCode::Down => self.move_plan_policy(1),
+            KeyCode::PageUp => self.scroll.page_up(),
+            KeyCode::PageDown => self.scroll.page_down(),
             _ => {}
         }
     }

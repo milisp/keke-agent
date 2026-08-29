@@ -23,6 +23,12 @@ pub(crate) fn tokens(count: u64) -> String {
 }
 
 pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
+    frame.render_widget(Paragraph::new(Line::from(spans(app))), area);
+}
+
+/// The bar's spans, built apart from the frame so what a person reads there can
+/// be asserted on without a terminal.
+pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     let (state, style) = match app.turn() {
         Turn::Idle => ("ready", Style::new().fg(Color::Green)),
         Turn::Running => ("working", Style::new().fg(Color::Magenta)),
@@ -33,17 +39,43 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let mut spans = vec![Span::styled(format!(" {state} "), style)];
-    // Always shown, never only after a change: a person who cannot see the
-    // current mode has to guess whether the next command will ask them.
-    let policy = app.approval_policy();
-    spans.push(Span::styled(
-        format!("· {} ", crate::slash::policy_name(policy)),
-        if policy == keke_config_types::ApprovalPolicy::Never {
-            Style::new().fg(Color::Red)
-        } else {
-            Style::new().fg(Color::Cyan)
-        },
-    ));
+    // Plan mode reads from the seam, never from the fact that this surface
+    // asked for it: the agent enters and leaves plan mode on its own, and a
+    // flag drawn from a local toggle would keep saying `plan` after it left.
+    // Reversed rather than coloured, because it is the one flag here that
+    // changes what the agent may do at all.
+    //
+    // The policy line below shares this same flag rather than computing its
+    // own: the two must never disagree about whether a plan is showing, or a
+    // person reads both "plan" and a policy at once and has to guess which
+    // one is true.
+    let in_plan = app.session_mode().is_plan();
+    if in_plan {
+        spans.push(Span::styled(
+            "· plan ",
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    // Shown outside plan mode, and never only after a change: a person who
+    // cannot see the current mode has to guess whether the next command will
+    // ask them. In plan mode there is nothing for it to govern — no command
+    // runs until the plan is approved, and the policy that will govern the
+    // work is the one chosen at approval, not the one standing now. Drawing it
+    // here would answer a question a person has not been asked yet.
+    if !in_plan {
+        let policy = app.approval_policy();
+        spans.push(Span::styled(
+            format!("· {} ", crate::slash::policy_name(policy)),
+            if policy == keke_config_types::ApprovalPolicy::Never {
+                Style::new().fg(Color::Red)
+            } else {
+                Style::new().fg(Color::Cyan)
+            },
+        ));
+    }
     // Which route is serving. Shown beside the model because one vendor can be
     // registered twice — a subscription login and an API key — and then the
     // model id alone does not say which of them the answer came from.
@@ -78,7 +110,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Green),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    spans
 }
 
 #[cfg(test)]

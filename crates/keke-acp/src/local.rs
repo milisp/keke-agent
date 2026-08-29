@@ -12,11 +12,13 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::SessionMode;
 use keke_core::ApprovalSwitch;
 use keke_core::CoreError;
 use keke_core::EffortSwitch;
 use keke_core::ModelSwitch;
 use keke_core::SessionBuilder;
+use keke_core::SessionModeSwitch;
 use keke_core::TurnUpdate;
 use keke_plugin_api::ApprovalDecision;
 use keke_plugin_api::ApprovalRequest;
@@ -56,7 +58,7 @@ pub struct ApprovalRequests(UnboundedReceiver<Pending>);
 /// learns about it — nothing in `keke-core` knows a surface exists.
 pub struct Approvals {
     requests: UnboundedSender<Pending>,
-    waiting: Mutex<HashMap<PermissionId, oneshot::Sender<PermissionAnswer>>>,
+    waiting: Mutex<HashMap<PermissionId, oneshot::Sender<(PermissionAnswer, Option<String>)>>>,
     next: AtomicU64,
 }
 
@@ -83,14 +85,14 @@ impl Approvals {
     /// Deliver a person's answer. Answering an unknown or already-answered
     /// request is ignored rather than an error: a second keypress on a prompt
     /// that has just been withdrawn is not a mistake worth reporting.
-    pub fn answer(&self, id: &PermissionId, answer: PermissionAnswer) {
+    pub fn answer(&self, id: &PermissionId, answer: PermissionAnswer, note: Option<String>) {
         let responder = self
             .waiting
             .lock()
             .ok()
             .and_then(|mut waiting| waiting.remove(id));
         if let Some(responder) = responder {
-            let _ = responder.send(answer);
+            let _ = responder.send((answer, note));
         }
     }
 
@@ -103,7 +105,7 @@ impl Approvals {
             return;
         };
         for (_, responder) in waiting.drain() {
-            let _ = responder.send(PermissionAnswer::Deny);
+            let _ = responder.send((PermissionAnswer::Deny, None));
         }
     }
 }
@@ -134,10 +136,14 @@ impl ApprovalReviewContributor for Approvals {
             // No answer means the surface went away. Abstaining rather than
             // allowing leaves the engine's own default — denial — in charge.
             match answer.await.ok()? {
-                PermissionAnswer::Allow => Some(ApprovalDecision::Allow),
-                PermissionAnswer::AllowAlways => Some(ApprovalDecision::AllowAlways),
-                PermissionAnswer::Deny => Some(ApprovalDecision::Deny {
-                    reason: "declined".to_string(),
+                (PermissionAnswer::Allow, note) => Some(ApprovalDecision::Allow { note }),
+                (PermissionAnswer::AllowAlways, _) => Some(ApprovalDecision::AllowAlways),
+                // What the person said *is* the refusal, when they said
+                // anything: the reason reaches the model as the tool's result,
+                // so "declined" is the answer only for someone who declined
+                // without a word.
+                (PermissionAnswer::Deny, note) => Some(ApprovalDecision::Deny {
+                    reason: note.unwrap_or_else(|| "declined".to_string()),
                 }),
             }
         })
@@ -163,6 +169,7 @@ enum Command {
 struct Switches {
     cancel: Box<dyn Fn() + Send + Sync>,
     approval: Arc<ApprovalSwitch>,
+    mode: Arc<SessionModeSwitch>,
     effort: Arc<EffortSwitch>,
     model: Arc<ModelSwitch>,
 }
@@ -186,6 +193,14 @@ pub struct LocalConversation {
     /// Held for the same reason again: a model change queued behind a running
     /// turn would take effect an answer too late.
     model: Mutex<Arc<ModelSwitch>>,
+    /// Held for the strongest version of that reason: a mode change queued
+    /// behind a running turn would arrive after the edits it was meant to
+    /// stop.
+    mode: Mutex<Arc<SessionModeSwitch>>,
+    /// So a mode change a surface makes comes back on the update stream the
+    /// same way one the agent made does — a surface draws from
+    /// [`Update::ModeChanged`] and must not have to special-case its own.
+    updates: UnboundedSender<Update>,
 }
 
 /// Start a session and hand back the conversation and its updates.
@@ -227,12 +242,15 @@ pub async fn local_with(
     let effort = session.effort_switch();
     let configured_effort = effort.get();
     let model_switch = session.model_switch();
+    let mode_switch = session.mode_switch();
+    let configured_mode = mode_switch.get();
     let model = session.model().to_string();
 
     let (updates, update_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(publish(turn_rx, requests, subagents, updates.clone()));
 
     let (commands, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let echo = updates.clone();
     tokio::spawn(async move {
         while let Some(command) = inbox.recv().await {
             match command {
@@ -257,7 +275,15 @@ pub async fn local_with(
                             approval: fresh.approval_switch(),
                             effort: fresh.effort_switch(),
                             model: fresh.model_switch(),
+                            mode: fresh.mode_switch(),
                         };
+                        // A rebuild shares the recipe's switch, so a session
+                        // that was planning would come back planning. Starting
+                        // over means starting over: the mode goes back to what
+                        // a fresh launch has, and the surface is told, because
+                        // nothing else would tell it.
+                        fresh.mode_switch().set(SessionMode::default());
+                        let _ = updates.send(Update::ModeChanged(SessionMode::default()));
                         session = fresh;
                         // `new_session` only swaps what a surface writes
                         // through; without this, nothing ever tells it the
@@ -281,6 +307,7 @@ pub async fn local_with(
         models: Vec::new(),
         effort: configured_effort,
         approval_policy: configured_approval,
+        mode: configured_mode,
         conversation: Arc::new(LocalConversation {
             commands,
             cancel: Mutex::new(Box::new(cancel)),
@@ -288,6 +315,8 @@ pub async fn local_with(
             approval: Mutex::new(approval),
             effort: Mutex::new(effort),
             model: Mutex::new(model_switch),
+            mode: Mutex::new(mode_switch),
+            updates: echo,
         }),
         updates: update_rx,
         // Whoever rebuilt the history is the one that has it; `local` only
@@ -381,8 +410,23 @@ impl Conversation for LocalConversation {
         self.approvals.withdraw_all();
     }
 
-    fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer) {
-        self.approvals.answer(id, answer);
+    fn respond_to_permission(
+        &self,
+        id: &PermissionId,
+        answer: PermissionAnswer,
+        note: Option<String>,
+    ) {
+        self.approvals.answer(id, answer, note);
+    }
+
+    fn set_session_mode(&self, mode: SessionMode) {
+        if let Ok(switch) = self.mode.lock() {
+            switch.set(mode);
+        }
+        // Echoed rather than assumed: what a surface draws comes from the
+        // update stream, so its own toggle and one the agent made arrive by
+        // the same route.
+        let _ = self.updates.send(Update::ModeChanged(mode));
     }
 
     fn set_approval_policy(&self, policy: ApprovalPolicy) {
@@ -430,6 +474,9 @@ impl Conversation for LocalConversation {
             if let Ok(mut model) = self.model.lock() {
                 *model = switches.model;
             }
+            if let Ok(mut mode) = self.mode.lock() {
+                *mode = switches.mode;
+            }
             Ok(())
         })
     }
@@ -476,7 +523,7 @@ mod tests {
             .await
             .expect("a request reaches the surface");
         assert_eq!(pending.call.name, "bash");
-        approvals.answer(&pending.id, PermissionAnswer::AllowAlways);
+        approvals.answer(&pending.id, PermissionAnswer::AllowAlways, None);
 
         assert_eq!(
             review.await.expect("join"),
@@ -496,7 +543,7 @@ mod tests {
         };
 
         let pending = requests.recv().await.expect("a request");
-        approvals.answer(&pending.id, PermissionAnswer::Deny);
+        approvals.answer(&pending.id, PermissionAnswer::Deny, None);
         assert!(matches!(
             review.await.expect("join"),
             Some(ApprovalDecision::Deny { .. })
@@ -537,6 +584,10 @@ mod tests {
     #[test]
     fn answering_an_unknown_prompt_is_ignored() {
         let (approvals, _requests) = approvals();
-        approvals.answer(&PermissionId("nope".to_string()), PermissionAnswer::Allow);
+        approvals.answer(
+            &PermissionId("nope".to_string()),
+            PermissionAnswer::Allow,
+            None,
+        );
     }
 }

@@ -25,6 +25,7 @@ use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectTo;
 use agent_client_protocol::Stdio;
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::SessionMode;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
 use keke_provider_api::ModelInfo;
@@ -146,6 +147,7 @@ fn answer_for(option_id: &str) -> PermissionAnswer {
 const MODEL: &str = "model";
 const REASONING_EFFORT: &str = "reasoning_effort";
 const APPROVAL_POLICY: &str = "approval_policy";
+const SESSION_MODE: &str = "session_mode";
 
 /// The value that means "no level; let the model decide".
 ///
@@ -193,6 +195,7 @@ struct Selected {
     model: String,
     effort: Option<ReasoningEffort>,
     approval_policy: ApprovalPolicy,
+    mode: SessionMode,
 }
 
 impl Entry {
@@ -207,6 +210,7 @@ impl Entry {
                 model: String::new(),
                 effort: None,
                 approval_policy: ApprovalPolicy::default(),
+                mode: SessionMode::default(),
             })
     }
 
@@ -251,6 +255,7 @@ fn enrol(
             model: opened.model.clone(),
             effort: opened.effort,
             approval_policy: opened.approval_policy,
+            mode: opened.mode,
         }),
         outcomes: tokio::sync::Mutex::new(outcomes),
     });
@@ -267,24 +272,35 @@ fn enrol(
 /// reject is worse than no menu.
 fn choices(entry: &Entry) -> Vec<Choice> {
     let selected = entry.selected();
-    let mut choices = vec![Choice {
-        id: APPROVAL_POLICY,
-        name: "Approval mode",
-        current: policy_value(selected.approval_policy).to_string(),
-        options: [
-            ApprovalPolicy::OnRequest,
-            ApprovalPolicy::OnFailure,
-            ApprovalPolicy::Never,
-        ]
-        .into_iter()
-        .map(|policy| {
-            (
-                policy_value(policy).to_string(),
-                policy_label(policy).to_string(),
-            )
-        })
-        .collect(),
-    }];
+    let mut choices = vec![
+        Choice {
+            id: SESSION_MODE,
+            name: "Session mode",
+            current: selected.mode.as_str().to_string(),
+            options: [SessionMode::Default, SessionMode::Plan]
+                .into_iter()
+                .map(|mode| (mode.as_str().to_string(), mode_label(mode).to_string()))
+                .collect(),
+        },
+        Choice {
+            id: APPROVAL_POLICY,
+            name: "Approval mode",
+            current: policy_value(selected.approval_policy).to_string(),
+            options: [
+                ApprovalPolicy::OnRequest,
+                ApprovalPolicy::OnFailure,
+                ApprovalPolicy::Never,
+            ]
+            .into_iter()
+            .map(|policy| {
+                (
+                    policy_value(policy).to_string(),
+                    policy_label(policy).to_string(),
+                )
+            })
+            .collect(),
+        },
+    ];
     if entry.models.is_empty() {
         return choices;
     }
@@ -330,6 +346,16 @@ fn policy_value(policy: ApprovalPolicy) -> &'static str {
     policy.as_str()
 }
 
+/// How a mode is written in a menu. A person picking here is choosing how the
+/// next turn behaves, not naming an internal state, so the labels say what
+/// happens rather than repeating the wire spelling.
+fn mode_label(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Default => "Normal",
+        SessionMode::Plan => "Plan first",
+    }
+}
+
 fn policy_label(policy: ApprovalPolicy) -> &'static str {
     match policy {
         ApprovalPolicy::OnRequest => "Ask for approval",
@@ -367,6 +393,20 @@ fn apply(entry: &Entry, config_id: &str, value: Option<String>) -> Result<Vec<Ch
             entry.conversation.set_approval_policy(policy);
             if let Ok(mut selected) = entry.selected.lock() {
                 selected.approval_policy = policy;
+            }
+            Ok(choices(entry))
+        }
+        SESSION_MODE => {
+            let wanted = value.ok_or_else(|| "no session mode named".to_string())?;
+            let mode = SessionMode::parse(&wanted)
+                .ok_or_else(|| "not a session mode this session offers".to_string())?;
+            entry.conversation.set_session_mode(mode);
+            // Asking for a mode is not the same as being in it — the agent
+            // confirms with `Update::ModeChanged` — but the client asked for
+            // this one, so a re-read must report what it asked for rather than
+            // the mode it was leaving.
+            if let Ok(mut selected) = entry.selected.lock() {
+                selected.mode = mode;
             }
             Ok(choices(entry))
         }
@@ -418,6 +458,19 @@ fn apply(entry: &Entry, config_id: &str, value: Option<String>) -> Result<Vec<Ch
     }
 }
 
+/// Record a mode the agent entered on its own, and describe the session again.
+///
+/// The pump calls this for an [`Update::ModeChanged`](crate::Update::ModeChanged)
+/// keke did not ask for: both protocol versions can push the whole option set
+/// to a client unprompted, and a `Selected` left behind would make the next
+/// read disagree with what the client was just told.
+fn note_mode(entry: &Entry, mode: SessionMode) -> Vec<Choice> {
+    if let Ok(mut selected) = entry.selected.lock() {
+        selected.mode = mode;
+    }
+    choices(entry)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +506,7 @@ mod tests {
                     model,
                     effort: None,
                     approval_policy: ApprovalPolicy::default(),
+                    mode: SessionMode::default(),
                 }),
                 outcomes: tokio::sync::Mutex::new(outcomes),
             },
@@ -573,6 +627,84 @@ mod tests {
             "the client is handed the whole option set back so its picker follows"
         );
         assert_eq!(scripted.efforts(), vec![Some(ReasoningEffort::Ultra), None]);
+    }
+
+    /// A person picking "plan first" is asking the conversation for it; a
+    /// choice that only moved a local field would leave the session working
+    /// exactly as before.
+    #[test]
+    fn choosing_plan_mode_reaches_the_conversation() {
+        let (entry, scripted) = entry(vec![served("gpt-5.2", "GPT-5.2", &[])]);
+
+        let choices = apply(&entry, SESSION_MODE, Some("plan".to_string())).expect("offered");
+
+        assert_eq!(scripted.modes(), vec![SessionMode::Plan]);
+        assert_eq!(entry.selected().mode, SessionMode::Plan);
+        assert_eq!(
+            option(&choices, SESSION_MODE).map(|choice| choice.current.as_str()),
+            Some("plan"),
+            "the client is handed the option set back so its picker follows"
+        );
+    }
+
+    /// Invariant 8: a mode keke cannot enforce must not be silently accepted.
+    #[test]
+    fn a_mode_this_build_does_not_know_is_refused() {
+        let (entry, scripted) = entry(Vec::new());
+
+        assert!(apply(&entry, SESSION_MODE, Some("architect".to_string())).is_err());
+        assert!(apply(&entry, SESSION_MODE, None).is_err());
+        assert!(scripted.modes().is_empty());
+        assert_eq!(entry.selected().mode, SessionMode::Default);
+    }
+
+    /// A resumed session that was planning comes back planning, and the
+    /// picker must start on that rather than on the default.
+    #[test]
+    fn the_mode_option_reports_what_is_in_force() {
+        let (entry, _scripted) = entry(Vec::new());
+        if let Ok(mut selected) = entry.selected.lock() {
+            selected.mode = SessionMode::Plan;
+        }
+        let choices = choices(&entry);
+        let mode = option(&choices, SESSION_MODE).expect("a mode option");
+
+        assert_eq!(mode.current, "plan");
+        assert_eq!(
+            mode.options
+                .iter()
+                .map(|(value, _)| value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "plan"]
+        );
+    }
+
+    /// What a surface draws comes from `Update::ModeChanged`, so a mode the
+    /// agent left on its own must move `Selected` too — otherwise the client
+    /// is told one thing by the update stream and another by a later read.
+    #[test]
+    fn a_mode_the_agent_changed_itself_is_what_a_re_read_reports() {
+        let (entry, scripted) = entry(Vec::new());
+
+        let choices = note_mode(&entry, SessionMode::Plan);
+
+        assert_eq!(entry.selected().mode, SessionMode::Plan);
+        assert_eq!(
+            option(&choices, SESSION_MODE).map(|choice| choice.current.as_str()),
+            Some("plan")
+        );
+        assert!(
+            scripted.modes().is_empty(),
+            "the agent already made the change; echoing it back would be a loop"
+        );
+    }
+
+    /// The mode is not the provider's to serve, so it is offered whatever the
+    /// model list came back as.
+    #[test]
+    fn the_mode_is_offered_even_when_no_model_could_be_listed() {
+        let (entry, _scripted) = entry(Vec::new());
+        assert!(option(&choices(&entry), SESSION_MODE).is_some());
     }
 
     /// Offering a model choice keke cannot honour puts the refusal after the

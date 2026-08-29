@@ -108,7 +108,24 @@ same code path as the in-process one.
 Compiled-in crates that register through tier 0 traits:
 `keke-provider-grok`, `keke-provider-codex`, `keke-auth-grok`,
 `keke-auth-codex`, `keke-tools`, `keke-mcp`, `keke-hooks`, `keke-skills`,
-`keke-plugin`.
+`keke-plugin`, `keke-plan`.
+
+`keke-plan` is the worked example of the split the engine is built around.
+`keke-core` carries one bit — `SessionModeSwitch`, is this session planning? —
+and `keke-plan` carries what that *means*: the lifecycle, the reminders the
+model reads, the guard that refuses edits outside the plan file, the reviewer
+that waves the plan file itself through, and `enter_plan_mode` /
+`exit_plan_mode`. The switch is authoritative for the coarse bit and the
+extension's finer tracker reconciles *to* it at a turn boundary, so a person's
+toggle and the extension's own transitions are one fact rather than two that can
+disagree. A deployment wanting a different planning discipline replaces the
+crate and changes no engine code.
+
+Two consequences are deliberate. Plan mode blocks the *edit* tools and not
+`bash`, because a planning agent still has to run `cargo check` and `git log` to
+write a plan worth approving. And the guard passes a write to the plan file
+through rather than allowing it — guards may only deny — so the approval
+reviewer is what auto-approves it, in that order.
 
 ### Tier 3 — surfaces
 

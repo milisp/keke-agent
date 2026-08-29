@@ -65,6 +65,12 @@ pub struct Config {
     pub home: HomeLayout,
     pub model: ModelSelection,
     pub approval_policy: ApprovalPolicy,
+    /// Whether leaving plan mode needs a person's answer even where the
+    /// approval policy would not ask. Off by default, matching the policy: a
+    /// deployment that turned approvals off has said it does not want to be
+    /// asked, and plan mode still refuses edits either way — only the exit
+    /// stops being a question.
+    pub require_plan_approval: bool,
     pub sandbox_mode: SandboxMode,
     pub max_output_tokens: MaxOutputTokens,
     /// How hard the model is asked to think. `None` leaves each vendor's own
@@ -100,6 +106,7 @@ pub struct ConfigFile {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub approval_policy: Option<ApprovalPolicy>,
+    pub require_plan_approval: Option<bool>,
     pub sandbox_mode: Option<SandboxMode>,
     pub max_output_tokens: Option<u32>,
     /// Read as a string rather than as the enum so a misspelled level names
@@ -187,6 +194,10 @@ impl Config {
             merged.provider = layer.file.provider.clone().or(merged.provider);
             merged.model = layer.file.model.clone().or(merged.model);
             merged.approval_policy = layer.file.approval_policy.or(merged.approval_policy);
+            merged.require_plan_approval = layer
+                .file
+                .require_plan_approval
+                .or(merged.require_plan_approval);
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
             merged.max_output_tokens = layer.file.max_output_tokens.or(merged.max_output_tokens);
             merged.reasoning_effort = layer
@@ -369,6 +380,7 @@ impl Config {
             home,
             model,
             approval_policy: merged.approval_policy.unwrap_or_default(),
+            require_plan_approval: merged.require_plan_approval.unwrap_or(false),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
             max_output_tokens,
             reasoning_effort,

@@ -133,6 +133,15 @@ impl EditorSessions {
             self.config.model_catalog_ttl,
             self.config.subagents,
             Some(Arc::clone(&approvals)),
+            // One switch per session, made here because this is where a
+            // session is: an ACP client opens several, and they plan
+            // independently.
+            Some(crate::compose::PlanSetup::for_session(
+                &self.config.home.home,
+                &cwd,
+                Arc::new(keke_core::SessionModeSwitch::default()),
+                self.config.require_plan_approval,
+            )),
         )?;
         // What the session was last talking to wins over the server's config
         // default: a client reopening a session means to continue it, not to
@@ -190,6 +199,8 @@ impl keke_acp::SessionFactory for EditorSessions {
             self.config.plugins,
             self.config.model_catalog_ttl,
             self.config.subagents,
+            None,
+            // Not a session: nothing to plan in, so nothing to install.
             None,
         ) else {
             return Vec::new();
@@ -280,6 +291,7 @@ impl keke_acp::SessionFactory for EditorSessions {
                 self.config.plugins,
                 self.config.model_catalog_ttl,
                 self.config.subagents,
+                None,
                 None,
             )
             .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;

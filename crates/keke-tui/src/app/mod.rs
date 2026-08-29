@@ -7,6 +7,7 @@
 mod commands;
 mod completion;
 mod picker_overlay;
+pub(crate) mod plan;
 mod session;
 mod subagents;
 
@@ -86,7 +87,20 @@ pub struct App {
     /// The model or provider overlay, while one is open. `None` is the
     /// ordinary state: the composer has the keyboard.
     picker: Option<crate::picker::Picker>,
+    /// What is being done to the plan in the scrollback, while one is waiting
+    /// for an answer: which lines are selected, what has been said about them,
+    /// and which policy would carry it out. The plan itself is a cell like any
+    /// other; this is only the reading of it.
+    plan: Option<plan::PlanReview>,
+    /// Set by `/view-plan`, cleared by the frame that acts on it: bring the
+    /// last plan back on screen. A flag rather than a scroll because only the
+    /// frame knows which line the plan came out on.
+    show_last_plan: bool,
     approval: ApprovalPolicy,
+    /// Whether the session is planning. Held rather than derived because the
+    /// agent can enter and leave plan mode on its own, so the only truthful
+    /// source is what the seam last said.
+    mode: keke_config_types::SessionMode,
     /// How hard the model is asked to think. `None` is the vendor's own
     /// default, which is a state of its own and not the lowest rung.
     effort: Option<ReasoningEffort>,
@@ -163,6 +177,10 @@ pub struct App {
     /// Text waiting to go to the clipboard. Held rather than written here so
     /// the state tests never touch a terminal.
     pending_copy: Option<String>,
+    /// A plan file waiting to be opened in the person's editor. Held rather
+    /// than spawned here for the same reason as `pending_copy`: only the
+    /// event loop owns the terminal's raw mode, so only it can suspend it.
+    pending_edit: Option<std::path::PathBuf>,
     /// Drag-select over the transcript, since a captured mouse is one the
     /// terminal can no longer select with.
     pub(crate) selection: crate::selection::Selection,
@@ -197,7 +215,10 @@ impl App {
                 history: PromptHistory::default(),
                 completion: 0,
                 picker: None,
+                plan: None,
+                show_last_plan: false,
                 approval: ApprovalPolicy::default(),
+                mode: keke_config_types::SessionMode::default(),
                 effort: None,
                 model: String::new(),
                 provider: None,
@@ -220,6 +241,7 @@ impl App {
                 subagent_detail: None,
                 flash: None,
                 pending_copy: None,
+                pending_edit: None,
                 selection: crate::selection::Selection::default(),
                 should_quit: false,
                 config_home: None,
@@ -287,6 +309,13 @@ impl App {
     /// The mode the session was started in. The surface shows it and cycles it
     /// from here on; the session is told through the seam.
     #[must_use]
+    pub fn with_session_mode(mut self, mode: keke_config_types::SessionMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// The approval policy the session was started under.
+    #[must_use]
     pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Self {
         self.approval = policy;
         self
@@ -352,6 +381,11 @@ impl App {
 
     pub fn approval_policy(&self) -> ApprovalPolicy {
         self.approval
+    }
+
+    #[must_use]
+    pub fn session_mode(&self) -> keke_config_types::SessionMode {
+        self.mode
     }
 
     pub fn turn(&self) -> Turn {
@@ -460,6 +494,9 @@ impl App {
                 self.begin_turn();
                 self.transcript.seal();
             }
+            Update::ModeChanged(mode) => {
+                self.mode = mode;
+            }
             Update::TextDelta(text) => {
                 self.begin_turn();
                 self.thinking = false;
@@ -490,7 +527,13 @@ impl App {
             }
             Update::PermissionRequested { id, call, reason } => {
                 self.turn = Turn::AwaitingPermission;
-                self.transcript.request_permission(id, &call, reason);
+                // A plan is not a tool prompt with a plan attached: it is the
+                // plan, so it goes into the scrollback as one.
+                if call.name == plan::EXIT_PLAN_MODE {
+                    self.open_plan_review(id, &call);
+                } else {
+                    self.transcript.request_permission(id, &call, reason);
+                }
             }
             Update::TurnEnded(reason) => {
                 self.end_turn();
@@ -630,18 +673,26 @@ impl App {
 
     /// Answer the prompt currently blocking the turn.
     pub fn answer_permission(&mut self, answer: PermissionAnswer) {
+        self.answer_permission_with_note(answer, None);
+    }
+
+    /// Answer, saying something about it.
+    ///
+    /// The note rides with the answer rather than following as a prompt: the
+    /// turn is parked on this question, so a prompt sent now would be queued
+    /// behind the rest of the turn and arrive after the work it was meant to
+    /// shape.
+    pub fn answer_permission_with_note(&mut self, answer: PermissionAnswer, note: Option<String>) {
         let Some(id) = self.open_permission_id() else {
             return;
         };
-        self.conversation.respond_to_permission(&id, answer);
+        self.conversation.respond_to_permission(&id, answer, note);
         self.transcript.answer_permission(&id, answer);
         // Denial ends nothing by itself: the agent decides what to do next.
         self.turn = Turn::Running;
     }
 
     pub fn open_permission_id(&self) -> Option<PermissionId> {
-        self.transcript
-            .open_permission()
-            .map(|prompt| prompt.id.clone())
+        self.transcript.open_permission_id()
     }
 }

@@ -269,7 +269,7 @@ async fn a_call_needing_approval_reaches_the_surface_and_the_answer_reaches_the_
             assert!(!reason.is_empty(), "a prompt must say why");
             started
                 .conversation
-                .respond_to_permission(id, PermissionAnswer::Allow);
+                .respond_to_permission(id, PermissionAnswer::Allow, None);
         }
         let last = matches!(update, Update::TurnEnded(_) | Update::Failed(_));
         seen.push(update);
@@ -317,7 +317,7 @@ async fn denying_refuses_the_call_without_ending_the_conversation() {
             Update::PermissionRequested { id, .. } => {
                 started
                     .conversation
-                    .respond_to_permission(id, PermissionAnswer::Deny);
+                    .respond_to_permission(id, PermissionAnswer::Deny, None);
             }
             Update::ToolCallEnded(result) => status = Some(result.status),
             Update::TurnEnded(_) | Update::Failed(_) => break,

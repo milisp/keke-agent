@@ -25,6 +25,7 @@ mod transcript;
 
 use std::io;
 use std::io::Write;
+use std::process::Command;
 use std::sync::Arc;
 
 use crossterm::event::DisableBracketedPaste;
@@ -108,6 +109,9 @@ pub struct Resumed {
 /// only ever handed to `run` together.
 pub struct SessionDefaults {
     pub approval: keke_config_types::ApprovalPolicy,
+    /// The mode the session opened in, so a resumed session that was planning
+    /// comes back with the flag already up.
+    pub mode: keke_config_types::SessionMode,
     pub effort: Option<keke_config_types::ReasoningEffort>,
     /// `$KEKE_HOME`, so `/model` and `/effort` persist past this
     /// process.
@@ -153,6 +157,7 @@ pub async fn run(
         .with_notices(notices)
         .with_commands(commands)
         .with_approval_policy(defaults.approval)
+        .with_session_mode(defaults.mode)
         .with_reasoning_effort(defaults.effort)
         .with_models(models.provider, models.current, models.available)
         .with_provider_routes(models.routes)
@@ -227,6 +232,32 @@ fn leave(terminal: &mut Tui) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Suspend keke's screen, run `vim` on `path` in the foreground, and put the
+/// screen back — whether or not vim could be launched. A person who presses
+/// `e` on a plan wants a real editor, with its own keybindings and its own
+/// scrollback, not a pane keke drew a text box into.
+fn edit_in_terminal(
+    terminal: &mut Tui,
+    mouse_capture: bool,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    leave(terminal)?;
+    let status = Command::new("vim").arg(path).status();
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    set_mouse_capture(&mut stdout, mouse_capture)?;
+    stdout.write_all(ALTERNATE_SCROLL_ON.as_bytes())?;
+    stdout.flush()?;
+    // vim drew its own frames over keke's; nothing on screen is trustworthy
+    // until the next full draw, so the backend must not diff against it.
+    terminal.clear()?;
+    if let Err(error) = status {
+        tracing::warn!(%error, "could not launch vim");
+    }
+    Ok(())
+}
+
 /// How often the status bar's clock is redrawn while a turn runs.
 ///
 /// Under a second so the number never appears to skip one, and only while a
@@ -276,6 +307,9 @@ async fn event_loop(
         // terminal's, and the terminal is the event loop's.
         if let Some(text) = app.take_pending_copy() {
             clipboard::copy(&text);
+        }
+        if let Some(path) = app.take_pending_edit() {
+            edit_in_terminal(terminal, capturing, &path)?;
         }
         if app.mouse_capture() != capturing {
             capturing = app.mouse_capture();

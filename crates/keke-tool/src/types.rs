@@ -56,10 +56,39 @@ impl ToolKind {
     }
 }
 
+/// Whether the approval policy gets to decide about this tool.
+///
+/// Almost every tool is [`Self::ByPolicy`]: what it does decides whether a
+/// person is asked, and a deployment that turned approvals off has said it
+/// does not want to be. A few tools are the exception because *asking is what
+/// they are for* — a tool that exists to put a decision in front of a person
+/// has done nothing if the policy answers for them.
+///
+/// This is not a way to be stricter than the policy in general. It is a way for
+/// a tool to say that a policy answering on a person's behalf would make the
+/// call meaningless, which is a property of the tool rather than of the
+/// deployment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApprovalRequirement {
+    /// The policy and the tool's kind decide, as usual.
+    #[default]
+    ByPolicy,
+    /// A person is asked whatever the policy says, and a standing "allow
+    /// always" does not answer for them either.
+    ///
+    /// Safe where there is nobody to ask: an unanswerable request is denied
+    /// with a reason, never left hanging.
+    Always,
+}
+
 /// Static facts about a tool, read before it runs.
 #[derive(Clone, Debug)]
 pub struct ToolCapabilities {
     pub kind: ToolKind,
+    /// Whether the approval policy may answer for a person here. Defaults to
+    /// [`ApprovalRequirement::ByPolicy`], which is right for every tool that
+    /// does not exist to ask a question.
+    pub approval: ApprovalRequirement,
     /// Whether this call may run in parallel with other tool calls in the same
     /// step. Defaults to the kind's read-only-ness, which is the safe answer.
     pub concurrency_safe: bool,
@@ -79,6 +108,7 @@ impl Default for ToolCapabilities {
     fn default() -> Self {
         Self {
             kind: ToolKind::Meta,
+            approval: ApprovalRequirement::ByPolicy,
             concurrency_safe: true,
             timeout_millis: None,
         }
@@ -90,9 +120,18 @@ impl ToolCapabilities {
     pub fn of_kind(kind: ToolKind) -> Self {
         Self {
             kind,
+            approval: ApprovalRequirement::ByPolicy,
             concurrency_safe: kind.is_read_only(),
             timeout_millis: None,
         }
+    }
+
+    /// The same capabilities, but a person is asked every time. For a tool
+    /// whose call *is* the question — see [`ApprovalRequirement::Always`].
+    #[must_use]
+    pub fn always_asks(mut self) -> Self {
+        self.approval = ApprovalRequirement::Always;
+        self
     }
 }
 

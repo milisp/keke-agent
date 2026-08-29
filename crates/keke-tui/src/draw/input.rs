@@ -39,10 +39,21 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Style::new().fg(Color::DarkGray)
     };
+    // While a plan is being commented on, the box says which lines the words
+    // are about: it is the only thing on screen that does, and a comment
+    // attached to the wrong lines is worse than no comment.
+    let plan_title = app.plan_comment_label();
+    // Plan mode is said here as well as in the status bar: a person types into
+    // this box, and what they send while planning is answered with a plan
+    // rather than with work.
     let title = if blocked {
-        " answer the prompt above "
+        " answer the prompt above ".to_string()
+    } else if let Some(label) = plan_title {
+        label
+    } else if app.session_mode().is_plan() {
+        " message \u{2014} plan mode, the agent plans before it builds ".to_string()
     } else {
-        " message "
+        " message ".to_string()
     };
     let block = Block::default()
         .borders(Borders::ALL)
