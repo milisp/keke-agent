@@ -229,10 +229,13 @@ impl App {
     /// Approve the plan: the agent may start building, under the policy the
     /// chosen row carries.
     ///
-    /// The mode is not cleared here. Plan mode ends when the agent says it has
-    /// ended, over [`keke_acp::Update::ModeChanged`] — a surface that turned
-    /// its own flag off on approval would be drawing an outcome it had only
-    /// asked for.
+    /// `exit_plan_mode` is the agent asking whether it may leave plan mode;
+    /// approving it is the answer. Requesting the mode change here — the same
+    /// way [`Self::quit_plan`] does when the plan is dropped instead — rather
+    /// than waiting on the agent to echo it back over
+    /// [`keke_acp::Update::ModeChanged`] keeps the status bar from sitting on
+    /// `plan` after a person has already answered; a late `ModeChanged` from
+    /// the agent after this only repeats what was already asked for.
     fn approve_plan_with(&mut self, policy: ApprovalPolicy) {
         // Plan mode is the tightest rung of the strictness ladder, so leaving
         // it is the moment a person decides how much of the plan may happen
@@ -241,6 +244,7 @@ impl App {
         self.set_approval_policy_aloud(policy);
         self.answer_permission_with_note(PermissionAnswer::Allow, None);
         self.plan = None;
+        self.request_session_mode(keke_config_types::SessionMode::Default);
     }
 
     /// Send the agent back to planning, with whatever was said about the plan.

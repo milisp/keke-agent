@@ -935,9 +935,10 @@ async fn approving_the_plan_allows_the_call_and_telling_keke_denies_it() {
             None
         )]
     );
-    // Plan mode ends when the agent says it has, not because this surface
-    // approved: nothing was asked for over the seam here.
-    assert!(scripted.modes().is_empty());
+    // Approving is the person's answer to "may I leave plan mode" — the same
+    // request quitting makes — so it asks for the mode change immediately
+    // rather than waiting on the agent to echo it back.
+    assert_eq!(scripted.modes(), vec![SessionMode::Default]);
 
     app.apply(exit_plan_mode("do the other thing"));
     app.handle_key(key(KeyCode::Down));

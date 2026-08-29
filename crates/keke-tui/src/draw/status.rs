@@ -44,7 +44,13 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     // flag drawn from a local toggle would keep saying `plan` after it left.
     // Reversed rather than coloured, because it is the one flag here that
     // changes what the agent may do at all.
-    if app.session_mode().is_plan() {
+    //
+    // The policy line below shares this same flag rather than computing its
+    // own: the two must never disagree about whether a plan is showing, or a
+    // person reads both "plan" and a policy at once and has to guess which
+    // one is true.
+    let in_plan = app.session_mode().is_plan();
+    if in_plan {
         spans.push(Span::styled(
             "· plan ",
             Style::new()
@@ -59,7 +65,7 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     // runs until the plan is approved, and the policy that will govern the
     // work is the one chosen at approval, not the one standing now. Drawing it
     // here would answer a question a person has not been asked yet.
-    if !app.session_mode().is_plan() {
+    if !in_plan {
         let policy = app.approval_policy();
         spans.push(Span::styled(
             format!("· {} ", crate::slash::policy_name(policy)),
