@@ -59,6 +59,58 @@ impl ApprovalPolicy {
     }
 }
 
+/// What kind of turn the session is running.
+///
+/// Distinct from [`ApprovalPolicy`], which says *when to ask*. This says *what
+/// the agent is for* right now: in [`SessionMode::Plan`] the agent is
+/// researching and writing a proposal, so edits are refused outright rather
+/// than queued behind a prompt a person could wave through. The two compose —
+/// a session can be in plan mode under any policy, and always-approve stays
+/// armed underneath for everything plan mode does not block.
+///
+/// Carried on the seam rather than in startup configuration because a person
+/// switches it mid-conversation, about the work in front of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    /// No plan-mode constraints.
+    #[default]
+    Default,
+    /// Read-only except for the plan file, until a person approves the plan.
+    Plan,
+}
+
+impl SessionMode {
+    /// The wire spelling, for anywhere outside a `serde` path — the session log
+    /// included, which is written and read by `keke-core` through
+    /// `keke-protocol`, a crate ranked below this one that cannot name this
+    /// type directly.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`]. `None` for anything else, including a
+    /// spelling from a future build this one does not know — a mode keke cannot
+    /// enforce must not be silently treated as one it can.
+    #[must_use]
+    pub fn parse(wire: &str) -> Option<Self> {
+        match wire {
+            "default" => Some(Self::Default),
+            "plan" => Some(Self::Plan),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_plan(self) -> bool {
+        matches!(self, Self::Plan)
+    }
+}
+
 /// How tightly spawned processes are confined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

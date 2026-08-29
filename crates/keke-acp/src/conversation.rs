@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::SessionMode;
 use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
@@ -77,6 +78,12 @@ pub enum Update {
     Subagents(Vec<SubagentView>),
     /// The turn failed. The conversation stays usable.
     Failed(String),
+    /// The session mode changed without the surface asking — the agent
+    /// entered plan mode itself, or a plan was approved and it left again.
+    ///
+    /// A surface that only tracked its own toggle would keep drawing `plan`
+    /// after the agent had already been let out of it.
+    ModeChanged(SessionMode),
     /// [`Conversation::new_session`] finished: history and usage are gone,
     /// and whatever the surface shows for either should go back to nothing.
     SessionReset,
@@ -127,6 +134,9 @@ pub struct Opened {
     /// The approval policy this session was configured with, so a client's
     /// picker starts on what is in force rather than on a guess.
     pub approval_policy: ApprovalPolicy,
+    /// The mode this session was configured with, for the same reason. A
+    /// resumed session that was planning comes back planning.
+    pub mode: SessionMode,
     pub conversation: Arc<dyn Conversation>,
     pub updates: UnboundedReceiver<Update>,
     /// What the session was rebuilt from. Empty for a session that is new.
@@ -224,6 +234,19 @@ pub trait Conversation: Send + Sync {
     /// make it whatever the agent is attached to.
     fn set_approval_policy(&self, policy: ApprovalPolicy);
 
+    /// Turn plan mode on or off.
+    ///
+    /// On the seam for the same reason [`Self::set_approval_policy`] is: a
+    /// person asking to plan first is answering about the work in front of
+    /// them, and every surface must be able to ask for it whatever the agent
+    /// is attached to.
+    ///
+    /// Asking for a mode is not the same as being in it. The agent may only
+    /// be able to act on it at the next turn boundary, and it may leave the
+    /// mode on its own — so what a surface *draws* comes from
+    /// [`Update::ModeChanged`], never from the fact that it made this call.
+    fn set_session_mode(&self, mode: SessionMode);
+
     /// Change how hard the model is asked to think.
     ///
     /// On the seam for the same reason the approval policy is: the level is a
@@ -265,6 +288,7 @@ pub struct ScriptedConversation {
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
     efforts: Arc<Mutex<Vec<Option<ReasoningEffort>>>>,
     models: Arc<Mutex<Vec<String>>>,
+    modes: Arc<Mutex<Vec<SessionMode>>>,
     new_sessions: Arc<Mutex<usize>>,
 }
 
@@ -283,6 +307,7 @@ impl ScriptedConversation {
                 policies: Arc::new(Mutex::new(Vec::new())),
                 efforts: Arc::new(Mutex::new(Vec::new())),
                 models: Arc::new(Mutex::new(Vec::new())),
+                modes: Arc::new(Mutex::new(Vec::new())),
                 new_sessions: Arc::new(Mutex::new(0)),
             },
             receiver,
@@ -307,6 +332,15 @@ impl ScriptedConversation {
     #[must_use]
     pub fn answers(&self) -> Vec<(PermissionId, PermissionAnswer)> {
         self.answers
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every mode the surface has asked for, in order.
+    #[must_use]
+    pub fn modes(&self) -> Vec<SessionMode> {
+        self.modes
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -382,6 +416,13 @@ impl Conversation for ScriptedConversation {
         if let Ok(mut seen) = self.answers.lock() {
             seen.push((id.clone(), answer));
         }
+    }
+
+    fn set_session_mode(&self, mode: SessionMode) {
+        if let Ok(mut seen) = self.modes.lock() {
+            seen.push(mode);
+        }
+        let _ = self.updates.send(Update::ModeChanged(mode));
     }
 
     fn set_approval_policy(&self, policy: ApprovalPolicy) {

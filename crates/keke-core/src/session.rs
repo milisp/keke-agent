@@ -109,6 +109,10 @@ pub struct Session {
     pub(crate) effort: Arc<crate::EffortSwitch>,
     /// The live model, kept beside the config for the same reason.
     pub(crate) model: Arc<crate::ModelSwitch>,
+    /// The live session mode, kept beside the config for the same reason. Held
+    /// by the engine and by whatever extension enforces the mode, which is why
+    /// it can be supplied to the builder rather than only created by it.
+    pub(crate) mode: Arc<crate::SessionModeSwitch>,
     flag: Arc<AtomicBool>,
 }
 
@@ -229,6 +233,19 @@ impl Session {
         Arc::clone(&self.approval)
     }
 
+    /// A handle to the live session mode — the counterpart of
+    /// [`Session::approval_switch`], and the one a surface writes through to
+    /// turn plan mode on without restarting the session.
+    #[must_use]
+    pub fn mode_switch(&self) -> Arc<crate::SessionModeSwitch> {
+        Arc::clone(&self.mode)
+    }
+
+    #[must_use]
+    pub fn session_mode(&self) -> keke_config_types::SessionMode {
+        self.mode.get()
+    }
+
     /// Clear the abort flag so the session can take another turn.
     pub fn reset_cancellation(&self) {
         self.flag.store(false, Ordering::SeqCst);
@@ -262,6 +279,7 @@ pub struct SessionBuilder {
     updates: Option<tokio::sync::mpsc::UnboundedSender<TurnUpdate>>,
     resume: Option<Resumed>,
     parent: Option<SessionId>,
+    mode: Option<Arc<crate::SessionModeSwitch>>,
 }
 
 /// The session a build continues instead of starting.
@@ -286,6 +304,25 @@ impl SessionBuilder {
     #[must_use]
     pub fn provider(mut self, provider: ArcProvider) -> Self {
         self.provider = Some(provider);
+        self
+    }
+
+    /// Share the session-mode switch with whoever enforces the mode.
+    ///
+    /// Supplied rather than only created here because the extension that
+    /// enforces plan mode and the session that reports it must be looking at
+    /// the same cell — two copies would let a surface say "planning" while the
+    /// guards had already stopped. A build given none makes its own, so a
+    /// session with no plan-mode extension installed still answers the
+    /// question.
+    ///
+    /// Kept across a rebuild from the same recipe, because the extension
+    /// registry is too: whoever rebuilds decides what a fresh session's mode
+    /// should be, since only they know whether the rebuild is a person asking
+    /// to start over.
+    #[must_use]
+    pub fn mode_switch(mut self, mode: Arc<crate::SessionModeSwitch>) -> Self {
+        self.mode = Some(mode);
         self
     }
 
@@ -405,6 +442,7 @@ impl SessionBuilder {
             approval: Arc::new(crate::ApprovalSwitch::new(approval)),
             effort: Arc::new(crate::EffortSwitch::new(effort)),
             model,
+            mode: self.mode.unwrap_or_default(),
             flag,
         })
     }

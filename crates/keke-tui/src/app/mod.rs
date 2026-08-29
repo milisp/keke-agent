@@ -87,6 +87,10 @@ pub struct App {
     /// ordinary state: the composer has the keyboard.
     picker: Option<crate::picker::Picker>,
     approval: ApprovalPolicy,
+    /// Whether the session is planning. Held rather than derived because the
+    /// agent can enter and leave plan mode on its own, so the only truthful
+    /// source is what the seam last said.
+    mode: keke_config_types::SessionMode,
     /// How hard the model is asked to think. `None` is the vendor's own
     /// default, which is a state of its own and not the lowest rung.
     effort: Option<ReasoningEffort>,
@@ -198,6 +202,7 @@ impl App {
                 completion: 0,
                 picker: None,
                 approval: ApprovalPolicy::default(),
+                mode: keke_config_types::SessionMode::default(),
                 effort: None,
                 model: String::new(),
                 provider: None,
@@ -287,6 +292,13 @@ impl App {
     /// The mode the session was started in. The surface shows it and cycles it
     /// from here on; the session is told through the seam.
     #[must_use]
+    pub fn with_session_mode(mut self, mode: keke_config_types::SessionMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// The approval policy the session was started under.
+    #[must_use]
     pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Self {
         self.approval = policy;
         self
@@ -352,6 +364,11 @@ impl App {
 
     pub fn approval_policy(&self) -> ApprovalPolicy {
         self.approval
+    }
+
+    #[must_use]
+    pub fn session_mode(&self) -> keke_config_types::SessionMode {
+        self.mode
     }
 
     pub fn turn(&self) -> Turn {
@@ -459,6 +476,9 @@ impl App {
             Update::TurnStarted => {
                 self.begin_turn();
                 self.transcript.seal();
+            }
+            Update::ModeChanged(mode) => {
+                self.mode = mode;
             }
             Update::TextDelta(text) => {
                 self.begin_turn();

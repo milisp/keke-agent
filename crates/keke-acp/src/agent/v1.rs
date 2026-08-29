@@ -451,6 +451,12 @@ async fn pump(
             // ACP has no place for token accounting today, and inventing a
             // message for it would be keke's dialect rather than the protocol.
             Update::TokensUsed(_) => {}
+            // A mode the agent changed on its own. Whether either protocol
+            // version can push a config-option change to a client without
+            // being asked is decided in `choices`; until it can, a client
+            // learns the new mode the next time it reads the session's
+            // options.
+            Update::ModeChanged(_) => {}
             Update::TextDelta(text) => {
                 notify(&cx, &id, SessionUpdate::AgentMessageChunk(chunk(text)))?;
             }
