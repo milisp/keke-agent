@@ -72,12 +72,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(turn_status::rows(app)),
             Constraint::Length(subagents::rows(app)),
             Constraint::Length(input::rows(app, frame.area().width)),
+            Constraint::Length(picker::rows(app, frame.area().height)),
             Constraint::Length(1),
         ])
         .split(frame.area());
 
-    let (header, body, menu, turn, agents, composer, footer) = (
-        areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6],
+    let (header, body, menu, turn, agents, composer, picker_area, footer) = (
+        areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7],
     );
 
     let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
@@ -128,8 +129,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     turn_status::draw(frame, turn, app);
     subagents::draw(frame, agents, app);
     header::draw(frame, header, app);
+    picker::draw(frame, picker_area, app);
     status::draw(frame, footer, app);
-    // Last: the overlay holds the keyboard, so nothing may be drawn over it.
-    picker::draw(frame, app);
+    // Last: the remaining overlay holds the keyboard, so nothing may be drawn over it.
     subagents::detail(frame, app);
 }

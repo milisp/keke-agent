@@ -1,8 +1,9 @@
-//! The floating model and provider overlay.
+//! The model / provider / MCP picker, docked between the composer and the
+//! status line.
 //!
-//! Drawn last and over everything, on a cleared rect: it has the keyboard, so
-//! it has to look like it does. Anything showing through it would read as
-//! still typeable.
+//! Same shape as the slash menu: a layout slot that collapses to zero when
+//! closed. It still holds the keyboard while open; it just no longer covers
+//! the transcript.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,17 +14,18 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
-use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
+use crate::picker::Picker;
 
-/// At most this many rows are on screen at once.
+/// At most this many rows are on screen at once, before the 50% height cap.
 const MAX_ROWS: usize = 12;
-/// How wide the box gets, and how narrow it may be squeezed before it is not
-/// worth drawing.
-const MAX_WIDTH: u16 = 72;
+/// How narrow the panel may be squeezed before it is not worth drawing.
 const MIN_WIDTH: u16 = 24;
+/// Filter line + two borders. A panel shorter than this plus one list row
+/// cannot be read.
+const CHROME: u16 = 3;
 
 /// One row as the overlay needs it: what a person reads, whatever else is
 /// worth saying about it, and whether it is the one in force. Built here
@@ -35,8 +37,8 @@ struct Row {
     detail: String,
 }
 
-pub(crate) fn draw(frame: &mut Frame, app: &App) {
-    let (picker, title, rows) = if let Some(picker) = app.model_picker() {
+fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
+    if let Some(picker) = app.model_picker() {
         let rows = app
             .picker_models()
             .into_iter()
@@ -52,12 +54,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
                 }
             })
             .collect::<Vec<_>>();
-        (
+        return Some((
             picker,
             " models \u{2014} type to filter, enter switches, esc cancels ",
             rows,
-        )
-    } else if let Some(picker) = app.provider_picker() {
+        ));
+    }
+    if let Some(picker) = app.provider_picker() {
         let rows = app
             .picker_providers()
             .into_iter()
@@ -67,12 +70,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
                 detail: route.route.clone(),
             })
             .collect::<Vec<_>>();
-        (
+        return Some((
             picker,
             " providers \u{2014} type to filter, enter switches, esc cancels ",
             rows,
-        )
-    } else if let Some(picker) = app.mcp_picker() {
+        ));
+    }
+    if let Some(picker) = app.mcp_picker() {
         let rows = app
             .picker_mcp()
             .into_iter()
@@ -101,32 +105,40 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
                 }
             })
             .collect::<Vec<_>>();
-        (
+        return Some((
             picker,
             " mcp servers \u{2014} type to filter, enter signs in, esc closes ",
             rows,
-        )
-    } else {
-        return;
-    };
-    let selected = app.picker_selected();
+        ));
+    }
+    None
+}
 
-    let area = frame.area();
-    let width = area.width.saturating_sub(4).min(MAX_WIDTH);
-    let rows_shown = u16::try_from(rows.len().clamp(1, MAX_ROWS)).unwrap_or(1);
-    // Rows, plus the filter line and the two borders.
-    let height = rows_shown + 3;
-    if width < MIN_WIDTH || area.height < height {
+/// How tall the picker is this frame, borders and filter line included.
+/// Zero when it is closed, or when the 50% cap would leave it unreadable.
+pub(crate) fn rows(app: &App, height: u16) -> u16 {
+    let Some((_, _, rows)) = content(app) else {
+        return 0;
+    };
+    let wanted = u16::try_from(rows.len().clamp(1, MAX_ROWS)).unwrap_or(1) + CHROME;
+    let capped = wanted.min(height / 2);
+    if capped < CHROME + 1 { 0 } else { capped }
+}
+
+pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 {
         return;
     }
-    let popup = Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 3,
-        width,
-        height,
+    let Some((picker, title, rows)) = content(app) else {
+        return;
     };
+    if area.width < MIN_WIDTH {
+        return;
+    }
+    let selected = app.picker_selected();
+    let visible = usize::from(area.height.saturating_sub(CHROME)).max(1);
+    let first = selected.saturating_sub(visible.saturating_sub(1));
 
-    let first = selected.saturating_sub(MAX_ROWS - 1);
     let mut lines = vec![Line::from(vec![
         Span::styled(" filter ", Style::new().fg(Color::DarkGray)),
         Span::styled(
@@ -142,7 +154,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
             Style::new().fg(Color::DarkGray),
         ));
     }
-    for (at, row) in rows.iter().enumerate().skip(first).take(MAX_ROWS) {
+    for (at, row) in rows.iter().enumerate().skip(first).take(visible) {
         let style = if at == selected {
             Style::new().fg(Color::Black).bg(Color::Cyan)
         } else {
@@ -170,6 +182,5 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::Cyan))
         .title(title);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
