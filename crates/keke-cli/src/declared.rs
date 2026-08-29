@@ -216,10 +216,14 @@ pub(crate) fn provider_for_cached(
     };
 
     let http = build_http_client(declaration)?;
-    let extra_headers = extra_headers(declaration)?;
+    let mut headers = openrouter_attribution_headers(&info.base_url);
+    for (name, value) in extra_headers(declaration)? {
+        headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
+        headers.push((name, value));
+    }
     let api = info.wire_api;
-    let client = WireClient::with_http_client(info.base_url.clone(), auth, http)
-        .with_extra_headers(extra_headers);
+    let client =
+        WireClient::with_http_client(info.base_url.clone(), auth, http).with_extra_headers(headers);
     Ok(Arc::new(DeclaredProvider {
         info,
         api,
@@ -274,6 +278,30 @@ fn build_http_client(
             route: declaration.route.clone(),
             error: error.to_string(),
         })
+}
+
+/// OpenRouter attributes usage to a caller by `HTTP-Referer` and `X-Title`,
+/// which is what makes a session show up under its own name on OpenRouter's
+/// rankings instead of as an anonymous request. Recognizing the well-known
+/// `openrouter.ai` host and defaulting these two headers means a person
+/// pointing keke at OpenRouter gets attribution without hand-writing
+/// `headers` for it; `extra_headers` still lets a declared `headers` entry
+/// override either name.
+fn openrouter_attribution_headers(base_url: &str) -> Vec<(String, String)> {
+    let is_openrouter = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "openrouter.ai");
+    if !is_openrouter {
+        return Vec::new();
+    }
+    vec![
+        (
+            "HTTP-Referer".to_string(),
+            "https://github.com/milisp/keke-agent".to_string(),
+        ),
+        ("X-Title".to_string(), "keke".to_string()),
+    ]
 }
 
 /// Resolve a declaration's custom headers, expanding an `env:VAR_NAME` value
@@ -377,6 +405,49 @@ mod tests {
             extra_headers(&declared),
             Err(DeclarationError::MissingHeaderEnv { .. })
         ));
+    }
+
+    #[test]
+    fn openrouter_gets_attribution_headers_by_default() {
+        let headers = openrouter_attribution_headers("https://openrouter.ai/api/v1");
+        assert_eq!(
+            headers,
+            vec![
+                (
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/milisp/keke-agent".to_string()
+                ),
+                ("X-Title".to_string(), "keke".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_non_openrouter_base_url_gets_no_attribution_headers() {
+        assert!(openrouter_attribution_headers("https://gateway.example/v1").is_empty());
+    }
+
+    #[test]
+    fn a_declared_header_overrides_the_openrouter_default() {
+        let declared = declaration(BTreeMap::from([(
+            "X-Title".to_string(),
+            "my-app".to_string(),
+        )]));
+        let mut headers = openrouter_attribution_headers("https://openrouter.ai/api/v1");
+        for (name, value) in extra_headers(&declared).expect("resolves") {
+            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
+            headers.push((name, value));
+        }
+        assert_eq!(
+            headers,
+            vec![
+                (
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/milisp/keke-agent".to_string()
+                ),
+                ("X-Title".to_string(), "my-app".to_string()),
+            ]
+        );
     }
 
     #[test]

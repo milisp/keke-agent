@@ -95,6 +95,47 @@ const LOCAL_PRESETS: &[(&str, &str, &str)] = &[
     ("vllm", "vLLM", "http://localhost:8000/v1"),
 ];
 
+/// Keyed gateways common enough that typing their address, wire format, and
+/// credential variable is friction rather than configuration.
+///
+/// Same deal as [`LOCAL_PRESETS`]: each one becomes an ordinary
+/// `[providers.*]` table, so a name not listed here is not a name keke
+/// refuses — it is just the three extra questions under "Something else",
+/// same as before this list existed. `(route, display name, base URL,
+/// suggested credential variable)`.
+const KEYED_PRESETS: &[(&str, &str, &str, &str)] = &[
+    (
+        "openrouter",
+        "OpenRouter",
+        "https://openrouter.ai/api/v1",
+        "OPENROUTER_API_KEY",
+    ),
+    (
+        "together",
+        "Together AI",
+        "https://api.together.xyz/v1",
+        "TOGETHER_API_KEY",
+    ),
+    (
+        "fireworks",
+        "Fireworks AI",
+        "https://api.fireworks.ai/inference/v1",
+        "FIREWORKS_API_KEY",
+    ),
+    (
+        "deepseek",
+        "DeepSeek",
+        "https://api.deepseek.com/v1",
+        "DEEPSEEK_API_KEY",
+    ),
+    (
+        "moonshot",
+        "Moonshot (Kimi)",
+        "https://api.moonshot.ai/v1",
+        "MOONSHOT_API_KEY",
+    ),
+];
+
 /// One route as the picker needs to describe it.
 struct Route {
     route: String,
@@ -475,6 +516,12 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
         .iter()
         .filter(|route| route.env_key.is_some())
         .collect();
+    // A preset already claimed by a compiled-in route (unlikely, but a plugin
+    // could add one) is not offered twice.
+    let presets: Vec<&(&str, &str, &str, &str)> = KEYED_PRESETS
+        .iter()
+        .filter(|(route, ..)| keyed.iter().all(|existing| existing.route != *route))
+        .collect();
 
     println!("\nWhich endpoint is the key for?\n");
     for (index, route) in keyed.iter().enumerate() {
@@ -486,14 +533,21 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
             route.route
         );
     }
+    for (index, (route, display_name, _, env_key)) in presets.iter().enumerate() {
+        println!(
+            "  {}) {display_name} ({route}) — {env_key}",
+            keyed.len() + index + 1
+        );
+    }
+    let other = keyed.len() + presets.len();
     // Always last, and always present: without it the list reads as the set of
     // endpoints keke supports, which is not what it is.
-    println!("  {}) Something else — any HTTP endpoint", keyed.len() + 1);
+    println!("  {}) Something else — any HTTP endpoint", other + 1);
     println!();
 
     let Some(index) = choose(
         "Choice",
-        keyed.len() + 1,
+        other + 1,
         &keyed
             .first()
             .map_or_else(|| "1".to_string(), |route| route.route.clone()),
@@ -503,7 +557,7 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
         return Ok(None);
     };
 
-    if index == keyed.len() {
+    if index == other {
         let Some(declared) = declare(routes, CredentialNeed::Required)? else {
             return Ok(None);
         };
@@ -520,6 +574,10 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
             route: declared.route.clone(),
             declaration: Some(declared),
         }));
+    }
+
+    if index >= keyed.len() {
+        return pick_keyed_preset(routes, composed, presets[index - keyed.len()]);
     }
 
     let route = keyed[index];
@@ -541,6 +599,61 @@ fn pick_key_endpoint(routes: &[Route], composed: &Composed) -> Result<Option<Pic
     Ok(Some(Picked {
         route: route.route.clone(),
         declaration: None,
+    }))
+}
+
+/// A keyed gateway from [`KEYED_PRESETS`]: everything but the key itself is
+/// already known, so this asks for exactly one thing rather than the four
+/// `declare` needs from a person naming an endpoint keke has never heard of.
+fn pick_keyed_preset(
+    routes: &[Route],
+    composed: &Composed,
+    &(route, display_name, base_url, env_key): &(&str, &str, &str, &str),
+) -> Result<Option<Picked>> {
+    // The preset's name can still be taken — by a declared route with the same
+    // name from an earlier run, or by a plugin's route — and two providers
+    // claiming one route is an error rather than a silent pick, so it is
+    // caught here while it can still be fixed.
+    let route = if routes.iter().any(|existing| existing.route == route) {
+        let Some(chosen) = ask("That name is taken; use", &format!("{route}-2")) else {
+            return Ok(None);
+        };
+        chosen
+    } else {
+        route.to_string()
+    };
+
+    let reference = CredentialRef::new(env_key.to_string())
+        .with_context(|| format!("the credential name for `{route}`"))?;
+    if composed
+        .credentials
+        .load(&reference)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        println!("\n{env_key} is already set — using it.");
+    } else if !store_key(composed, &reference, env_key)? {
+        return Ok(None);
+    }
+
+    Ok(Some(Picked {
+        route: route.clone(),
+        declaration: Some(ProviderDeclaration {
+            route,
+            kind: None,
+            account: None,
+            display_name: Some(display_name.to_string()),
+            base_url: Some(base_url.to_string()),
+            wire: Some(DeclaredWireApi::ChatCompletions),
+            env_key: Some(env_key.to_string()),
+            default_model: None,
+            ca_cert_path: None,
+            proxy: None,
+            proxy_username: None,
+            proxy_password_env_key: None,
+            headers: Default::default(),
+        }),
     }))
 }
 
@@ -812,5 +925,35 @@ mod tests {
         }
         assert_eq!(suggested_env_key("nvidia"), "NVIDIA_API_KEY");
         assert_eq!(suggested_env_key("my-gateway"), "MY_GATEWAY_API_KEY");
+    }
+
+    /// Every field a preset offers must actually work: a route name that
+    /// collides with nothing sensible, a base URL that parses, and a
+    /// credential variable the reference type accepts — anything else would
+    /// only surface once a person picked it.
+    #[test]
+    fn every_keyed_preset_is_internally_usable() {
+        for (route, display_name, base_url, env_key) in KEYED_PRESETS {
+            assert!(!route.is_empty() && !display_name.is_empty());
+            assert!(
+                reqwest::Url::parse(base_url).is_ok(),
+                "{route}'s base URL `{base_url}` does not parse"
+            );
+            assert!(
+                CredentialRef::new(env_key.to_string()).is_ok(),
+                "{route}'s suggested variable `{env_key}` is not a usable credential name"
+            );
+        }
+    }
+
+    /// Two presets naming the same route would make one of them unreachable
+    /// from the picker — whichever sorts first always wins the index.
+    #[test]
+    fn keyed_preset_routes_are_unique() {
+        let mut routes: Vec<&str> = KEYED_PRESETS.iter().map(|(route, ..)| *route).collect();
+        let before = routes.len();
+        routes.sort_unstable();
+        routes.dedup();
+        assert_eq!(routes.len(), before);
     }
 }
