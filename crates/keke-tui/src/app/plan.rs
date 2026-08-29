@@ -50,6 +50,10 @@ pub struct PlanReview {
     /// The lines the composer is currently writing a comment about. `None`
     /// means the composer holds freeform revision notes instead.
     commenting: Option<(usize, usize)>,
+    /// Where the plan was written, when it could be written at all. Shown to
+    /// the person: a plan they cannot find again is one they have to ask for
+    /// twice.
+    path: Option<std::path::PathBuf>,
     /// How this plan was answered, once it was. `Some` makes the review a
     /// record: it can be read and copied, never answered again.
     answered: Option<PermissionAnswer>,
@@ -67,6 +71,12 @@ impl PlanReview {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
+    }
+
+    /// The file this plan was written to, when it was.
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
     }
 
     #[must_use]
@@ -172,6 +182,35 @@ pub(crate) fn plan_text(call: &ToolCall) -> String {
     String::new()
 }
 
+/// The plan's own title, as a file name: the first markdown heading, or the
+/// first line that says anything, cut to something a directory listing can be
+/// read at a glance. A plan with no words in it at all is named for the moment
+/// it arrived, since that is the only thing left to tell it by.
+fn plan_slug(text: &str, now: chrono::DateTime<chrono::Local>) -> String {
+    let title = text
+        .lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let mut slug = String::new();
+    for ch in title.chars() {
+        if ch.is_alphanumeric() {
+            slug.extend(ch.to_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 60 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        now.format("plan-%Y%m%d-%H%M%S").to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
 impl App {
     /// The plan review, while one is open. `None` is the ordinary state.
     #[must_use]
@@ -186,8 +225,11 @@ impl App {
     }
 
     pub(super) fn open_plan_review(&mut self, call: &ToolCall) {
+        let text = plan_text(call);
+        let path = self.write_plan(&text);
         self.plan = Some(PlanReview {
-            text: plan_text(call),
+            path,
+            text,
             scroll: 0,
             cursor: 0,
             anchor: None,
@@ -196,6 +238,34 @@ impl App {
             commenting: None,
             answered: None,
         });
+    }
+
+    /// Write the plan under `$KEKE_HOME/plans`, and say where it went.
+    ///
+    /// A plan is a document a person reads, edits, and shows to somebody else,
+    /// and until now it lived only in this process — closing keke threw away
+    /// the one artifact of a planning session. Named for its own title rather
+    /// than for the session, so the directory reads as a list of what was
+    /// planned; a revised plan under the same title replaces its earlier
+    /// draft, which is what "the plan" means to the person who asked for it.
+    ///
+    /// Best-effort, like the config writes beside it: a plan that could not be
+    /// saved is still a plan to review, and an error cell over a convenience
+    /// write would push the plan itself off the screen.
+    fn write_plan(&self, text: &str) -> Option<std::path::PathBuf> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        let home = self.config_home.as_ref()?;
+        let directory = home.as_path().join("plans");
+        let path = directory.join(format!("{}.md", plan_slug(text, chrono::Local::now())));
+        if let Err(error) = std::fs::create_dir_all(&directory)
+            .and_then(|()| std::fs::write(&path, format!("{}\n", text.trim_end())))
+        {
+            tracing::warn!(%error, path = %path.display(), "could not save the plan");
+            return None;
+        }
+        Some(path)
     }
 
     /// Put the answered plan away where `/view-plan` can find it.
@@ -225,6 +295,21 @@ impl App {
         if self.refuse_answered_plan() {
             return;
         }
+        // Not answered here. Plan mode is the tightest rung of the strictness
+        // ladder, so leaving it is the one moment a person is deciding how
+        // much of the plan may be carried out without them — the overlay asks
+        // that once, rather than letting the policy underneath plan mode
+        // decide it silently.
+        self.open_policy_picker();
+    }
+
+    /// Approve, and carry the plan out under `policy`: what the overlay
+    /// [`App::approve_plan`] opens answers with.
+    pub fn approve_plan_under(&mut self, policy: keke_config_types::ApprovalPolicy) {
+        if self.refuse_answered_plan() {
+            return;
+        }
+        self.set_approval_policy_aloud(policy);
         let feedback = self.plan.as_ref().and_then(|r| r.feedback(None));
         self.show_plan_feedback(feedback.as_deref());
         self.answer_permission_with_note(PermissionAnswer::Allow, feedback);

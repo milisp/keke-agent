@@ -69,6 +69,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let comments = review.comments().len();
     let focus = review.focus();
     let text = review.text().to_string();
+    let path = review.path().map(|path| path.display().to_string());
     let (first, last) = review.selection();
 
     let width = area.width.saturating_sub(area.width / 8).max(24);
@@ -120,7 +121,12 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     if !answered {
         shown.push(composer(app, focus, commenting, first, last));
     }
-    shown.push(Line::raw(""));
+    // Where the plan was saved, so a person can open it, edit it, or send it
+    // to somebody without asking the agent to repeat itself.
+    shown.push(match &path {
+        Some(path) => Line::styled(format!("  {path}"), Style::new().fg(Color::DarkGray)),
+        None => Line::raw(""),
+    });
     shown.push(actions(offset < max, answered, comments));
 
     let title = if answered {

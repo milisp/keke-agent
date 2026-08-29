@@ -55,12 +55,15 @@ impl App {
         // Both overlays own the keyboard while they are up: the turn is
         // stopped on the plan review, so its letters answer it rather than
         // being typed into a composer nobody is looking at.
-        if self.plan_review().is_some() && !control {
-            self.handle_plan_key(key);
-            return;
-        }
+        // The picker is checked first: approving a plan opens the policy
+        // overlay over the still-open review, and the letters typed to filter
+        // it must not be answering the plan underneath.
         if self.picker_open() && !control {
             self.handle_picker_key(key);
+            return;
+        }
+        if self.plan_review().is_some() && !control {
+            self.handle_plan_key(key);
             return;
         }
 

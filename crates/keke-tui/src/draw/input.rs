@@ -39,8 +39,13 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Style::new().fg(Color::DarkGray)
     };
+    // Plan mode is said here as well as in the status bar: a person types
+    // into this box, and what they send while planning is answered with a
+    // plan rather than with work.
     let title = if blocked {
         " answer the prompt above "
+    } else if app.session_mode().is_plan() {
+        " message \u{2014} plan mode, the agent plans before it builds "
     } else {
         " message "
     };

@@ -811,6 +811,90 @@ async fn the_plan_command_asks_for_the_mode_and_can_carry_the_prompt() {
     assert_eq!(scripted.prompts(), vec!["add caching".to_string()]);
 }
 
+/// A plan is a document a person reads, edits, and shows to somebody else, so
+/// it outlives the process that received it — and the surface says where.
+#[tokio::test]
+async fn a_plan_is_saved_under_the_keke_home_and_its_path_is_shown() {
+    let home = tempfile::tempdir().expect("a temp home");
+    let (app, _scripted, _updates, _local) = app_with(Vec::new());
+    let app = &mut app
+        .with_config_home(keke_paths::AbsPath::new(home.path()).expect("an absolute temp path"));
+
+    app.apply(exit_plan_mode("# Rewrite the parser\n\nstep one"));
+    let path = app
+        .plan_review()
+        .expect("a plan")
+        .path()
+        .expect("a saved plan")
+        .to_path_buf();
+    assert_eq!(path, home.path().join("plans/rewrite-the-parser.md"));
+    assert!(
+        std::fs::read_to_string(&path)
+            .expect("the plan on disk")
+            .contains("step one")
+    );
+}
+
+/// In plan mode the policy governs nothing yet — no command runs until the
+/// plan is approved — and the policy that will govern the work is chosen at
+/// approval, so the bar does not answer a question nobody has been asked.
+#[tokio::test]
+async fn the_status_bar_drops_the_policy_while_planning() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    assert!(status_bar(&app).contains("on-request"));
+
+    app.apply(Update::ModeChanged(SessionMode::Plan));
+    assert!(!status_bar(&app).contains("on-request"));
+
+    app.apply(Update::ModeChanged(SessionMode::Default));
+    assert!(status_bar(&app).contains("on-request"));
+}
+
+/// Approving is the moment a person decides how much of the plan may happen
+/// without them, so it asks once rather than falling back to whatever policy
+/// was standing underneath plan mode.
+#[tokio::test]
+async fn approving_a_plan_asks_which_policy_carries_it_out() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ModeChanged(SessionMode::Plan));
+    app.apply(exit_plan_mode("do the thing"));
+
+    app.handle_key(key(KeyCode::Char('a')));
+    assert!(app.policy_picker().is_some(), "the overlay opened");
+    assert!(scripted.answers().is_empty(), "nothing answered yet");
+
+    // The overlay owns the keyboard over the review: `s` filters, it does not
+    // send the plan back.
+    type_text(&mut app, "never");
+    assert!(scripted.answers().is_empty());
+    assert_eq!(app.picker_policies(), vec![ApprovalPolicy::Never]);
+
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
+    assert_eq!(
+        scripted.answers(),
+        vec![(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Allow,
+            None
+        )]
+    );
+}
+
+/// Escape out of the policy overlay is not an answer: the plan is still there
+/// to approve, send back, or quit.
+#[tokio::test]
+async fn escaping_the_policy_overlay_leaves_the_plan_unanswered() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("do the thing"));
+
+    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.policy_picker().is_none());
+    assert!(app.plan_review().is_some());
+    assert!(scripted.answers().is_empty());
+}
+
 fn exit_plan_mode(plan: &str) -> Update {
     Update::PermissionRequested {
         id: PermissionId("plan-1".to_string()),
@@ -840,6 +924,8 @@ async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
 
     app.apply(exit_plan_mode("do the thing"));
     app.handle_key(key(KeyCode::Char('a')));
+    assert!(app.plan_review().is_some(), "the plan waits for the policy");
+    app.handle_key(key(KeyCode::Enter));
     assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers(),
@@ -912,6 +998,7 @@ async fn an_empty_plan_still_opens_a_reviewable_surface() {
     assert_eq!(app.take_pending_copy(), None, "there is nothing to copy");
 
     app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(
         scripted.answers(),
         vec![(
@@ -954,6 +1041,7 @@ async fn a_comment_on_a_selected_line_reaches_the_text_sent_with_the_approval() 
     assert_eq!(review.comments().len(), 1);
 
     app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Enter));
     // Carried by the answer, not sent after it: the turn is parked on this
     // question, so a prompt would be queued behind the rest of the turn and
     // land once the work the comment was about had already been done.
@@ -1037,6 +1125,7 @@ async fn view_plan_reopens_the_last_plan_as_a_record() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(exit_plan_mode("alpha\nbravo"));
     app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Enter));
     assert!(app.plan_review().is_none());
 
     type_text(&mut app, "/view-plan");

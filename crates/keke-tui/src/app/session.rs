@@ -56,7 +56,7 @@ impl App {
     }
 
     /// Set the policy and remember it past this process.
-    fn set_approval_policy_aloud(&mut self, policy: ApprovalPolicy) {
+    pub(super) fn set_approval_policy_aloud(&mut self, policy: ApprovalPolicy) {
         self.set_approval_policy(policy);
         self.persist_override(|file| {
             file.approval_policy = Some(policy);

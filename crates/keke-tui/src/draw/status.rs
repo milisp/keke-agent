@@ -53,17 +53,23 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    // Always shown, never only after a change: a person who cannot see the
-    // current mode has to guess whether the next command will ask them.
-    let policy = app.approval_policy();
-    spans.push(Span::styled(
-        format!("· {} ", crate::slash::policy_name(policy)),
-        if policy == keke_config_types::ApprovalPolicy::Never {
-            Style::new().fg(Color::Red)
-        } else {
-            Style::new().fg(Color::Cyan)
-        },
-    ));
+    // Shown outside plan mode, and never only after a change: a person who
+    // cannot see the current mode has to guess whether the next command will
+    // ask them. In plan mode there is nothing for it to govern — no command
+    // runs until the plan is approved, and the policy that will govern the
+    // work is the one chosen at approval, not the one standing now. Drawing it
+    // here would answer a question a person has not been asked yet.
+    if !app.session_mode().is_plan() {
+        let policy = app.approval_policy();
+        spans.push(Span::styled(
+            format!("· {} ", crate::slash::policy_name(policy)),
+            if policy == keke_config_types::ApprovalPolicy::Never {
+                Style::new().fg(Color::Red)
+            } else {
+                Style::new().fg(Color::Cyan)
+            },
+        ));
+    }
     // Which route is serving. Shown beside the model because one vendor can be
     // registered twice — a subscription login and an API key — and then the
     // model id alone does not say which of them the answer came from.

@@ -136,4 +136,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     // Last: the remaining overlay holds the keyboard, so nothing may be drawn over it.
     subagents::detail(frame, app);
     plan::draw(frame, frame_area, app);
+    // After the plan, and only then: the policy overlay is opened *by* the
+    // plan review and holds the keyboard over it, so it must not be painted
+    // under the panel it is answering for.
+    if app.policy_picker().is_some() {
+        picker::draw(frame, picker_area, app);
+    }
 }

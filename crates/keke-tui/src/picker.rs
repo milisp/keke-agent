@@ -68,6 +68,36 @@ impl Choice for crate::mcp::McpServerStatus {
     }
 }
 
+/// The three approval policies, in the order the overlay lists them:
+/// strictest first, so the row a person lands on without reading is the one
+/// that asks the most rather than the one that asks the least.
+pub(crate) const POLICIES: [keke_config_types::ApprovalPolicy; 3] = [
+    keke_config_types::ApprovalPolicy::OnRequest,
+    keke_config_types::ApprovalPolicy::OnFailure,
+    keke_config_types::ApprovalPolicy::Never,
+];
+
+/// What a policy row says beside its name, since the name alone does not say
+/// what a person is agreeing to let happen while the plan is carried out.
+#[must_use]
+pub(crate) fn policy_detail(policy: keke_config_types::ApprovalPolicy) -> &'static str {
+    match policy {
+        keke_config_types::ApprovalPolicy::OnRequest => "ask before each command",
+        keke_config_types::ApprovalPolicy::OnFailure => "ask only when a command fails",
+        keke_config_types::ApprovalPolicy::Never => "never ask \u{2014} run everything",
+    }
+}
+
+impl Choice for keke_config_types::ApprovalPolicy {
+    fn key(&self) -> &str {
+        crate::slash::policy_name(*self)
+    }
+
+    fn label(&self) -> &str {
+        policy_detail(*self)
+    }
+}
+
 /// Which list the open overlay is showing. Held on the picker rather than
 /// beside it so there is no way to be open on one list and reading the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +108,11 @@ pub enum PickerKind {
     /// authorizes the highlighted server, which is the one thing about an MCP
     /// server a person actually has to do from here.
     Mcp,
+    /// Approval policies, opened by approving a plan. Enter does not merely
+    /// switch the policy: it is the approval, made under the policy chosen —
+    /// which is the one thing plan mode leaves open, since a plan says what
+    /// will be done and not how much of it may happen unwatched.
+    Policy,
 }
 
 /// Which row is highlighted, and what has been typed to narrow the list.
