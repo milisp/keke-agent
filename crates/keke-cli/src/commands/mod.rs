@@ -69,6 +69,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     // same reason: it is the one surface with somebody to ask.
     let interactive = matches!(command, Command::Tui | Command::Resume(_));
     let (approvals, requests) = keke_acp::approvals();
+
+    // Made once, here, and shared: `keke_plan::install` enforces plan mode
+    // through this cell and `session_builder` builds the session around the
+    // same one, which is what lets a person's toggle and the extension's own
+    // transitions be the same fact rather than two that can disagree.
+    let mode = Arc::new(keke_core::SessionModeSwitch::new(if cli.plan {
+        keke_config_types::SessionMode::Plan
+    } else {
+        keke_config_types::SessionMode::Default
+    }));
     let composed = Composed::build(
         &config.home,
         &config.providers,
@@ -76,6 +86,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         config.model_catalog_ttl,
         config.subagents,
         interactive.then(|| Arc::clone(&approvals)),
+        Some(crate::compose::PlanSetup::for_session(
+            &config.home.home,
+            &cwd,
+            Arc::clone(&mode),
+        )),
     )?;
 
     // A directory override that names a route nobody registered is not a
@@ -110,6 +125,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     config.model_catalog_ttl,
                     config.subagents,
                     interactive.then(|| Arc::clone(&approvals)),
+                    Some(crate::compose::PlanSetup::for_session(
+                        &config.home.home,
+                        &cwd,
+                        Arc::clone(&mode),
+                    )),
                 )?;
             }
             // Not an error: the person was asked a question and chose not to
@@ -339,6 +359,12 @@ async fn session_builder(
         .provider(provider)
         .extensions(composed.extensions.clone())
         .cwd(cwd);
+
+    // The same cell `keke_plan::install` enforces against, so `Session::
+    // session_mode` and the guards can never give different answers.
+    if let Some(mode) = &composed.plan_mode {
+        builder = builder.mode_switch(Arc::clone(mode));
+    }
 
     if let Some(auth) = auth {
         builder = builder.auth(auth);

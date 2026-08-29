@@ -195,6 +195,14 @@ pub(super) async fn tui(
         commands,
         keke_tui::SessionDefaults {
             approval: config.approval_policy,
+            // What the session is actually in, not what the config said: a
+            // `--plan` start, and a resumed session that was planning, both
+            // reach the surface through the switch rather than through a
+            // second copy of the answer.
+            mode: composed
+                .plan_mode
+                .as_ref()
+                .map_or_else(Default::default, |mode| mode.get()),
             effort: config.reasoning_effort,
             config_home: config.home.home.clone(),
         },

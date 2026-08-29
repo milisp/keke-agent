@@ -59,6 +59,7 @@ RANK = {
     # parsed and listed without linking the engine.
     "keke-plugin": 16,
     # tier 3 - surfaces
+    "keke-plan": 20,
     "keke-acp": 30,
     "keke-tui": 31,
     "keke-cli": 32,

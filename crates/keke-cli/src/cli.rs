@@ -30,6 +30,13 @@ pub(crate) struct Cli {
     /// stands, which is not the same as asking for the least on offer.
     #[arg(long, global = true, env = "KEKE_REASONING_EFFORT", value_parser = parse_effort)]
     pub reasoning_effort: Option<keke_config_types::ReasoningEffort>,
+
+    /// Start in plan mode: research and propose, editing nothing but the plan
+    /// file, until the plan is approved. A startup flag rather than a
+    /// configuration field because plan mode is about the task in front of you,
+    /// not about how this machine is set up.
+    #[arg(long, global = true)]
+    pub plan: bool,
 }
 
 /// Parse an effort level without making the contract crate depend on clap. A

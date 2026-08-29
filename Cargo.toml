@@ -34,6 +34,7 @@ keke-workspace = { path = "crates/keke-workspace" }
 keke-auth-codex = { path = "crates/keke-auth-codex" }
 keke-hooks = { path = "crates/keke-hooks" }
 keke-mcp = { path = "crates/keke-mcp" }
+keke-plan = { path = "crates/keke-plan" }
 keke-skills = { path = "crates/keke-skills" }
 keke-auth-grok = { path = "crates/keke-auth-grok" }
 keke-plugin = { path = "crates/keke-plugin" }

@@ -26,6 +26,7 @@ keke-credentials = { workspace = true }
 keke-hooks = { workspace = true }
 keke-mcp = { workspace = true }
 keke-paths = { workspace = true }
+keke-plan = { workspace = true }
 keke-plugin = { workspace = true }
 keke-skills = { workspace = true }
 keke-subagent = { workspace = true }

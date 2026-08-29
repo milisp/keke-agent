@@ -342,6 +342,34 @@ impl Vendors {
     }
 }
 
+/// What plan mode needs to exist for a session: the shared switch and where
+/// the plan file goes.
+///
+/// Passed in rather than made here because the *same* `Arc` has to reach both
+/// `keke_plan::install` and `SessionBuilder::mode_switch` — two cells would let
+/// a surface report "planning" while the guards had already stopped. A
+/// `Composed` built for something that is not a session (listing auth methods,
+/// running a login) passes `None` and installs nothing.
+pub(crate) struct PlanSetup {
+    pub mode: Arc<keke_core::SessionModeSwitch>,
+    pub location: keke_plan::PlanLocation,
+}
+
+impl PlanSetup {
+    /// Plan files live in the session's own directory, beside the rollout log
+    /// that records the turn that wrote them.
+    pub(crate) fn for_session(
+        home: &keke_paths::AbsPath,
+        cwd: &std::path::Path,
+        mode: Arc<keke_core::SessionModeSwitch>,
+    ) -> Self {
+        Self {
+            mode,
+            location: keke_plan::PlanLocation::under_project(keke_core::project_dir(home, cwd)),
+        }
+    }
+}
+
 /// Everything the composition root assembled.
 pub(crate) struct Composed {
     /// Kept so a surface can ask whether a key-only endpoint's credential
@@ -353,6 +381,10 @@ pub(crate) struct Composed {
     /// The coordinator behind `spawn_agent`. Handed the session recipe in
     /// `session_builder`, once there is a finished builder to hand it.
     pub subagents: Arc<keke_subagent::SubagentHost>,
+    /// The session-mode switch plan mode was installed against, when this
+    /// composition is for a session. `session_builder` hands it to the builder
+    /// so the engine and the extension read the same cell.
+    pub plan_mode: Option<Arc<keke_core::SessionModeSwitch>>,
     /// The plugins' slash commands. Kept as data rather than as a registry
     /// because a command is a prompt file: only a surface that has someone to
     /// type it means anything by it.
@@ -372,6 +404,7 @@ impl Composed {
         catalog_ttl: keke_config_types::ModelCatalogTtl,
         subagent_limits: keke_config_types::SubagentLimits,
         approvals: Option<Arc<keke_acp::Approvals>>,
+        plan: Option<PlanSetup>,
     ) -> Result<Self> {
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -479,6 +512,16 @@ impl Composed {
         let mut extensions = ExtensionRegistryBuilder::new();
         keke_tools::install(&mut extensions);
 
+        // Plan mode reviews approvals ahead of every other extension, because
+        // the one request it answers — a write to the plan file it told the
+        // agent to write — is a question with a single sensible answer. Its
+        // guard is registered here too, and a guard's denial is final wherever
+        // it sits in the order.
+        let plan_mode = plan.map(|plan| {
+            keke_plan::install(&mut extensions, Arc::clone(&plan.mode), plan.location);
+            plan.mode
+        });
+
         // Runtime plugins register through the same contributor traits as
         // anything compiled in — `keke-core` never learns they exist. Order is
         // priority order for approval reviewers only; for the rest it is what
@@ -518,6 +561,7 @@ impl Composed {
             providers,
             extensions: extensions.build(),
             subagents,
+            plan_mode,
             commands,
         })
     }

@@ -1697,6 +1697,7 @@ dependencies = [
  "keke-mcp",
  "keke-oauth",
  "keke-paths",
+ "keke-plan",
  "keke-plugin",
  "keke-plugin-api",
  "keke-protocol",
@@ -1857,6 +1858,23 @@ version = "0.1.11"
 dependencies = [
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "keke-plan"
+version = "0.1.11"
+dependencies = [
+ "keke-config-types",
+ "keke-core",
+ "keke-paths",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-tool",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
