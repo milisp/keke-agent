@@ -4,6 +4,7 @@ pub(crate) mod input;
 pub(crate) mod markdown;
 pub(crate) mod menu;
 pub(crate) mod picker;
+pub(crate) mod plan;
 pub(crate) mod status;
 pub(crate) mod subagents;
 pub(crate) mod transcript;
@@ -57,6 +58,7 @@ fn below(frame: &mut Frame, body: ratatui::layout::Rect, app: &mut App) {
 /// viewport decides what to show; scrolling anchors to wrapped lines rather
 /// than to cells, which is the only way a long tool result scrolls smoothly.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
+    let frame_area = frame.area();
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -133,4 +135,5 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     status::draw(frame, footer, app);
     // Last: the remaining overlay holds the keyboard, so nothing may be drawn over it.
     subagents::detail(frame, app);
+    plan::draw(frame, frame_area, app);
 }

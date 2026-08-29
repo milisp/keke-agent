@@ -5,26 +5,61 @@
 
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::ReasoningEffort;
+use keke_config_types::SessionMode;
 
 use crate::transcript::Cell;
 
 use super::App;
 
 impl App {
-    /// Cycle the approval mode: the shift-tab gesture.
+    /// Cycle the session's strictness: the shift-tab gesture.
     ///
-    /// Silent by design. The gesture is meant to be tapped through the modes
-    /// while looking at the status bar, and a line per tap would push the
+    /// One ladder, not two toggles. Plan mode and the approval policy both
+    /// answer "how much may the agent do without me", and a person tapping
+    /// through two independent switches has to work out how they stack —
+    /// so they are laid out as a single ordering, loosest last:
+    /// `plan → on-request → on-failure → never → plan`. Plan mode is the
+    /// tightest rung because it refuses edits outright rather than offering
+    /// them for approval, so entering it also brings the policy back to
+    /// `on-request`: a rung must mean one thing, not one thing plus whatever
+    /// was underneath it.
+    ///
+    /// Silent by design. The gesture is meant to be tapped through while
+    /// looking at the status bar, and a line per tap would push the
     /// conversation off screen to say what the bar is already saying.
-    pub fn cycle_approval_policy(&mut self) {
-        let next = match self.approval {
-            ApprovalPolicy::OnRequest => ApprovalPolicy::OnFailure,
-            ApprovalPolicy::OnFailure => ApprovalPolicy::Never,
-            ApprovalPolicy::Never => ApprovalPolicy::OnRequest,
-        };
-        self.set_approval_policy(next);
+    pub fn cycle_session_rung(&mut self) {
+        if self.mode.is_plan() {
+            self.request_session_mode(SessionMode::Default);
+            self.set_approval_policy_aloud(ApprovalPolicy::OnRequest);
+            return;
+        }
+        match self.approval {
+            ApprovalPolicy::OnRequest => self.set_approval_policy_aloud(ApprovalPolicy::OnFailure),
+            ApprovalPolicy::OnFailure => self.set_approval_policy_aloud(ApprovalPolicy::Never),
+            ApprovalPolicy::Never => {
+                self.request_session_mode(SessionMode::Plan);
+                self.set_approval_policy_aloud(ApprovalPolicy::OnRequest);
+            }
+        }
+    }
+
+    /// Ask the session to plan, or to stop planning.
+    ///
+    /// Nothing is stored here and nothing is written to `config.toml`. What the
+    /// surface draws comes back over [`keke_acp::Update::ModeChanged`], because
+    /// the agent enters and leaves plan mode on its own and a locally-set flag
+    /// would go stale the first time it did. Nor is the mode persisted: it is
+    /// an answer about the work in front of a person, and a session that came
+    /// back planning weeks later would be answering a question nobody asked.
+    pub fn request_session_mode(&mut self, mode: SessionMode) {
+        self.conversation.set_session_mode(mode);
+    }
+
+    /// Set the policy and remember it past this process.
+    fn set_approval_policy_aloud(&mut self, policy: ApprovalPolicy) {
+        self.set_approval_policy(policy);
         self.persist_override(|file| {
-            file.approval_policy = Some(next);
+            file.approval_policy = Some(policy);
         });
     }
 

@@ -108,6 +108,9 @@ pub struct Resumed {
 /// only ever handed to `run` together.
 pub struct SessionDefaults {
     pub approval: keke_config_types::ApprovalPolicy,
+    /// The mode the session opened in, so a resumed session that was planning
+    /// comes back with the flag already up.
+    pub mode: keke_config_types::SessionMode,
     pub effort: Option<keke_config_types::ReasoningEffort>,
     /// `$KEKE_HOME`, so `/model` and `/effort` persist past this
     /// process.
@@ -153,6 +156,7 @@ pub async fn run(
         .with_notices(notices)
         .with_commands(commands)
         .with_approval_policy(defaults.approval)
+        .with_session_mode(defaults.mode)
         .with_reasoning_effort(defaults.effort)
         .with_models(models.provider, models.current, models.available)
         .with_provider_routes(models.routes)

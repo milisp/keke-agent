@@ -52,6 +52,13 @@ impl App {
         // Whichever overlay is up owns the keyboard, letters
         // included: it filters as you type, and a keystroke that went into the
         // composer behind it would be invisible until the overlay closed.
+        // Both overlays own the keyboard while they are up: the turn is
+        // stopped on the plan review, so its letters answer it rather than
+        // being typed into a composer nobody is looking at.
+        if self.plan_review().is_some() && !control {
+            self.handle_plan_key(key);
+            return;
+        }
         if self.picker_open() && !control {
             self.handle_picker_key(key);
             return;
@@ -89,8 +96,8 @@ impl App {
             KeyCode::Enter if shift || alt => self.input.insert_newline(),
             // Shift-Tab reaches a terminal as `BackTab`, except where it does
             // not; both spellings mean the same gesture.
-            KeyCode::BackTab => self.cycle_approval_policy(),
-            KeyCode::Tab if shift => self.cycle_approval_policy(),
+            KeyCode::BackTab => self.cycle_session_rung(),
+            KeyCode::Tab if shift => self.cycle_session_rung(),
             // The completion menu owns the keys only while it is open, so
             // nothing a person can press changes meaning without them seeing
             // the list it applies to.
@@ -231,6 +238,25 @@ impl App {
             KeyCode::Esc => self.close_picker(),
             KeyCode::Backspace => self.backspace_in_picker(),
             KeyCode::Char(ch) => self.type_into_picker(ch),
+            _ => {}
+        }
+    }
+
+    /// While the plan review is up, these keys drive it.
+    ///
+    /// Distinct letters from the one-line approval's `y`/`n`: this prompt is
+    /// read rather than glanced at, and a person scrolling a page of prose
+    /// should not find that `y` has already answered it.
+    fn handle_plan_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('a') => self.approve_plan(),
+            KeyCode::Char('s') => self.request_plan_changes(),
+            KeyCode::Char('y') => self.copy_plan(),
+            KeyCode::Char('q') | KeyCode::Esc => self.quit_plan(),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_plan(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_plan(1),
+            KeyCode::PageUp => self.scroll_plan(-10),
+            KeyCode::PageDown => self.scroll_plan(10),
             _ => {}
         }
     }

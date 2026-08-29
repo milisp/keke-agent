@@ -12,6 +12,7 @@ use keke_acp::PermissionId;
 use keke_acp::ScriptedConversation;
 use keke_acp::Update;
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::SessionMode;
 use keke_protocol::ContentBlock;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
@@ -710,29 +711,209 @@ async fn a_command_file_that_cannot_be_read_is_reported_not_sent() {
 }
 
 #[tokio::test]
-async fn shift_tab_cycles_the_approval_mode_and_tells_the_agent() {
-    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+async fn shift_tab_walks_one_ladder_through_plan_and_the_policies() {
+    let (mut app, scripted, mut updates, _local) = app_with_commands(Vec::new(), Vec::new());
     assert_eq!(app.approval_policy(), ApprovalPolicy::OnRequest);
+    assert_eq!(app.session_mode(), SessionMode::Default);
 
     app.handle_key(key(KeyCode::BackTab));
     assert_eq!(app.approval_policy(), ApprovalPolicy::OnFailure);
-    // The gesture is silent: the status bar already says which mode is on, and
+    // The gesture is silent: the status bar already says which rung is on, and
     // a line per tap would push the conversation off screen to repeat it.
     assert!(app.transcript.is_empty(), "{:?}", app.transcript.cells());
+
     app.handle_key(shift(KeyCode::Tab));
     assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
+
+    // The tightest rung: plan mode, with the policy back at on-request, since
+    // a rung must mean one thing rather than one thing plus what was under it.
     app.handle_key(key(KeyCode::BackTab));
+    drain(&mut app, &mut updates, 1).await;
+    assert_eq!(app.session_mode(), SessionMode::Plan);
     assert_eq!(app.approval_policy(), ApprovalPolicy::OnRequest);
 
-    // The surface's idea of the mode is worthless unless the agent has it too.
+    app.handle_key(key(KeyCode::BackTab));
+    drain(&mut app, &mut updates, 1).await;
+    assert_eq!(app.session_mode(), SessionMode::Default);
+    assert_eq!(app.approval_policy(), ApprovalPolicy::OnRequest);
+
+    // The surface's idea of the rung is worthless unless the agent has it too.
     assert_eq!(
         scripted.policies(),
         vec![
             ApprovalPolicy::OnFailure,
             ApprovalPolicy::Never,
             ApprovalPolicy::OnRequest,
+            ApprovalPolicy::OnRequest,
         ]
     );
+    assert_eq!(
+        scripted.modes(),
+        vec![SessionMode::Plan, SessionMode::Default]
+    );
+}
+
+/// The flag is drawn from what the seam last said, never from the fact that
+/// this surface asked: the agent enters and leaves plan mode on its own.
+#[tokio::test]
+async fn the_status_bar_shows_plan_only_once_the_seam_says_so() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    assert!(!status_bar(&app).contains("plan"));
+
+    app.request_session_mode(SessionMode::Plan);
+    assert!(
+        !status_bar(&app).contains("plan"),
+        "asking for a mode is not being in it"
+    );
+
+    app.apply(Update::ModeChanged(SessionMode::Plan));
+    assert!(status_bar(&app).contains("plan"));
+}
+
+/// Nobody on this surface touched a key: the agent entered plan mode itself.
+#[tokio::test]
+async fn a_mode_change_the_surface_did_not_ask_for_still_changes_the_bar() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ModeChanged(SessionMode::Plan));
+    assert!(status_bar(&app).contains("plan"));
+    assert!(
+        scripted.modes().is_empty(),
+        "the surface asked for nothing here"
+    );
+
+    app.apply(Update::ModeChanged(SessionMode::Default));
+    assert!(!status_bar(&app).contains("plan"));
+}
+
+/// `/plan` asks for the mode; with a description it sends the work too, since
+/// "plan this" is one thought.
+#[tokio::test]
+async fn the_plan_command_asks_for_the_mode_and_can_carry_the_prompt() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/plan");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(scripted.modes(), vec![SessionMode::Plan]);
+    assert!(app.transcript.is_empty());
+
+    type_text(&mut app, "/plan add caching");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.transcript.last(),
+        Some(&Cell::User("add caching".to_string()))
+    );
+    tokio::task::yield_now().await;
+    assert_eq!(scripted.prompts(), vec!["add caching".to_string()]);
+}
+
+fn exit_plan_mode(plan: &str) -> Update {
+    Update::PermissionRequested {
+        id: PermissionId("plan-1".to_string()),
+        call: ToolCall {
+            id: ToolCallId::new("t1"),
+            name: "exit_plan_mode".to_string(),
+            arguments: serde_json::json!({ "plan": plan }),
+        },
+        reason: "the plan is ready".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn exit_plan_mode_opens_the_plan_for_review() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("## Step one\n\nread the parser"));
+
+    let review = app.plan_review().expect("a plan to review");
+    assert!(review.text().contains("read the parser"));
+    assert!(!review.is_empty());
+    assert_eq!(app.turn(), Turn::AwaitingPermission);
+}
+
+#[tokio::test]
+async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+
+    app.apply(exit_plan_mode("do the thing"));
+    app.handle_key(key(KeyCode::Char('a')));
+    assert!(app.plan_review().is_none());
+    assert_eq!(
+        scripted.answers(),
+        vec![(PermissionId("plan-1".to_string()), PermissionAnswer::Allow)]
+    );
+    // Plan mode ends when the agent says it has, not because this surface
+    // approved: nothing was asked for over the seam here.
+    assert!(scripted.modes().is_empty());
+
+    app.apply(exit_plan_mode("do the other thing"));
+    app.handle_key(key(KeyCode::Char('s')));
+    assert!(app.plan_review().is_none(), "the composer takes over");
+    assert_eq!(
+        scripted.answers().last(),
+        Some(&(PermissionId("plan-1".to_string()), PermissionAnswer::Deny))
+    );
+
+    // ...and the composer really does take the keyboard back.
+    type_text(&mut app, "narrower, please");
+    assert_eq!(app.input.text(), "narrower, please");
+}
+
+/// Quitting the plan is not requesting changes: it asks to leave the mode.
+#[tokio::test]
+async fn quitting_the_plan_denies_it_and_asks_to_leave_plan_mode() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ModeChanged(SessionMode::Plan));
+    app.apply(exit_plan_mode("do the thing"));
+
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.plan_review().is_none());
+    assert_eq!(
+        scripted.answers(),
+        vec![(PermissionId("plan-1".to_string()), PermissionAnswer::Deny)]
+    );
+    assert_eq!(scripted.modes(), vec![SessionMode::Default]);
+}
+
+/// An agent that left plan mode without writing anything is not an error: the
+/// same surface opens, and every action on it still works.
+#[tokio::test]
+async fn an_empty_plan_still_opens_a_reviewable_surface() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::PermissionRequested {
+        id: PermissionId("plan-1".to_string()),
+        call: ToolCall {
+            id: ToolCallId::new("t1"),
+            name: "exit_plan_mode".to_string(),
+            arguments: serde_json::json!({}),
+        },
+        reason: String::new(),
+    });
+
+    let review = app.plan_review().expect("a surface even with no plan");
+    assert!(review.is_empty());
+
+    app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(app.take_pending_copy(), None, "there is nothing to copy");
+
+    app.handle_key(key(KeyCode::Char('a')));
+    assert_eq!(
+        scripted.answers(),
+        vec![(PermissionId("plan-1".to_string()), PermissionAnswer::Allow)]
+    );
+}
+
+#[tokio::test]
+async fn the_plan_review_takes_the_keyboard_from_the_composer() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("line one"));
+
+    type_text(&mut app, "hello");
+    assert!(
+        app.input.is_empty(),
+        "a keystroke must answer the prompt, not vanish into a box nobody is looking at"
+    );
+
+    app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(app.take_pending_copy(), Some("line one".to_string()));
 }
 
 #[tokio::test]
@@ -979,6 +1160,14 @@ fn emacs_keys_move_and_delete_in_the_prompt() {
 
     app.handle_key(control('u'));
     assert!(app.input.is_empty());
+}
+
+/// What the status bar reads, as one string.
+fn status_bar(app: &App) -> String {
+    crate::draw::status::spans(app)
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 /// Flatten a rendered transcript to plain strings.

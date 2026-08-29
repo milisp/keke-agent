@@ -43,6 +43,9 @@ pub enum Builtin {
     Copy,
     /// Lists the MCP servers and their state, and signs in to a remote one.
     Mcp,
+    /// Asks the session to plan first, optionally with the prompt to plan
+    /// about in the same breath.
+    Plan,
 }
 
 /// One entry in the command list.
@@ -177,6 +180,11 @@ fn builtins() -> Vec<SlashCommand> {
             Builtin::Mcp,
             "mcp",
             "manage the MCP servers, or `login <name>` to authorize a remote one",
+        ),
+        (
+            Builtin::Plan,
+            "plan",
+            "plan before building — `/plan <what to do>` starts the turn too",
         ),
         (Builtin::Quit, "quit", "leave keke"),
     ]

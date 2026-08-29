@@ -7,6 +7,7 @@
 mod commands;
 mod completion;
 mod picker_overlay;
+pub(crate) mod plan;
 mod session;
 mod subagents;
 
@@ -86,6 +87,11 @@ pub struct App {
     /// The model or provider overlay, while one is open. `None` is the
     /// ordinary state: the composer has the keyboard.
     picker: Option<crate::picker::Picker>,
+    /// The plan review, while the agent is asking to leave plan mode. Another
+    /// overlay that owns the keyboard, for the same reason the picker is one:
+    /// the turn is stopped on it, so a keystroke that quietly went into the
+    /// composer would look like the interface had died.
+    plan: Option<plan::PlanReview>,
     approval: ApprovalPolicy,
     /// Whether the session is planning. Held rather than derived because the
     /// agent can enter and leave plan mode on its own, so the only truthful
@@ -201,6 +207,7 @@ impl App {
                 history: PromptHistory::default(),
                 completion: 0,
                 picker: None,
+                plan: None,
                 approval: ApprovalPolicy::default(),
                 mode: keke_config_types::SessionMode::default(),
                 effort: None,
@@ -511,6 +518,9 @@ impl App {
             Update::PermissionRequested { id, call, reason } => {
                 self.turn = Turn::AwaitingPermission;
                 self.transcript.request_permission(id, &call, reason);
+                if call.name == plan::EXIT_PLAN_MODE {
+                    self.open_plan_review(&call);
+                }
             }
             Update::TurnEnded(reason) => {
                 self.end_turn();
