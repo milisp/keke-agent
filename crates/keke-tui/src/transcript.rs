@@ -48,8 +48,26 @@ pub struct PermissionCell {
     pub answer: Option<PermissionAnswer>,
 }
 
+/// A plan the agent asked to leave plan mode with.
+///
+/// It is a cell rather than an overlay because a plan is something the agent
+/// said: it belongs in the scrollback with everything else said this session,
+/// where it can be scrolled back to, selected, and copied long after it was
+/// answered. It carries the permission id, so answering the plan answers the
+/// call that proposed it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanCell {
+    pub id: PermissionId,
+    pub text: String,
+    /// Where the plan was saved, when it could be.
+    pub path: Option<std::path::PathBuf>,
+    /// `None` while the turn is blocked on it.
+    pub answer: Option<PermissionAnswer>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cell {
+    Plan(PlanCell),
     User(String),
     Assistant(String),
     Tool(ToolCell),
@@ -161,14 +179,54 @@ impl Transcript {
         }));
     }
 
+    /// Put a proposed plan in the scrollback, where it stays.
+    pub fn request_plan(
+        &mut self,
+        id: PermissionId,
+        text: String,
+        path: Option<std::path::PathBuf>,
+    ) {
+        self.sealed = true;
+        self.cells.push(Cell::Plan(PlanCell {
+            id,
+            text,
+            path,
+            answer: None,
+        }));
+    }
+
     /// Record the answer in place, so the scrollback shows what was decided.
     pub fn answer_permission(&mut self, id: &PermissionId, answer: PermissionAnswer) {
-        if let Some(cell) = self.cells.iter_mut().rev().find_map(|cell| match cell {
-            Cell::Permission(prompt) if &prompt.id == id => Some(prompt),
-            _ => None,
-        }) {
-            cell.answer = Some(answer);
+        for cell in self.cells.iter_mut().rev() {
+            match cell {
+                Cell::Permission(prompt) if &prompt.id == id => {
+                    prompt.answer = Some(answer);
+                    return;
+                }
+                Cell::Plan(plan) if &plan.id == id => {
+                    plan.answer = Some(answer);
+                    return;
+                }
+                _ => {}
+            }
         }
+    }
+
+    /// The id of whatever is blocking the turn — a tool prompt or a plan.
+    pub fn open_permission_id(&self) -> Option<PermissionId> {
+        self.cells.iter().rev().find_map(|cell| match cell {
+            Cell::Permission(prompt) if prompt.answer.is_none() => Some(prompt.id.clone()),
+            Cell::Plan(plan) if plan.answer.is_none() => Some(plan.id.clone()),
+            _ => None,
+        })
+    }
+
+    /// The last plan this session saw, answered or not.
+    pub fn last_plan(&self) -> Option<&PlanCell> {
+        self.cells.iter().rev().find_map(|cell| match cell {
+            Cell::Plan(plan) => Some(plan),
+            _ => None,
+        })
     }
 
     /// The prompt currently blocking the turn, if any.

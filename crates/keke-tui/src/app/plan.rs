@@ -33,14 +33,20 @@ pub struct PlanComment {
     pub text: String,
 }
 
-/// The plan awaiting a person's answer, and where they have scrolled to in it.
+/// What is being done to the plan in the scrollback while it waits.
+///
+/// The plan's text is here too, since the feedback quotes it and reading it
+/// back out of the transcript to build a quote would be the same string with
+/// one more way to be wrong.
 #[derive(Clone)]
 pub struct PlanReview {
     /// The plan as the agent wrote it. Empty when it proposed none, which is a
     /// state of its own rather than an error: a person can still approve, ask
     /// for changes, or drop the plan.
     text: String,
-    scroll: usize,
+    /// The policy the plan would be carried out under, chosen with the arrow
+    /// keys on the panel under the transcript.
+    policy: keke_config_types::ApprovalPolicy,
     /// The plan line the selection is on, 0-based.
     cursor: usize,
     /// Where a range selection started, while one is being made.
@@ -50,13 +56,6 @@ pub struct PlanReview {
     /// The lines the composer is currently writing a comment about. `None`
     /// means the composer holds freeform revision notes instead.
     commenting: Option<(usize, usize)>,
-    /// Where the plan was written, when it could be written at all. Shown to
-    /// the person: a plan they cannot find again is one they have to ask for
-    /// twice.
-    path: Option<std::path::PathBuf>,
-    /// How this plan was answered, once it was. `Some` makes the review a
-    /// record: it can be read and copied, never answered again.
-    answered: Option<PermissionAnswer>,
 }
 
 impl PlanReview {
@@ -73,15 +72,10 @@ impl PlanReview {
         self.text.trim().is_empty()
     }
 
-    /// The file this plan was written to, when it was.
+    /// The policy that would carry this plan out.
     #[must_use]
-    pub fn path(&self) -> Option<&std::path::Path> {
-        self.path.as_deref()
-    }
-
-    #[must_use]
-    pub fn scroll(&self) -> usize {
-        self.scroll
+    pub fn policy(&self) -> keke_config_types::ApprovalPolicy {
+        self.policy
     }
 
     #[must_use]
@@ -98,13 +92,6 @@ impl PlanReview {
     #[must_use]
     pub fn is_commenting(&self) -> bool {
         self.commenting.is_some()
-    }
-
-    /// Whether this plan has already been answered, and so is a record of what
-    /// was decided rather than a live question.
-    #[must_use]
-    pub fn is_answered(&self) -> bool {
-        self.answered.is_some()
     }
 
     /// The selected plan lines, 0-based and inclusive at both ends.
@@ -224,20 +211,22 @@ impl App {
         self.plan.as_ref().map_or(PlanFocus::Preview, |r| r.focus)
     }
 
-    pub(super) fn open_plan_review(&mut self, call: &ToolCall) {
+    pub(super) fn open_plan_review(&mut self, id: keke_acp::PermissionId, call: &ToolCall) {
         let text = plan_text(call);
         let path = self.write_plan(&text);
+        self.transcript.request_plan(id, text.clone(), path);
         self.plan = Some(PlanReview {
-            path,
             text,
-            scroll: 0,
+            // Starts at the policy in force: a person who just wants the plan
+            // carried out the way the session already runs presses one key.
+            policy: self.approval,
             cursor: 0,
             anchor: None,
             comments: Vec::new(),
             focus: PlanFocus::Preview,
             commenting: None,
-            answered: None,
         });
+        self.scroll.follow();
     }
 
     /// Write the plan under `$KEKE_HOME/plans`, and say where it went.
@@ -268,57 +257,31 @@ impl App {
         Some(path)
     }
 
-    /// Put the answered plan away where `/view-plan` can find it.
-    ///
-    /// It lives on the app rather than in the transcript because the
-    /// transcript records what was *said* — the permission prompt and its
-    /// answer — while this is reviewable state: a scroll position, a set of
-    /// comments, and a plan body that would otherwise be gone the moment it
-    /// was answered. Only the last one is kept: "the plan" in a person's head
-    /// is the one they just looked at.
-    fn archive_plan(&mut self, answer: PermissionAnswer) {
-        if let Some(mut review) = self.plan.take() {
-            review.answered = Some(answer);
-            review.focus = PlanFocus::Preview;
-            review.commenting = None;
-            self.last_plan = Some(review);
-        }
-    }
-
-    /// Approve the plan: the agent may start building.
+    /// Approve the plan: the agent may start building, under the policy
+    /// chosen on the panel below it.
     ///
     /// The mode is not cleared here. Plan mode ends when the agent says it has
     /// ended, over [`keke_acp::Update::ModeChanged`] — a surface that turned
     /// its own flag off on approval would be drawing an outcome it had only
     /// asked for.
     pub fn approve_plan(&mut self) {
-        if self.refuse_answered_plan() {
+        let Some(policy) = self.plan.as_ref().map(|review| review.policy) else {
             return;
-        }
-        // Not answered here. Plan mode is the tightest rung of the strictness
-        // ladder, so leaving it is the one moment a person is deciding how
-        // much of the plan may be carried out without them — the overlay asks
-        // that once, rather than letting the policy underneath plan mode
-        // decide it silently.
-        self.open_policy_picker();
-    }
-
-    /// Approve, and carry the plan out under `policy`: what the overlay
-    /// [`App::approve_plan`] opens answers with.
-    pub fn approve_plan_under(&mut self, policy: keke_config_types::ApprovalPolicy) {
-        if self.refuse_answered_plan() {
-            return;
-        }
+        };
+        // Plan mode is the tightest rung of the strictness ladder, so leaving
+        // it is the moment a person decides how much of the plan may happen
+        // without them. The panel asked that while they read; this is the
+        // answer, not a policy inherited from underneath plan mode.
         self.set_approval_policy_aloud(policy);
         let feedback = self.plan.as_ref().and_then(|r| r.feedback(None));
         self.show_plan_feedback(feedback.as_deref());
         self.answer_permission_with_note(PermissionAnswer::Allow, feedback);
-        self.archive_plan(PermissionAnswer::Allow);
+        self.plan = None;
     }
 
     /// Send the agent back to planning, with whatever was said about the plan.
     pub fn request_plan_changes(&mut self) {
-        if self.refuse_answered_plan() {
+        if self.plan.is_none() {
             return;
         }
         let notes = self.input.take();
@@ -330,7 +293,7 @@ impl App {
         // The refusal reason is what the model reads as the call's result, so
         // what the person wrote about the plan is the refusal itself.
         self.answer_permission_with_note(PermissionAnswer::Deny, feedback);
-        self.archive_plan(PermissionAnswer::Deny);
+        self.plan = None;
     }
 
     /// Put what the person said into the transcript.
@@ -349,25 +312,27 @@ impl App {
     /// Unlike requesting changes, this asks for the mode itself to end: a
     /// person who is done planning wants the next prompt answered, not planned.
     pub fn quit_plan(&mut self) {
-        // A record is closed, not quit: its question was answered long ago,
-        // and asking to leave plan mode again would be answering for the
-        // person a second time.
-        if self.plan.as_ref().is_some_and(PlanReview::is_answered) {
-            self.plan = None;
+        if self.plan.is_none() {
             return;
         }
         self.answer_permission(PermissionAnswer::Deny);
-        self.archive_plan(PermissionAnswer::Deny);
+        self.plan = None;
         self.request_session_mode(keke_config_types::SessionMode::Default);
     }
 
-    /// Whether the open review is a record, saying so if it is.
-    fn refuse_answered_plan(&mut self) -> bool {
-        if self.plan.as_ref().is_some_and(PlanReview::is_answered) {
-            self.set_flash("this plan was already answered — q closes the record");
-            return true;
-        }
-        false
+    /// Choose the policy the plan will be carried out under: the arrow keys on
+    /// the panel under the transcript.
+    pub fn move_plan_policy(&mut self, delta: isize) {
+        let Some(review) = &mut self.plan else {
+            return;
+        };
+        let policies = crate::slash::POLICIES;
+        let at = policies
+            .iter()
+            .position(|policy| *policy == review.policy)
+            .unwrap_or(0) as isize;
+        let at = (at + delta).rem_euclid(policies.len() as isize) as usize;
+        review.policy = policies[at];
     }
 
     /// Put the plan on the clipboard, or say there is nothing to put there.
@@ -381,14 +346,6 @@ impl App {
         }
         let text = review.text.clone();
         self.copy(text);
-    }
-
-    /// Move within the plan. Clamped by the frame that draws it, which is the
-    /// only thing that knows how tall the panel came out.
-    pub fn scroll_plan(&mut self, delta: isize) {
-        if let Some(review) = &mut self.plan {
-            review.scroll = review.scroll.saturating_add_signed(delta);
-        }
     }
 
     /// Move the selected line. `extend` grows the range instead of moving it,
@@ -408,9 +365,6 @@ impl App {
 
     /// Start writing a comment about the selected lines.
     pub fn begin_plan_comment(&mut self) {
-        if self.refuse_answered_plan() {
-            return;
-        }
         let Some(review) = &mut self.plan else {
             return;
         };
@@ -470,36 +424,61 @@ impl App {
         review.anchor = None;
     }
 
-    /// Reopen the last plan this session saw, as a record.
+    /// `/view-plan`: put the last plan back on screen.
+    ///
+    /// It is still in the scrollback — a plan is never thrown away now — so
+    /// this is a scroll, not a resurrection.
     pub(super) fn view_plan_command(&mut self) {
-        if self.plan.is_some() {
-            return;
-        }
-        let Some(review) = self.last_plan.clone() else {
+        if self.transcript.last_plan().is_none() {
             self.set_flash("no plan yet — /plan asks the agent for one");
             return;
-        };
-        self.plan = Some(review);
+        }
+        self.show_last_plan = true;
     }
 
-    /// Told by `draw` how far down the plan can go, so a held-down arrow key
-    /// cannot scroll past the end and leave a blank panel behind.
-    pub(crate) fn clamp_plan_scroll(&mut self, max: usize) {
-        if let Some(review) = &mut self.plan {
-            review.scroll = review.scroll.min(max);
+    /// What the composer is writing about, while it is writing about a plan.
+    #[must_use]
+    pub fn plan_comment_label(&self) -> Option<String> {
+        let review = self.plan.as_ref()?;
+        if review.focus != PlanFocus::Composer {
+            return None;
         }
+        Some(match review.commenting {
+            Some((first, last)) if first == last => format!(" comment on line {first} "),
+            Some((first, last)) => format!(" comment on lines {first}-{last} "),
+            None => " what should change? ".to_string(),
+        })
     }
 
-    /// Told by `draw` where the selected line landed, so moving the selection
-    /// scrolls the panel rather than moving a highlight nobody can see.
-    pub(crate) fn reveal_plan_row(&mut self, row: usize, visible: usize) {
-        let Some(review) = &mut self.plan else {
-            return;
-        };
-        if row < review.scroll {
-            review.scroll = row;
-        } else if visible > 0 && row >= review.scroll + visible {
-            review.scroll = row + 1 - visible;
+    /// How the waiting plan is being read, for the frame that draws it.
+    #[must_use]
+    pub(crate) fn plan_view(&self) -> Option<crate::draw::transcript::PlanView> {
+        let review = self.plan.as_ref()?;
+        let (first, last) = review.selection();
+        Some(crate::draw::transcript::PlanView {
+            first,
+            last,
+            selecting: review.focus == PlanFocus::Preview,
+        })
+    }
+
+    /// Which rendered line the frame should bring into view: the selected plan
+    /// line, or the top of the last plan when `/view-plan` asked for it.
+    pub(crate) fn wanted_plan_line(&mut self, plan_lines: &[(usize, usize)]) -> Option<usize> {
+        if std::mem::take(&mut self.show_last_plan) {
+            return plan_lines.first().map(|(_, line)| *line);
         }
+        let (first, _) = self.plan.as_ref()?.selection();
+        plan_lines
+            .iter()
+            .find(|(plan_line, _)| *plan_line == first)
+            .map(|(_, line)| *line)
+    }
+
+    /// Told by `draw` which rendered line the selected plan line landed on, so
+    /// moving the selection scrolls the transcript rather than moving a
+    /// highlight off screen.
+    pub(crate) fn reveal_plan_line(&mut self, line: usize) {
+        self.scroll.reveal(line);
     }
 }

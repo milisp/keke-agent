@@ -87,16 +87,15 @@ pub struct App {
     /// The model or provider overlay, while one is open. `None` is the
     /// ordinary state: the composer has the keyboard.
     picker: Option<crate::picker::Picker>,
-    /// The plan review, while the agent is asking to leave plan mode. Another
-    /// overlay that owns the keyboard, for the same reason the picker is one:
-    /// the turn is stopped on it, so a keystroke that quietly went into the
-    /// composer would look like the interface had died.
+    /// What is being done to the plan in the scrollback, while one is waiting
+    /// for an answer: which lines are selected, what has been said about them,
+    /// and which policy would carry it out. The plan itself is a cell like any
+    /// other; this is only the reading of it.
     plan: Option<plan::PlanReview>,
-    /// The last plan this session answered or dismissed, so `/view-plan` can
-    /// bring it back. Kept here rather than in the transcript because the
-    /// transcript holds what was said, not reviewable state — and because the
-    /// plan body would otherwise be gone the instant it was answered.
-    last_plan: Option<plan::PlanReview>,
+    /// Set by `/view-plan`, cleared by the frame that acts on it: bring the
+    /// last plan back on screen. A flag rather than a scroll because only the
+    /// frame knows which line the plan came out on.
+    show_last_plan: bool,
     approval: ApprovalPolicy,
     /// Whether the session is planning. Held rather than derived because the
     /// agent can enter and leave plan mode on its own, so the only truthful
@@ -213,7 +212,7 @@ impl App {
                 completion: 0,
                 picker: None,
                 plan: None,
-                last_plan: None,
+                show_last_plan: false,
                 approval: ApprovalPolicy::default(),
                 mode: keke_config_types::SessionMode::default(),
                 effort: None,
@@ -523,9 +522,12 @@ impl App {
             }
             Update::PermissionRequested { id, call, reason } => {
                 self.turn = Turn::AwaitingPermission;
-                self.transcript.request_permission(id, &call, reason);
+                // A plan is not a tool prompt with a plan attached: it is the
+                // plan, so it goes into the scrollback as one.
                 if call.name == plan::EXIT_PLAN_MODE {
-                    self.open_plan_review(&call);
+                    self.open_plan_review(id, &call);
+                } else {
+                    self.transcript.request_permission(id, &call, reason);
                 }
             }
             Update::TurnEnded(reason) => {
@@ -686,8 +688,6 @@ impl App {
     }
 
     pub fn open_permission_id(&self) -> Option<PermissionId> {
-        self.transcript
-            .open_permission()
-            .map(|prompt| prompt.id.clone())
+        self.transcript.open_permission_id()
     }
 }

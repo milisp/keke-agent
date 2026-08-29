@@ -537,7 +537,7 @@ fn tool_arguments_collapse_to_one_line() {
 #[test]
 fn wrapped_text_keeps_its_block_shape() {
     let cells = vec![Cell::User("a b c d e f g h i j".to_string())];
-    let lines = crate::draw::transcript::render(&cells, 12, &Default::default()).lines;
+    let lines = crate::draw::transcript::render(&cells, 12, &Default::default(), None).lines;
     let rendered: Vec<String> = lines
         .iter()
         .map(|line| {
@@ -811,6 +811,25 @@ async fn the_plan_command_asks_for_the_mode_and_can_carry_the_prompt() {
     assert_eq!(scripted.prompts(), vec!["add caching".to_string()]);
 }
 
+/// The plan is in the scrollback, numbered, with the file it was saved to —
+/// not in a window over it. Numbered because a comment says "line 7", so line
+/// 7 has to be something a person can see and point at.
+#[tokio::test]
+async fn the_plan_is_drawn_into_the_transcript_with_its_lines_numbered() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("alpha\nbravo"));
+
+    let drawn = rendered(&app);
+    assert!(drawn.iter().any(|line| line.contains("   1 alpha")));
+    assert!(drawn.iter().any(|line| line.contains("   2 bravo")));
+
+    // And moving the selection is a transcript scroll, not a panel's own.
+    app.handle_key(key(KeyCode::Char('j')));
+    let view = app.plan_view().expect("a plan being read");
+    assert_eq!((view.first, view.last), (1, 1));
+    assert!(view.selecting);
+}
+
 /// A plan is a document a person reads, edits, and shows to somebody else, so
 /// it outlives the process that received it — and the surface says where.
 #[tokio::test]
@@ -822,11 +841,12 @@ async fn a_plan_is_saved_under_the_keke_home_and_its_path_is_shown() {
 
     app.apply(exit_plan_mode("# Rewrite the parser\n\nstep one"));
     let path = app
-        .plan_review()
-        .expect("a plan")
-        .path()
-        .expect("a saved plan")
-        .to_path_buf();
+        .transcript
+        .last_plan()
+        .expect("a plan in the scrollback")
+        .path
+        .clone()
+        .expect("a saved plan");
     assert_eq!(path, home.path().join("plans/rewrite-the-parser.md"));
     assert!(
         std::fs::read_to_string(&path)
@@ -851,25 +871,28 @@ async fn the_status_bar_drops_the_policy_while_planning() {
 }
 
 /// Approving is the moment a person decides how much of the plan may happen
-/// without them, so it asks once rather than falling back to whatever policy
-/// was standing underneath plan mode.
+/// without them, so the panel under it asks while they read, and `a` answers
+/// with what they chose rather than with the policy underneath plan mode.
 #[tokio::test]
-async fn approving_a_plan_asks_which_policy_carries_it_out() {
+async fn approving_a_plan_carries_it_out_under_the_policy_chosen_on_the_panel() {
     let (mut app, scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::ModeChanged(SessionMode::Plan));
     app.apply(exit_plan_mode("do the thing"));
+    assert_eq!(
+        app.plan_review().expect("a plan").policy(),
+        ApprovalPolicy::OnRequest,
+        "it starts at what the session already runs under"
+    );
+
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(
+        app.plan_review().expect("a plan").policy(),
+        ApprovalPolicy::Never
+    );
+    assert!(scripted.answers().is_empty(), "picking is not answering");
 
     app.handle_key(key(KeyCode::Char('a')));
-    assert!(app.policy_picker().is_some(), "the overlay opened");
-    assert!(scripted.answers().is_empty(), "nothing answered yet");
-
-    // The overlay owns the keyboard over the review: `s` filters, it does not
-    // send the plan back.
-    type_text(&mut app, "never");
-    assert!(scripted.answers().is_empty());
-    assert_eq!(app.picker_policies(), vec![ApprovalPolicy::Never]);
-
-    app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
     assert_eq!(
         scripted.answers(),
@@ -879,20 +902,6 @@ async fn approving_a_plan_asks_which_policy_carries_it_out() {
             None
         )]
     );
-}
-
-/// Escape out of the policy overlay is not an answer: the plan is still there
-/// to approve, send back, or quit.
-#[tokio::test]
-async fn escaping_the_policy_overlay_leaves_the_plan_unanswered() {
-    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
-    app.apply(exit_plan_mode("do the thing"));
-
-    app.handle_key(key(KeyCode::Char('a')));
-    app.handle_key(key(KeyCode::Esc));
-    assert!(app.policy_picker().is_none());
-    assert!(app.plan_review().is_some());
-    assert!(scripted.answers().is_empty());
 }
 
 fn exit_plan_mode(plan: &str) -> Update {
@@ -924,8 +933,6 @@ async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
 
     app.apply(exit_plan_mode("do the thing"));
     app.handle_key(key(KeyCode::Char('a')));
-    assert!(app.plan_review().is_some(), "the plan waits for the policy");
-    app.handle_key(key(KeyCode::Enter));
     assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers(),
@@ -1128,30 +1135,29 @@ async fn view_plan_reopens_the_last_plan_as_a_record() {
     app.handle_key(key(KeyCode::Enter));
     assert!(app.plan_review().is_none());
 
-    type_text(&mut app, "/view-plan");
-    app.handle_key(key(KeyCode::Enter));
-    let review = app.plan_review().expect("the plan came back");
-    assert!(review.text().contains("bravo"));
-    assert!(review.is_answered());
+    let plan = app.transcript.last_plan().expect("the plan is still there");
+    assert!(plan.text.contains("bravo"));
+    assert_eq!(plan.answer, Some(PermissionAnswer::Allow));
 }
 
-/// A record is a record: the same plan cannot be answered twice.
+/// A plan stays in the scrollback after it is answered, so `/view-plan` is a
+/// scroll rather than a resurrection — and nothing there can be answered again.
 #[tokio::test]
-async fn a_reopened_plan_cannot_be_answered_again() {
+async fn an_answered_plan_stays_in_the_scrollback_and_takes_no_more_answers() {
     let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(exit_plan_mode("alpha"));
     app.handle_key(key(KeyCode::Char('s')));
     let answered = scripted.answers();
+    assert!(app.plan_review().is_none(), "the review is over");
 
     type_text(&mut app, "/show-plan");
     app.handle_key(key(KeyCode::Enter));
     app.handle_key(key(KeyCode::Char('a')));
     assert_eq!(scripted.answers(), answered, "nothing new was answered");
-    assert!(app.flash().is_some_and(|text| text.contains("already")));
 
-    // ...and it closes without asking to leave plan mode a second time.
-    app.handle_key(key(KeyCode::Char('q')));
-    assert!(app.plan_review().is_none());
+    let plan = app.transcript.last_plan().expect("the plan is still there");
+    assert_eq!(plan.text, "alpha");
+    assert_eq!(plan.answer, Some(PermissionAnswer::Deny));
     assert!(scripted.modes().is_empty());
 }
 
@@ -1422,7 +1428,7 @@ fn status_bar(app: &App) -> String {
 
 /// Flatten a rendered transcript to plain strings.
 fn rendered(app: &App) -> Vec<String> {
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded())
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), app.plan_view())
         .lines
         .iter()
         .map(|line| {
@@ -1484,7 +1490,7 @@ fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_reads(&mut app, 3);
     // The map of what is on screen is a frame's, so draw one first.
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), app.plan_view());
     app.toggle_last_expandable();
 
     let lines = rendered(&app);

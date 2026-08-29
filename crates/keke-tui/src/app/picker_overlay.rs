@@ -66,42 +66,6 @@ impl App {
         self.picker = Some(picker);
     }
 
-    /// Open the policy overlay: the one question approving a plan asks before
-    /// it answers, and the only way this list opens.
-    ///
-    /// It lands on the policy in force, so a person who just wants the plan
-    /// carried out under what the bar already said presses enter twice.
-    pub fn open_policy_picker(&mut self) {
-        let mut picker = crate::picker::Picker::new(crate::picker::PickerKind::Policy);
-        if let Some(at) = crate::picker::POLICIES
-            .iter()
-            .position(|policy| *policy == self.approval)
-        {
-            picker.move_selection(at as isize, crate::picker::POLICIES.len());
-        }
-        self.picker = Some(picker);
-    }
-
-    /// The policy overlay, if that is the one that is open.
-    #[must_use]
-    pub fn policy_picker(&self) -> Option<&crate::picker::Picker> {
-        self.picker
-            .as_ref()
-            .filter(|picker| picker.kind() == crate::picker::PickerKind::Policy)
-    }
-
-    /// The policy rows the overlay is showing this frame, after its filter.
-    #[must_use]
-    pub fn picker_policies(&self) -> Vec<keke_config_types::ApprovalPolicy> {
-        let Some(picker) = self.policy_picker() else {
-            return Vec::new();
-        };
-        crate::picker::POLICIES
-            .into_iter()
-            .filter(|policy| picker.matches(policy))
-            .collect()
-    }
-
     /// The MCP overlay, if that is the one that is open.
     #[must_use]
     pub fn mcp_picker(&self) -> Option<&crate::picker::Picker> {
@@ -174,7 +138,6 @@ impl App {
             Some(crate::picker::PickerKind::Model) => self.picker_models().len(),
             Some(crate::picker::PickerKind::Provider) => self.picker_providers().len(),
             Some(crate::picker::PickerKind::Mcp) => self.picker_mcp().len(),
-            Some(crate::picker::PickerKind::Policy) => self.picker_policies().len(),
             None => 0,
         }
     }
@@ -235,13 +198,6 @@ impl App {
                     && let Err(refusal) = self.mcp_login(&wanted)
                 {
                     self.mcp_activity.insert(wanted, refusal);
-                }
-            }
-            Some(crate::picker::PickerKind::Policy) => {
-                let wanted = self.picker_policies().get(at).copied();
-                if let Some(wanted) = wanted {
-                    self.close_picker();
-                    self.approve_plan_under(wanted);
                 }
             }
             None => {}

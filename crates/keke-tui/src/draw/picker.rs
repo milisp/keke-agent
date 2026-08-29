@@ -111,22 +111,6 @@ fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
             rows,
         ));
     }
-    if let Some(picker) = app.policy_picker() {
-        let rows = app
-            .picker_policies()
-            .into_iter()
-            .map(|policy| Row {
-                current: policy == app.approval_policy(),
-                label: crate::slash::policy_name(policy).to_string(),
-                detail: crate::picker::policy_detail(policy).to_string(),
-            })
-            .collect::<Vec<_>>();
-        return Some((
-            picker,
-            " carry the plan out \u{2014} enter approves under this policy, esc keeps planning ",
-            rows,
-        ));
-    }
     None
 }
 

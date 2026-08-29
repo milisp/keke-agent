@@ -228,6 +228,26 @@ fn is_name_char(ch: char) -> bool {
     ch.is_alphanumeric() || matches!(ch, '-' | '_' | ':')
 }
 
+/// The three approval policies, strictest first: the order the plan panel
+/// lists them in, so the row a person lands on without reading is the one
+/// that asks the most rather than the one that asks the least.
+pub const POLICIES: [ApprovalPolicy; 3] = [
+    ApprovalPolicy::OnRequest,
+    ApprovalPolicy::OnFailure,
+    ApprovalPolicy::Never,
+];
+
+/// What a policy says beside its name, since the name alone does not say what
+/// a person is agreeing to let happen while the plan is carried out.
+#[must_use]
+pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
+    match policy {
+        ApprovalPolicy::OnRequest => "ask before each command",
+        ApprovalPolicy::OnFailure => "ask only when a command fails",
+        ApprovalPolicy::Never => "never ask \u{2014} run everything",
+    }
+}
+
 /// How an approval policy is written wherever a person sees or types one.
 #[must_use]
 pub fn policy_name(policy: ApprovalPolicy) -> &'static str {

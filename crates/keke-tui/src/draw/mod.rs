@@ -58,7 +58,11 @@ fn below(frame: &mut Frame, body: ratatui::layout::Rect, app: &mut App) {
 /// viewport decides what to show; scrolling anchors to wrapped lines rather
 /// than to cells, which is the only way a long tool result scrolls smoothly.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
-    let frame_area = frame.area();
+    // While a plan waits, the screen belongs to it: the composer has nothing
+    // to say until a comment is being written, and the status bar's policy is
+    // exactly what the panel below the plan is asking about.
+    let planning = app.plan_review().is_some();
+    let composing = planning && app.plan_focus() == crate::app::plan::PlanFocus::Composer;
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -73,19 +77,34 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // turn runs, and collapses to nothing when idle.
             Constraint::Length(turn_status::rows(app)),
             Constraint::Length(subagents::rows(app)),
-            Constraint::Length(input::rows(app, frame.area().width)),
+            Constraint::Length(if planning && !composing {
+                0
+            } else {
+                input::rows(app, frame.area().width)
+            }),
             Constraint::Length(picker::rows(app, frame.area().height)),
-            Constraint::Length(1),
+            Constraint::Length(plan::rows(app)),
+            Constraint::Length(u16::from(!planning)),
         ])
         .split(frame.area());
 
-    let (header, body, menu, turn, agents, composer, picker_area, footer) = (
-        areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7],
+    let (header, body, menu, turn, agents, composer, picker_area, policies, footer) = (
+        areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
     );
 
-    let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
+    let rendered = transcript::render(
+        app.transcript.cells(),
+        body.width,
+        app.expanded(),
+        app.plan_view(),
+    );
     app.scroll
         .measure(rendered.lines.len(), usize::from(body.height));
+    // Keep the selected plan line on screen: the plan is in the scrollback
+    // now, so moving the selection scrolls the transcript like anything else.
+    if let Some(line) = app.wanted_plan_line(&rendered.plan_lines) {
+        app.reveal_plan_line(line);
+    }
     let offset = app.scroll.offset();
 
     // A header only answers a click while it is on screen, so the map is of
@@ -132,14 +151,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     subagents::draw(frame, agents, app);
     header::draw(frame, header, app);
     picker::draw(frame, picker_area, app);
+    plan::draw(frame, policies, app);
     status::draw(frame, footer, app);
     // Last: the remaining overlay holds the keyboard, so nothing may be drawn over it.
     subagents::detail(frame, app);
-    plan::draw(frame, frame_area, app);
-    // After the plan, and only then: the policy overlay is opened *by* the
-    // plan review and holds the keyboard over it, so it must not be painted
-    // under the panel it is answering for.
-    if app.policy_picker().is_some() {
-        picker::draw(frame, picker_area, app);
-    }
 }

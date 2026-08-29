@@ -62,6 +62,20 @@ impl Scrollback {
         self.top = (next < self.max_top()).then_some(next);
     }
 
+    /// Bring `line` into view, moving as little as possible.
+    ///
+    /// Used to follow a selection that lives inside the transcript — a plan's
+    /// selected line — so the highlight a person is moving cannot walk off the
+    /// screen it is being read on.
+    pub fn reveal(&mut self, line: usize) {
+        let top = self.offset();
+        if line < top {
+            self.top = Some(line);
+        } else if self.height > 0 && line >= top + self.height {
+            self.top = Some((line + 1 - self.height).min(self.max_top()));
+        }
+    }
+
     pub fn page_up(&mut self) {
         self.scroll_up(self.page());
     }

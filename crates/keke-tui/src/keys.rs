@@ -55,15 +55,12 @@ impl App {
         // Both overlays own the keyboard while they are up: the turn is
         // stopped on the plan review, so its letters answer it rather than
         // being typed into a composer nobody is looking at.
-        // The picker is checked first: approving a plan opens the policy
-        // overlay over the still-open review, and the letters typed to filter
-        // it must not be answering the plan underneath.
-        if self.picker_open() && !control {
-            self.handle_picker_key(key);
-            return;
-        }
         if self.plan_review().is_some() && !control {
             self.handle_plan_key(key);
+            return;
+        }
+        if self.picker_open() && !control {
+            self.handle_picker_key(key);
             return;
         }
 
@@ -278,10 +275,15 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.quit_plan(),
             // Shift extends the selection instead of moving it, so a comment
             // can cover a run of lines without a mode to enter and leave.
-            KeyCode::Up | KeyCode::Char('k' | 'K') => self.move_plan_cursor(-1, shift),
-            KeyCode::Down | KeyCode::Char('j' | 'J') => self.move_plan_cursor(1, shift),
-            KeyCode::PageUp => self.scroll_plan(-10),
-            KeyCode::PageDown => self.scroll_plan(10),
+            // The plan is read with j/k, and the arrows pick the policy it
+            // will be carried out under: two lists on screen at once, each
+            // with the keys a person is already using for it.
+            KeyCode::Char('k' | 'K') => self.move_plan_cursor(-1, shift),
+            KeyCode::Char('j' | 'J') => self.move_plan_cursor(1, shift),
+            KeyCode::Up => self.move_plan_policy(-1),
+            KeyCode::Down => self.move_plan_policy(1),
+            KeyCode::PageUp => self.scroll.page_up(),
+            KeyCode::PageDown => self.scroll.page_down(),
             _ => {}
         }
     }

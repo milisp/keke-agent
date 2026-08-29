@@ -38,6 +38,92 @@ pub(crate) struct Rendered {
     pub lines: Vec<Line<'static>>,
     /// `(line index, cell key)` for every row a click may expand or collapse.
     pub toggles: Vec<(usize, usize)>,
+    /// `(plan line, line index)` for the last plan drawn, so the frame can
+    /// scroll a selection that lives inside the scrollback into view.
+    pub plan_lines: Vec<(usize, usize)>,
+}
+
+/// How the plan waiting for an answer is being read: which of its lines are
+/// selected, and whether the selection is live. Passed in rather than stored
+/// on the cell because the cell is the record of what the agent said, and a
+/// moving highlight is not part of that.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlanView {
+    pub first: usize,
+    pub last: usize,
+    /// False while the composer has the keyboard: the letters are going into
+    /// a comment, and a highlight that still looked armed would say otherwise.
+    pub selecting: bool,
+}
+
+/// Width of the plan's line-number gutter, including its trailing space.
+const PLAN_GUTTER: usize = 5;
+
+/// The plan, numbered line by line.
+///
+/// Numbered rather than rendered as markdown because a comment says "line 7",
+/// so line 7 has to be something a person can see and point at. A line too
+/// long for the screen wraps, and every row it wraps onto still belongs to it.
+fn plan_lines(
+    out: &mut Rendered,
+    cell: &crate::transcript::PlanCell,
+    view: Option<PlanView>,
+    width: usize,
+) {
+    let header = match cell.answer {
+        None => Span::styled(
+            " plan ",
+            Style::new()
+                .fg(Color::Black)
+                .bg(DENIED)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Some(PermissionAnswer::Deny) => {
+            Span::styled(" plan · sent back ", Style::new().fg(THINKING))
+        }
+        Some(_) => Span::styled(" plan · approved ", Style::new().fg(SUCCESS)),
+    };
+    out.lines.push(Line::from(header));
+
+    if cell.text.trim().is_empty() {
+        // An agent that left plan mode without writing anything is not an
+        // error and not a blank space: a person can still approve and get on
+        // with it, so the cell says what happened.
+        out.lines.push(Line::styled(
+            "  the agent proposed no plan",
+            Style::new().fg(DENIED),
+        ));
+    }
+    let body = width.saturating_sub(PLAN_GUTTER).max(8);
+    for (index, line) in cell.text.lines().enumerate() {
+        let selected =
+            view.is_some_and(|view| view.selecting && (view.first..=view.last).contains(&index));
+        for part in markdown::wrap_plain(line, body) {
+            out.plan_lines.push((index, out.lines.len()));
+            out.lines.push(Line::from(vec![
+                Span::styled(format!("{:>4} ", index + 1), Style::new().fg(THINKING)),
+                Span::styled(
+                    part,
+                    if selected {
+                        Style::new()
+                            .bg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new()
+                    },
+                ),
+            ]));
+        }
+    }
+    // Where it was saved, so a person can open it, edit it, or send it to
+    // somebody without asking the agent to repeat itself.
+    if let Some(path) = &cell.path {
+        out.lines.push(Line::styled(
+            format!("  {}", path.display()),
+            Style::new().fg(THINKING),
+        ));
+    }
+    out.lines.push(Line::raw(""));
 }
 
 /// The status a group is reported as: the worst one in it.
@@ -60,13 +146,22 @@ fn worst(status: ToolStatus, running: ToolStatus) -> ToolStatus {
     }
 }
 
-pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> Rendered {
+pub(crate) fn render(
+    cells: &[Cell],
+    width: u16,
+    expanded: &HashSet<usize>,
+    plan: Option<PlanView>,
+) -> Rendered {
     let width = usize::from(width.max(8));
     let mut out = Rendered::default();
     let mut index = 0;
     while index < cells.len() {
         let cell = &cells[index];
         match cell {
+            Cell::Plan(plan_cell) => {
+                let view = plan_cell.answer.is_none().then_some(plan).flatten();
+                plan_lines(&mut out, plan_cell, view, width);
+            }
             Cell::User(text) => {
                 push_block(&mut out.lines, "› ", text, Style::new().fg(USER), width);
             }
