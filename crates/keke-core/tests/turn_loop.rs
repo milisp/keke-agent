@@ -355,6 +355,7 @@ async fn a_plain_turn_streams_text_and_logs_everything() {
             SessionEvent::ModelRequest { .. } => "model_request",
             SessionEvent::ModelResponse { .. } => "model_response",
             SessionEvent::TurnEnd { .. } => "turn_end",
+            SessionEvent::ContextFragment { .. } => "context_fragment",
             _ => "other",
         })
         .collect();
@@ -363,6 +364,11 @@ async fn a_plain_turn_streams_text_and_logs_everything() {
         vec![
             "session_start",
             "turn_start",
+            // The system prompt is model-visible input that `model_request`
+            // does not carry, so each fragment of it is logged in assembled
+            // order, ahead of the request it is part of.
+            "context_fragment",
+            "context_fragment",
             "model_request",
             "model_response",
             "turn_end"

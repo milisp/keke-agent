@@ -137,6 +137,11 @@ impl Session {
             ext_ctx,
         )
         .await;
+        // Before the first `ModelRequest`, so a fragment is on disk ahead of
+        // the request it is part of rather than trailing the first tool call.
+        for event in ext_ctx.drain_events() {
+            self.log(event).await?;
+        }
         let specs = tool_specs(&tools);
 
         let mut usage = Usage::default();

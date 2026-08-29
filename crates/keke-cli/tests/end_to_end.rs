@@ -131,6 +131,12 @@ async fn exec_runs_a_tool_and_records_a_replayable_session() {
         vec![
             "session_start",
             "turn_start",
+            // The system prompt reaches the model but is not part of
+            // `model_request`, so each fragment of it is logged separately —
+            // identity, project instructions, and environment here.
+            "context_fragment",
+            "context_fragment",
+            "context_fragment",
             "model_request",
             "model_response",
             "tool_call_start",
