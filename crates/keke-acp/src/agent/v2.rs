@@ -548,7 +548,7 @@ async fn pump(
                 };
                 entry
                     .conversation
-                    .respond_to_permission(&permission, answer);
+                    .respond_to_permission(&permission, answer, None);
             }
             Update::TurnEnded(reason) => {
                 idle(&cx, &id, acp_stop_reason(&reason))?;

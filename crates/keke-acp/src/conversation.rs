@@ -224,7 +224,18 @@ pub trait Conversation: Send + Sync {
     fn cancel(&self);
 
     /// Answer an outstanding permission request.
-    fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer);
+    ///
+    /// `note` is what the person said while answering, when they said
+    /// anything. It travels with the answer rather than after it: someone who
+    /// approves while asking for one thing to be different is instructing the
+    /// work the call is about to do, and a note sent as the next prompt would
+    /// arrive once that work was already finished.
+    fn respond_to_permission(
+        &self,
+        id: &PermissionId,
+        answer: PermissionAnswer,
+        note: Option<String>,
+    );
 
     /// Change how much the agent may do without asking.
     ///
@@ -283,7 +294,7 @@ pub struct ScriptedConversation {
     script: Mutex<Vec<Vec<Update>>>,
     /// Prompts received, so a test can assert what the surface sent.
     prompts: Arc<Mutex<Vec<String>>>,
-    answers: Arc<Mutex<Vec<(PermissionId, PermissionAnswer)>>>,
+    answers: Arc<Mutex<Vec<(PermissionId, PermissionAnswer, Option<String>)>>>,
     cancels: Arc<Mutex<usize>>,
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
     efforts: Arc<Mutex<Vec<Option<ReasoningEffort>>>>,
@@ -330,7 +341,7 @@ impl ScriptedConversation {
     }
 
     #[must_use]
-    pub fn answers(&self) -> Vec<(PermissionId, PermissionAnswer)> {
+    pub fn answers(&self) -> Vec<(PermissionId, PermissionAnswer, Option<String>)> {
         self.answers
             .lock()
             .map(|seen| seen.clone())
@@ -412,9 +423,14 @@ impl Conversation for ScriptedConversation {
         }
     }
 
-    fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer) {
+    fn respond_to_permission(
+        &self,
+        id: &PermissionId,
+        answer: PermissionAnswer,
+        note: Option<String>,
+    ) {
         if let Ok(mut seen) = self.answers.lock() {
-            seen.push((id.clone(), answer));
+            seen.push((id.clone(), answer, note));
         }
     }
 
@@ -526,13 +542,17 @@ mod tests {
             .prompt("go".to_string())
             .await
             .expect("prompts");
-        conversation.respond_to_permission(&PermissionId("p1".to_string()), PermissionAnswer::Deny);
+        conversation.respond_to_permission(
+            &PermissionId("p1".to_string()),
+            PermissionAnswer::Deny,
+            None,
+        );
         conversation.cancel();
         conversation.cancel();
 
         assert_eq!(
             conversation.answers(),
-            vec![(PermissionId("p1".to_string()), PermissionAnswer::Deny)]
+            vec![(PermissionId("p1".to_string()), PermissionAnswer::Deny, None)]
         );
         // Cancelling twice is what a person pressing Ctrl-C twice does, and it
         // must not be an error.

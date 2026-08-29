@@ -136,6 +136,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
 
     // After the guards, so a guard's denial is already final and no answer here
     // can undo it, and before the body, so nothing runs unapproved.
+    let mut approval_note = None;
     let capabilities = tool.capabilities();
     // A tool that exists to be decided is asked about every time. Remembering
     // "allow always" for one would answer every later call on a person's
@@ -151,7 +152,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
             reason,
         };
         match review(registry, ext_ctx, &request).await {
-            ApprovalDecision::Allow => {}
+            ApprovalDecision::Allow { note } => approval_note = note,
             ApprovalDecision::AllowAlways => memory.allow_always(&call.name),
             ApprovalDecision::Deny { reason } => {
                 return refuse(call, registry, ext_ctx, reason, false).await;
@@ -186,12 +187,24 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         None => running.await,
     };
     let result = match &outcome {
-        Ok(output) => ToolResult {
-            id: call.id.clone(),
-            status: ToolStatus::Ok,
-            content: output.model_output.clone(),
-            value: Some(output.value.clone()),
-        },
+        Ok(output) => {
+            let mut content = output.model_output.clone();
+            // Appended to what the tool said rather than replacing it: the
+            // person's words are about the call, not the call's answer, and a
+            // model that lost the tool's own output would be reading a
+            // comment on something it can no longer see.
+            if let Some(note) = &approval_note {
+                content.push(ContentBlock::text(format!(
+                    "The person approved this and added:\n\n{note}"
+                )));
+            }
+            ToolResult {
+                id: call.id.clone(),
+                status: ToolStatus::Ok,
+                content,
+                value: Some(output.value.clone()),
+            }
+        }
         Err(error) => ToolResult {
             id: call.id.clone(),
             status: error.status(),

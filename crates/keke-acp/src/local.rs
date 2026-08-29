@@ -58,7 +58,7 @@ pub struct ApprovalRequests(UnboundedReceiver<Pending>);
 /// learns about it — nothing in `keke-core` knows a surface exists.
 pub struct Approvals {
     requests: UnboundedSender<Pending>,
-    waiting: Mutex<HashMap<PermissionId, oneshot::Sender<PermissionAnswer>>>,
+    waiting: Mutex<HashMap<PermissionId, oneshot::Sender<(PermissionAnswer, Option<String>)>>>,
     next: AtomicU64,
 }
 
@@ -85,14 +85,14 @@ impl Approvals {
     /// Deliver a person's answer. Answering an unknown or already-answered
     /// request is ignored rather than an error: a second keypress on a prompt
     /// that has just been withdrawn is not a mistake worth reporting.
-    pub fn answer(&self, id: &PermissionId, answer: PermissionAnswer) {
+    pub fn answer(&self, id: &PermissionId, answer: PermissionAnswer, note: Option<String>) {
         let responder = self
             .waiting
             .lock()
             .ok()
             .and_then(|mut waiting| waiting.remove(id));
         if let Some(responder) = responder {
-            let _ = responder.send(answer);
+            let _ = responder.send((answer, note));
         }
     }
 
@@ -105,7 +105,7 @@ impl Approvals {
             return;
         };
         for (_, responder) in waiting.drain() {
-            let _ = responder.send(PermissionAnswer::Deny);
+            let _ = responder.send((PermissionAnswer::Deny, None));
         }
     }
 }
@@ -136,10 +136,14 @@ impl ApprovalReviewContributor for Approvals {
             // No answer means the surface went away. Abstaining rather than
             // allowing leaves the engine's own default — denial — in charge.
             match answer.await.ok()? {
-                PermissionAnswer::Allow => Some(ApprovalDecision::Allow),
-                PermissionAnswer::AllowAlways => Some(ApprovalDecision::AllowAlways),
-                PermissionAnswer::Deny => Some(ApprovalDecision::Deny {
-                    reason: "declined".to_string(),
+                (PermissionAnswer::Allow, note) => Some(ApprovalDecision::Allow { note }),
+                (PermissionAnswer::AllowAlways, _) => Some(ApprovalDecision::AllowAlways),
+                // What the person said *is* the refusal, when they said
+                // anything: the reason reaches the model as the tool's result,
+                // so "declined" is the answer only for someone who declined
+                // without a word.
+                (PermissionAnswer::Deny, note) => Some(ApprovalDecision::Deny {
+                    reason: note.unwrap_or_else(|| "declined".to_string()),
                 }),
             }
         })
@@ -406,8 +410,13 @@ impl Conversation for LocalConversation {
         self.approvals.withdraw_all();
     }
 
-    fn respond_to_permission(&self, id: &PermissionId, answer: PermissionAnswer) {
-        self.approvals.answer(id, answer);
+    fn respond_to_permission(
+        &self,
+        id: &PermissionId,
+        answer: PermissionAnswer,
+        note: Option<String>,
+    ) {
+        self.approvals.answer(id, answer, note);
     }
 
     fn set_session_mode(&self, mode: SessionMode) {
@@ -514,7 +523,7 @@ mod tests {
             .await
             .expect("a request reaches the surface");
         assert_eq!(pending.call.name, "bash");
-        approvals.answer(&pending.id, PermissionAnswer::AllowAlways);
+        approvals.answer(&pending.id, PermissionAnswer::AllowAlways, None);
 
         assert_eq!(
             review.await.expect("join"),
@@ -534,7 +543,7 @@ mod tests {
         };
 
         let pending = requests.recv().await.expect("a request");
-        approvals.answer(&pending.id, PermissionAnswer::Deny);
+        approvals.answer(&pending.id, PermissionAnswer::Deny, None);
         assert!(matches!(
             review.await.expect("join"),
             Some(ApprovalDecision::Deny { .. })
@@ -575,6 +584,10 @@ mod tests {
     #[test]
     fn answering_an_unknown_prompt_is_ignored() {
         let (approvals, _requests) = approvals();
-        approvals.answer(&PermissionId("nope".to_string()), PermissionAnswer::Allow);
+        approvals.answer(
+            &PermissionId("nope".to_string()),
+            PermissionAnswer::Allow,
+            None,
+        );
     }
 }
