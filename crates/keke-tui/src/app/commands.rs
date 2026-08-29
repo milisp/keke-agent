@@ -35,6 +35,7 @@ impl App {
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
             SlashAction::Builtin(Builtin::Mcp) => self.mcp_command(arguments),
             SlashAction::Builtin(Builtin::Plan) => self.plan_command(arguments),
+            SlashAction::Builtin(Builtin::ViewPlan) => self.view_plan_command(),
             SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {
                 Ok(Some(effort)) => self.set_reasoning_effort_aloud(effort),
                 Ok(None) => {
@@ -69,7 +70,7 @@ impl App {
                     // What the person typed is what they should see; the body
                     // goes to the model, not onto their screen.
                     self.transcript.push(Cell::User(typed.trim().to_string()));
-                    self.send(text);
+                    self.send_text(text);
                 }
                 Err(error) => self
                     .transcript
@@ -91,7 +92,7 @@ impl App {
             return;
         }
         self.transcript.push(Cell::User(task.to_string()));
-        self.send(task.to_string());
+        self.send_text(task.to_string());
     }
 
     /// `/mcp`, and `/mcp login <name>`.
@@ -192,7 +193,7 @@ impl App {
     }
 
     /// Start a turn with text that did not come from the input box.
-    fn send(&mut self, text: String) {
+    pub(super) fn send_text(&mut self, text: String) {
         self.scroll.follow();
         self.begin_turn();
         let conversation = Arc::clone(&self.conversation);

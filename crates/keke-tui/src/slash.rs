@@ -46,6 +46,9 @@ pub enum Builtin {
     /// Asks the session to plan first, optionally with the prompt to plan
     /// about in the same breath.
     Plan,
+    /// Reopens the last plan this session saw, as a record of what was
+    /// decided rather than a question to answer again.
+    ViewPlan,
 }
 
 /// One entry in the command list.
@@ -186,6 +189,13 @@ fn builtins() -> Vec<SlashCommand> {
             "plan",
             "plan before building — `/plan <what to do>` starts the turn too",
         ),
+        (
+            Builtin::ViewPlan,
+            "view-plan",
+            "reopen the last plan, as a record",
+        ),
+        (Builtin::ViewPlan, "show-plan", "alias for /view-plan"),
+        (Builtin::ViewPlan, "plan-view", "alias for /view-plan"),
         (Builtin::Quit, "quit", "leave keke"),
     ]
     .into_iter()

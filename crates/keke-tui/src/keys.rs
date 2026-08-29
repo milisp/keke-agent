@@ -248,13 +248,35 @@ impl App {
     /// read rather than glanced at, and a person scrolling a page of prose
     /// should not find that `y` has already answered it.
     fn handle_plan_key(&mut self, key: KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        if self.plan_focus() == crate::app::plan::PlanFocus::Composer {
+            // Nothing here is a shortcut. The composer is where words go, so
+            // every printable key is a word — `a` and `s` included.
+            match key.code {
+                KeyCode::Tab | KeyCode::Esc => self.focus_plan_preview(),
+                KeyCode::Enter => self.submit_plan_composer(),
+                KeyCode::Char(ch) => self.input.insert_char(ch),
+                KeyCode::Backspace => self.input.backspace(),
+                KeyCode::Delete => self.input.delete(),
+                KeyCode::Left => self.input.move_left(),
+                KeyCode::Right => self.input.move_right(),
+                KeyCode::Home => self.input.move_home(),
+                KeyCode::End => self.input.move_end(),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
+            KeyCode::Tab => self.toggle_plan_focus(),
             KeyCode::Char('a') => self.approve_plan(),
             KeyCode::Char('s') => self.request_plan_changes(),
+            KeyCode::Char('c') | KeyCode::Enter => self.begin_plan_comment(),
             KeyCode::Char('y') => self.copy_plan(),
             KeyCode::Char('q') | KeyCode::Esc => self.quit_plan(),
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_plan(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_plan(1),
+            // Shift extends the selection instead of moving it, so a comment
+            // can cover a run of lines without a mode to enter and leave.
+            KeyCode::Up | KeyCode::Char('k' | 'K') => self.move_plan_cursor(-1, shift),
+            KeyCode::Down | KeyCode::Char('j' | 'J') => self.move_plan_cursor(1, shift),
             KeyCode::PageUp => self.scroll_plan(-10),
             KeyCode::PageDown => self.scroll_plan(10),
             _ => {}

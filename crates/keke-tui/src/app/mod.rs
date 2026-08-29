@@ -92,6 +92,11 @@ pub struct App {
     /// the turn is stopped on it, so a keystroke that quietly went into the
     /// composer would look like the interface had died.
     plan: Option<plan::PlanReview>,
+    /// The last plan this session answered or dismissed, so `/view-plan` can
+    /// bring it back. Kept here rather than in the transcript because the
+    /// transcript holds what was said, not reviewable state — and because the
+    /// plan body would otherwise be gone the instant it was answered.
+    last_plan: Option<plan::PlanReview>,
     approval: ApprovalPolicy,
     /// Whether the session is planning. Held rather than derived because the
     /// agent can enter and leave plan mode on its own, so the only truthful
@@ -208,6 +213,7 @@ impl App {
                 completion: 0,
                 picker: None,
                 plan: None,
+                last_plan: None,
                 approval: ApprovalPolicy::default(),
                 mode: keke_config_types::SessionMode::default(),
                 effort: None,
@@ -660,10 +666,20 @@ impl App {
 
     /// Answer the prompt currently blocking the turn.
     pub fn answer_permission(&mut self, answer: PermissionAnswer) {
+        self.answer_permission_with_note(answer, None);
+    }
+
+    /// Answer, saying something about it.
+    ///
+    /// The note rides with the answer rather than following as a prompt: the
+    /// turn is parked on this question, so a prompt sent now would be queued
+    /// behind the rest of the turn and arrive after the work it was meant to
+    /// shape.
+    pub fn answer_permission_with_note(&mut self, answer: PermissionAnswer, note: Option<String>) {
         let Some(id) = self.open_permission_id() else {
             return;
         };
-        self.conversation.respond_to_permission(&id, answer);
+        self.conversation.respond_to_permission(&id, answer, note);
         self.transcript.answer_permission(&id, answer);
         // Denial ends nothing by itself: the agent decides what to do next.
         self.turn = Turn::Running;

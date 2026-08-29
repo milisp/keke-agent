@@ -109,7 +109,7 @@ impl ApprovalReviewContributor for AlwaysAllow {
         _ctx: &'a ExtensionContext,
         _request: &'a ApprovalRequest,
     ) -> ExtFuture<'a, Option<ApprovalDecision>> {
-        Box::pin(async { Some(ApprovalDecision::Allow) })
+        Box::pin(async { Some(ApprovalDecision::Allow { note: None }) })
     }
 }
 

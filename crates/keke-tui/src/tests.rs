@@ -26,6 +26,7 @@ use crate::App;
 use crate::CallState;
 use crate::Cell;
 use crate::Turn;
+use crate::app::plan::PlanFocus;
 
 fn call(id: &str, name: &str) -> ToolCall {
     ToolCall {
@@ -224,7 +225,11 @@ async fn a_permission_prompt_takes_the_letter_keys() {
     assert!(app.input.is_empty());
     assert_eq!(
         scripted.answers(),
-        vec![(PermissionId("p1".to_string()), PermissionAnswer::Allow)]
+        vec![(
+            PermissionId("p1".to_string()),
+            PermissionAnswer::Allow,
+            None
+        )]
     );
     assert_eq!(app.turn(), Turn::Running);
     assert!(app.open_permission_id().is_none());
@@ -838,7 +843,11 @@ async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
     assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers(),
-        vec![(PermissionId("plan-1".to_string()), PermissionAnswer::Allow)]
+        vec![(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Allow,
+            None
+        )]
     );
     // Plan mode ends when the agent says it has, not because this surface
     // approved: nothing was asked for over the seam here.
@@ -849,7 +858,11 @@ async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
     assert!(app.plan_review().is_none(), "the composer takes over");
     assert_eq!(
         scripted.answers().last(),
-        Some(&(PermissionId("plan-1".to_string()), PermissionAnswer::Deny))
+        Some(&(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Deny,
+            None
+        ))
     );
 
     // ...and the composer really does take the keyboard back.
@@ -868,7 +881,11 @@ async fn quitting_the_plan_denies_it_and_asks_to_leave_plan_mode() {
     assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers(),
-        vec![(PermissionId("plan-1".to_string()), PermissionAnswer::Deny)]
+        vec![(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Deny,
+            None
+        )]
     );
     assert_eq!(scripted.modes(), vec![SessionMode::Default]);
 }
@@ -897,7 +914,11 @@ async fn an_empty_plan_still_opens_a_reviewable_surface() {
     app.handle_key(key(KeyCode::Char('a')));
     assert_eq!(
         scripted.answers(),
-        vec![(PermissionId("plan-1".to_string()), PermissionAnswer::Allow)]
+        vec![(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Allow,
+            None
+        )]
     );
 }
 
@@ -914,6 +935,146 @@ async fn the_plan_review_takes_the_keyboard_from_the_composer() {
 
     app.handle_key(key(KeyCode::Char('y')));
     assert_eq!(app.take_pending_copy(), Some("line one".to_string()));
+}
+
+/// A comment names the lines it is about and quotes them, because the agent
+/// reads text and not the surface's data structure.
+#[tokio::test]
+async fn a_comment_on_a_selected_line_reaches_the_text_sent_with_the_approval() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("alpha\nbravo\ncharlie"));
+
+    // Down to `bravo`, then comment on it.
+    app.handle_key(key(KeyCode::Char('j')));
+    app.handle_key(key(KeyCode::Char('c')));
+    type_text(&mut app, "rewrite this");
+    app.handle_key(key(KeyCode::Enter));
+
+    let review = app.plan_review().expect("still reviewing");
+    assert_eq!(review.comments().len(), 1);
+
+    app.handle_key(key(KeyCode::Char('a')));
+    // Carried by the answer, not sent after it: the turn is parked on this
+    // question, so a prompt would be queued behind the rest of the turn and
+    // land once the work the comment was about had already been done.
+    assert_eq!(
+        scripted.answers(),
+        vec![(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Allow,
+            Some("Proposed plan line 2:\n> bravo\n\nComment:\nrewrite this".to_string())
+        )]
+    );
+    assert!(scripted.prompts().is_empty(), "nothing follows as a prompt");
+}
+
+/// Comments travel with a denial too, ahead of the freeform notes.
+#[tokio::test]
+async fn requesting_changes_sends_the_comments_with_the_revision_notes() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("alpha\nbravo"));
+
+    app.handle_key(key(KeyCode::Char('c')));
+    type_text(&mut app, "too vague");
+    app.handle_key(key(KeyCode::Enter));
+
+    app.handle_key(key(KeyCode::Tab));
+    type_text(&mut app, "smaller steps");
+    app.handle_key(key(KeyCode::Enter));
+
+    // The refusal reason is what the model reads as the call's result, so what
+    // the person wrote about the plan *is* the refusal.
+    assert_eq!(
+        scripted.answers(),
+        vec![(
+            PermissionId("plan-1".to_string()),
+            PermissionAnswer::Deny,
+            Some(
+                "Proposed plan line 1:\n> alpha\n\nComment:\ntoo vague\n\n\
+                 Additional feedback:\nsmaller steps"
+                    .to_string()
+            )
+        )]
+    );
+    assert!(scripted.prompts().is_empty(), "nothing follows as a prompt");
+}
+
+/// Tab hands the keyboard to the composer and Esc hands it back.
+#[tokio::test]
+async fn tab_moves_focus_to_the_composer_and_escape_returns_it() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("alpha"));
+    assert_eq!(app.plan_focus(), PlanFocus::Preview);
+
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.plan_focus(), PlanFocus::Composer);
+
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.plan_focus(), PlanFocus::Preview);
+    assert!(
+        app.plan_review().is_some(),
+        "escape left the composer, not the plan"
+    );
+}
+
+/// The preview's single letters are shortcuts; in the composer they are words.
+#[tokio::test]
+async fn typing_in_the_composer_does_not_fire_the_previews_actions() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(exit_plan_mode("alpha"));
+
+    app.handle_key(key(KeyCode::Tab));
+    type_text(&mut app, "say more here");
+
+    assert_eq!(app.input.text(), "say more here");
+    assert!(app.plan_review().is_some(), "nothing answered the plan");
+    assert!(scripted.answers().is_empty());
+}
+
+/// `/view-plan` brings the last plan back after it was answered.
+#[tokio::test]
+async fn view_plan_reopens_the_last_plan_as_a_record() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    app.apply(exit_plan_mode("alpha\nbravo"));
+    app.handle_key(key(KeyCode::Char('a')));
+    assert!(app.plan_review().is_none());
+
+    type_text(&mut app, "/view-plan");
+    app.handle_key(key(KeyCode::Enter));
+    let review = app.plan_review().expect("the plan came back");
+    assert!(review.text().contains("bravo"));
+    assert!(review.is_answered());
+}
+
+/// A record is a record: the same plan cannot be answered twice.
+#[tokio::test]
+async fn a_reopened_plan_cannot_be_answered_again() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    app.apply(exit_plan_mode("alpha"));
+    app.handle_key(key(KeyCode::Char('s')));
+    let answered = scripted.answers();
+
+    type_text(&mut app, "/show-plan");
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Char('a')));
+    assert_eq!(scripted.answers(), answered, "nothing new was answered");
+    assert!(app.flash().is_some_and(|text| text.contains("already")));
+
+    // ...and it closes without asking to leave plan mode a second time.
+    app.handle_key(key(KeyCode::Char('q')));
+    assert!(app.plan_review().is_none());
+    assert!(scripted.modes().is_empty());
+}
+
+/// Nothing to show is said the way every other nothing-to-do is said.
+#[tokio::test]
+async fn view_plan_with_no_plan_flashes_rather_than_opening_an_empty_overlay() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/plan-view");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.plan_review().is_none());
+    assert!(app.flash().is_some_and(|text| text.contains("no plan")));
 }
 
 #[tokio::test]

@@ -420,7 +420,7 @@ impl keke_plugin_api::ApprovalReviewContributor for PlanExtension {
             (self.plan.is_active()
                 && BLOCKED_TOOLS.contains(&request.call.name.as_str())
                 && targets(&request.call, plan))
-            .then_some(ApprovalDecision::Allow)
+            .then_some(ApprovalDecision::Allow { note: None })
         })
     }
 }
