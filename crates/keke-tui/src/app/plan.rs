@@ -1,4 +1,5 @@
 use keke_acp::PermissionAnswer;
+use keke_config_types::ApprovalPolicy;
 use keke_protocol::ToolCall;
 
 use super::App;
@@ -12,25 +13,56 @@ pub(crate) const EXIT_PLAN_MODE: &str = "exit_plan_mode";
 /// Which half of the review the keyboard is in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlanFocus {
-    /// Scrolling and selecting lines. The single letters answer the plan here.
+    /// Reading the plan and picking a row with the arrow keys.
     #[default]
     Preview,
-    /// Typing — a comment on the selected lines, or freeform revision notes.
-    /// No letter answers the plan while this has focus, because a person
-    /// writing "say more here" must not have `s` and `a` fire under them.
+    /// Typing revision notes. No letter answers the plan while this has
+    /// focus, because a person writing "say more here" must not have `y` and
+    /// the arrow keys fire under them.
     Composer,
 }
 
-/// A remark attached to a run of plan lines.
-///
-/// Line numbers are 1-based over the plan's own lines and inclusive at both
-/// ends, matching the gutter the preview draws — the number a person read on
-/// screen is the number the agent is told.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlanComment {
-    pub first: usize,
-    pub last: usize,
-    pub text: String,
+/// The rows on the panel under the plan, in the order they are shown. Picking
+/// one and pressing Enter is the whole interaction — there is no separate
+/// policy submenu and no per-line comment to attach first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanRow {
+    /// Carry the plan out without asking again.
+    AutoMode,
+    /// Carry the plan out, asking before each command.
+    ManualApprove,
+    /// Send the agent back to planning with what gets typed next.
+    TellKekeWhatToChange,
+}
+
+/// Every row, in display order.
+pub(crate) const ROWS: [PlanRow; 3] = [
+    PlanRow::AutoMode,
+    PlanRow::ManualApprove,
+    PlanRow::TellKekeWhatToChange,
+];
+
+impl PlanRow {
+    /// What the row says on the panel.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            PlanRow::AutoMode => "Yes, and use auto mode",
+            PlanRow::ManualApprove => "Yes, manually approve edits",
+            PlanRow::TellKekeWhatToChange => "Tell Keke what to change",
+        }
+    }
+
+    /// The policy an approving row carries the plan out under. `None` for the
+    /// row that sends the plan back instead of approving it.
+    #[must_use]
+    fn policy(self) -> Option<ApprovalPolicy> {
+        match self {
+            PlanRow::AutoMode => Some(ApprovalPolicy::Never),
+            PlanRow::ManualApprove => Some(ApprovalPolicy::OnRequest),
+            PlanRow::TellKekeWhatToChange => None,
+        }
+    }
 }
 
 /// What is being done to the plan in the scrollback while it waits.
@@ -44,18 +76,9 @@ pub struct PlanReview {
     /// state of its own rather than an error: a person can still approve, ask
     /// for changes, or drop the plan.
     text: String,
-    /// The policy the plan would be carried out under, chosen with the arrow
-    /// keys on the panel under the transcript.
-    policy: keke_config_types::ApprovalPolicy,
-    /// The plan line the selection is on, 0-based.
-    cursor: usize,
-    /// Where a range selection started, while one is being made.
-    anchor: Option<usize>,
-    comments: Vec<PlanComment>,
+    /// The row the arrow keys have landed on.
+    row: PlanRow,
     focus: PlanFocus,
-    /// The lines the composer is currently writing a comment about. `None`
-    /// means the composer holds freeform revision notes instead.
-    commenting: Option<(usize, usize)>,
 }
 
 impl PlanReview {
@@ -72,10 +95,10 @@ impl PlanReview {
         self.text.trim().is_empty()
     }
 
-    /// The policy that would carry this plan out.
+    /// The row the arrow keys have landed on.
     #[must_use]
-    pub fn policy(&self) -> keke_config_types::ApprovalPolicy {
-        self.policy
+    pub fn row(&self) -> PlanRow {
+        self.row
     }
 
     #[must_use]
@@ -83,72 +106,12 @@ impl PlanReview {
         self.focus
     }
 
+    /// Freeform revision notes, as the text the agent will read — `None` when
+    /// the person said nothing, so a bare denial stays a bare denial.
     #[must_use]
-    pub fn comments(&self) -> &[PlanComment] {
-        &self.comments
-    }
-
-    /// Whether the composer is writing a comment rather than revision notes.
-    #[must_use]
-    pub fn is_commenting(&self) -> bool {
-        self.commenting.is_some()
-    }
-
-    /// The selected plan lines, 0-based and inclusive at both ends.
-    #[must_use]
-    pub fn selection(&self) -> (usize, usize) {
-        let anchor = self.anchor.unwrap_or(self.cursor);
-        (anchor.min(self.cursor), anchor.max(self.cursor))
-    }
-
-    fn line_count(&self) -> usize {
-        self.text.lines().count()
-    }
-
-    /// The comments, and any freeform notes, as the text the agent will read —
-    /// `None` when the person said nothing, so a bare yes stays a bare yes.
-    ///
-    /// The agent sees text and not this struct, so every comment names the
-    /// lines it is about *and* quotes them: a line number alone is ambiguous
-    /// the moment the agent rewrites the plan, and a quote alone is ambiguous
-    /// whenever the same sentence appears twice. The wording matches
-    /// grok-build's plan approval view; nothing is ported, but an agent that
-    /// has read one of these before should not have to learn a second dialect.
-    #[must_use]
-    pub fn feedback(&self, freeform: Option<&str>) -> Option<String> {
-        let lines: Vec<&str> = self.text.lines().collect();
-        let mut parts: Vec<String> = self
-            .comments
-            .iter()
-            .map(|comment| {
-                let label = if comment.first == comment.last {
-                    format!("Proposed plan line {}:", comment.first)
-                } else {
-                    format!("Proposed plan lines {}-{}:", comment.first, comment.last)
-                };
-                let quoted = lines
-                    .get(comment.first.saturating_sub(1)..comment.last.min(lines.len()))
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|line| format!("> {line}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("{label}\n{quoted}\n\nComment:\n{}", comment.text)
-            })
-            .collect();
-
-        if let Some(text) = freeform
-            && !text.trim().is_empty()
-        {
-            // Labelled only when it follows comments, so the agent can tell
-            // "and also, generally" from a remark about a particular line.
-            parts.push(if parts.is_empty() {
-                text.trim().to_string()
-            } else {
-                format!("Additional feedback:\n{}", text.trim())
-            });
-        }
-        (!parts.is_empty()).then(|| parts.join("\n\n"))
+    fn feedback(freeform: Option<&str>) -> Option<String> {
+        let text = freeform?.trim();
+        (!text.is_empty()).then(|| text.to_string())
     }
 }
 
@@ -217,14 +180,8 @@ impl App {
         self.transcript.request_plan(id, text.clone(), path);
         self.plan = Some(PlanReview {
             text,
-            // Starts at the policy in force: a person who just wants the plan
-            // carried out the way the session already runs presses one key.
-            policy: self.approval,
-            cursor: 0,
-            anchor: None,
-            comments: Vec::new(),
+            row: PlanRow::ManualApprove,
             focus: PlanFocus::Preview,
-            commenting: None,
         });
         self.scroll.follow();
     }
@@ -257,25 +214,32 @@ impl App {
         Some(path)
     }
 
-    /// Approve the plan: the agent may start building, under the policy
-    /// chosen on the panel below it.
+    /// Enter on the selected row: approve under its policy, or — on the "tell
+    /// Keke what to change" row — hand the keyboard to the composer instead.
+    pub fn commit_plan_row(&mut self) {
+        let Some(review) = &self.plan else {
+            return;
+        };
+        match review.row.policy() {
+            Some(policy) => self.approve_plan_with(policy),
+            None => self.toggle_plan_focus(),
+        }
+    }
+
+    /// Approve the plan: the agent may start building, under the policy the
+    /// chosen row carries.
     ///
     /// The mode is not cleared here. Plan mode ends when the agent says it has
     /// ended, over [`keke_acp::Update::ModeChanged`] — a surface that turned
     /// its own flag off on approval would be drawing an outcome it had only
     /// asked for.
-    pub fn approve_plan(&mut self) {
-        let Some(policy) = self.plan.as_ref().map(|review| review.policy) else {
-            return;
-        };
+    fn approve_plan_with(&mut self, policy: ApprovalPolicy) {
         // Plan mode is the tightest rung of the strictness ladder, so leaving
         // it is the moment a person decides how much of the plan may happen
         // without them. The panel asked that while they read; this is the
         // answer, not a policy inherited from underneath plan mode.
         self.set_approval_policy_aloud(policy);
-        let feedback = self.plan.as_ref().and_then(|r| r.feedback(None));
-        self.show_plan_feedback(feedback.as_deref());
-        self.answer_permission_with_note(PermissionAnswer::Allow, feedback);
+        self.answer_permission_with_note(PermissionAnswer::Allow, None);
         self.plan = None;
     }
 
@@ -285,7 +249,7 @@ impl App {
             return;
         }
         let notes = self.input.take();
-        let feedback = self.plan.as_ref().and_then(|r| r.feedback(Some(&notes)));
+        let feedback = PlanReview::feedback(Some(&notes));
         self.show_plan_feedback(feedback.as_deref());
         if feedback.is_none() {
             self.set_flash("plan sent back — type what should change");
@@ -311,6 +275,11 @@ impl App {
     ///
     /// Unlike requesting changes, this asks for the mode itself to end: a
     /// person who is done planning wants the next prompt answered, not planned.
+    ///
+    /// Denying the approval alone only settles that one call; the turn that
+    /// asked for it is still running underneath. Cancel it too, the same way
+    /// Ctrl-C would, so esc actually stops the agent rather than leaving it to
+    /// keep working toward a plan nobody is reading anymore.
     pub fn quit_plan(&mut self) {
         if self.plan.is_none() {
             return;
@@ -318,110 +287,74 @@ impl App {
         self.answer_permission(PermissionAnswer::Deny);
         self.plan = None;
         self.request_session_mode(keke_config_types::SessionMode::Default);
+        if self.turn.is_busy() {
+            self.conversation.cancel();
+            self.transcript.cancel_running_tools();
+            self.end_turn();
+        }
     }
 
-    /// Choose the policy the plan will be carried out under: the arrow keys on
-    /// the panel under the transcript.
+    /// Move the row the arrow keys have landed on.
     pub fn move_plan_policy(&mut self, delta: isize) {
         let Some(review) = &mut self.plan else {
             return;
         };
-        let policies = crate::slash::POLICIES;
-        let at = policies
-            .iter()
-            .position(|policy| *policy == review.policy)
-            .unwrap_or(0) as isize;
-        let at = (at + delta).rem_euclid(policies.len() as isize) as usize;
-        review.policy = policies[at];
+        let at = ROWS.iter().position(|row| *row == review.row).unwrap_or(0) as isize;
+        let at = (at + delta).rem_euclid(ROWS.len() as isize) as usize;
+        review.row = ROWS[at];
     }
 
-    /// Put the plan on the clipboard, or say there is nothing to put there.
-    pub fn copy_plan(&mut self) {
-        let Some(review) = &self.plan else {
-            return;
-        };
-        if review.is_empty() {
-            self.set_flash("no plan to copy");
+    /// Open the saved plan file in vim.
+    ///
+    /// Held as a pending action rather than spawned here: the terminal's raw
+    /// mode belongs to the event loop, and it is the only thing that can
+    /// suspend it before vim takes the screen.
+    pub fn edit_plan(&mut self) {
+        if self.plan.is_none() {
             return;
         }
-        let text = review.text.clone();
-        self.copy(text);
+        match self
+            .transcript
+            .last_plan()
+            .and_then(|cell| cell.path.clone())
+        {
+            Some(path) => self.pending_edit = Some(path),
+            None => self.set_flash("no plan file to edit"),
+        }
     }
 
-    /// Move the selected line. `extend` grows the range instead of moving it,
-    /// which is how a comment comes to cover more than one line.
-    pub fn move_plan_cursor(&mut self, delta: isize, extend: bool) {
-        let Some(review) = &mut self.plan else {
-            return;
-        };
-        let last = review.line_count().saturating_sub(1);
-        if extend {
-            review.anchor.get_or_insert(review.cursor);
-        } else {
-            review.anchor = None;
-        }
-        review.cursor = review.cursor.saturating_add_signed(delta).min(last);
-    }
-
-    /// Start writing a comment about the selected lines.
-    pub fn begin_plan_comment(&mut self) {
-        let Some(review) = &mut self.plan else {
-            return;
-        };
-        if review.is_empty() {
-            self.set_flash("no plan lines to comment on");
-            return;
-        }
-        let (first, last) = review.selection();
-        review.commenting = Some((first + 1, last + 1));
-        review.focus = PlanFocus::Composer;
+    /// The plan file waiting to be opened, if `edit_plan` was just pressed.
+    pub fn take_pending_edit(&mut self) -> Option<std::path::PathBuf> {
+        self.pending_edit.take()
     }
 
     /// Move the keyboard between the preview and the composer.
     pub fn toggle_plan_focus(&mut self) {
-        match self.plan_focus() {
-            PlanFocus::Preview => {
-                if let Some(review) = &mut self.plan {
-                    review.focus = PlanFocus::Composer;
-                    review.commenting = None;
-                }
-            }
-            PlanFocus::Composer => self.focus_plan_preview(),
-        }
-    }
-
-    /// Hand the keyboard back to the preview, abandoning a half-written
-    /// comment's line range but keeping what was typed — a person who pressed
-    /// Esc wanted out of commenting, not their words deleted.
-    pub fn focus_plan_preview(&mut self) {
-        if let Some(review) = &mut self.plan {
-            review.focus = PlanFocus::Preview;
-            review.commenting = None;
-        }
-    }
-
-    /// Enter in the composer: attach the comment being written, or send the
-    /// plan back with whatever notes are in the box.
-    pub fn submit_plan_composer(&mut self) {
-        let Some(review) = &self.plan else {
-            return;
-        };
-        let Some((first, last)) = review.commenting else {
-            self.request_plan_changes();
-            return;
-        };
-        let text = self.input.take();
-        let text = text.trim().to_string();
         let Some(review) = &mut self.plan else {
             return;
         };
-        review.commenting = None;
-        review.focus = PlanFocus::Preview;
-        if text.is_empty() {
+        review.focus = match review.focus {
+            PlanFocus::Preview => PlanFocus::Composer,
+            PlanFocus::Composer => PlanFocus::Preview,
+        };
+    }
+
+    /// Hand the keyboard back to the preview, keeping what was typed — a
+    /// person who pressed Esc wanted out of the composer, not their words
+    /// deleted.
+    pub fn focus_plan_preview(&mut self) {
+        if let Some(review) = &mut self.plan {
+            review.focus = PlanFocus::Preview;
+        }
+    }
+
+    /// Enter in the composer: send the plan back with whatever notes are in
+    /// the box.
+    pub fn submit_plan_composer(&mut self) {
+        if self.plan.is_none() {
             return;
         }
-        review.comments.push(PlanComment { first, last, text });
-        review.anchor = None;
+        self.request_plan_changes();
     }
 
     /// `/view-plan`: put the last plan back on screen.
@@ -440,44 +373,19 @@ impl App {
     #[must_use]
     pub fn plan_comment_label(&self) -> Option<String> {
         let review = self.plan.as_ref()?;
-        if review.focus != PlanFocus::Composer {
-            return None;
-        }
-        Some(match review.commenting {
-            Some((first, last)) if first == last => format!(" comment on line {first} "),
-            Some((first, last)) => format!(" comment on lines {first}-{last} "),
-            None => " what should change? ".to_string(),
-        })
+        (review.focus == PlanFocus::Composer).then(|| " what should change? ".to_string())
     }
 
-    /// How the waiting plan is being read, for the frame that draws it.
-    #[must_use]
-    pub(crate) fn plan_view(&self) -> Option<crate::draw::transcript::PlanView> {
-        let review = self.plan.as_ref()?;
-        let (first, last) = review.selection();
-        Some(crate::draw::transcript::PlanView {
-            first,
-            last,
-            selecting: review.focus == PlanFocus::Preview,
-        })
-    }
-
-    /// Which rendered line the frame should bring into view: the selected plan
-    /// line, or the top of the last plan when `/view-plan` asked for it.
+    /// Which rendered line the frame should bring into view: the top of the
+    /// last plan, when `/view-plan` asked for it.
     pub(crate) fn wanted_plan_line(&mut self, plan_lines: &[(usize, usize)]) -> Option<usize> {
-        if std::mem::take(&mut self.show_last_plan) {
-            return plan_lines.first().map(|(_, line)| *line);
-        }
-        let (first, _) = self.plan.as_ref()?.selection();
-        plan_lines
-            .iter()
-            .find(|(plan_line, _)| *plan_line == first)
-            .map(|(_, line)| *line)
+        std::mem::take(&mut self.show_last_plan)
+            .then(|| plan_lines.first().map(|(_, line)| *line))
+            .flatten()
     }
 
-    /// Told by `draw` which rendered line the selected plan line landed on, so
-    /// moving the selection scrolls the transcript rather than moving a
-    /// highlight off screen.
+    /// Told by `draw` which rendered line the frame put the plan's first line
+    /// on, so `/view-plan` scrolls it into view.
     pub(crate) fn reveal_plan_line(&mut self, line: usize) {
         self.scroll.reveal(line);
     }

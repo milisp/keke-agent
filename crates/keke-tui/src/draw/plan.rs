@@ -1,8 +1,8 @@
 //! The panel under the transcript while a plan waits for its answer.
 //!
 //! The plan itself is a cell in the scrollback, not a window over it. What is
-//! left to draw is the one question the plan leaves open — how much of it may
-//! be carried out without being asked — and the keys that answer it.
+//! left to draw is three rows and a hint line: how much of it may run without
+//! being asked, or whether to send it back with notes.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -17,8 +17,9 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::app::plan::PlanFocus;
+use crate::app::plan::ROWS;
 
-/// One row per policy, plus the action bar and two borders.
+/// One row per choice, plus the hint bar and two borders.
 const CHROME: u16 = 3;
 
 /// How tall the panel is this frame. Zero when no plan is waiting.
@@ -26,7 +27,7 @@ pub(crate) fn rows(app: &App) -> u16 {
     if app.plan_review().is_none() {
         return 0;
     }
-    u16::try_from(crate::slash::POLICIES.len()).unwrap_or(3) + CHROME
+    u16::try_from(ROWS.len()).unwrap_or(3) + CHROME
 }
 
 pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -38,10 +39,10 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
     let composing = review.focus() == PlanFocus::Composer;
 
-    let mut lines: Vec<Line> = crate::slash::POLICIES
+    let mut lines: Vec<Line> = ROWS
         .into_iter()
-        .map(|policy| {
-            let chosen = policy == review.policy();
+        .map(|row| {
+            let chosen = row == review.row();
             let style = if chosen && !composing {
                 Style::new().fg(Color::Black).bg(Color::Cyan)
             } else if chosen {
@@ -49,35 +50,18 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::new()
             };
-            Line::from(vec![
-                Span::styled(
-                    format!(
-                        " {} {} ",
-                        if chosen { "›" } else { " " },
-                        crate::slash::policy_name(policy)
-                    ),
-                    style.add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    crate::slash::policy_detail(policy),
-                    if chosen && !composing {
-                        style.fg(Color::Black)
-                    } else {
-                        Style::new().fg(Color::DarkGray)
-                    },
-                ),
-            ])
+            Line::from(Span::styled(
+                format!(" {} {} ", if chosen { "›" } else { " " }, row.label()),
+                style.add_modifier(Modifier::BOLD),
+            ))
         })
         .collect();
-    lines.push(actions(review.comments().len(), composing));
+    lines.push(hints(composing));
 
     let title = if composing {
-        match review.is_commenting() {
-            true => " what should this say? — enter attaches it, esc goes back ",
-            false => " what should change? — enter sends the plan back, esc goes back ",
-        }
+        " what should change? — enter sends the plan back, esc goes back "
     } else {
-        " carry the plan out — ↑↓ picks how much runs without asking "
+        " carry the plan out — \u{2191}\u{2193} picks, enter confirms "
     };
     frame.render_widget(
         Paragraph::new(lines).block(
@@ -94,23 +78,11 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn actions(comments: usize, composing: bool) -> Line<'static> {
-    let approve = if comments > 0 {
-        "approve w/ comments"
-    } else {
-        "approve"
-    };
+fn hints(composing: bool) -> Line<'static> {
     let offered: Vec<(&str, &str)> = if composing {
         vec![("esc", "back to the plan")]
     } else {
-        vec![
-            ("a", approve),
-            ("s", "request changes"),
-            ("c", "comment"),
-            ("j/k", "move"),
-            ("y", "copy"),
-            ("q", "quit plan"),
-        ]
+        vec![("ctrl+g", "edit in vim"), ("esc", "cancel")]
     };
     let mut spans = Vec::new();
     for (key, label) in offered {
@@ -124,18 +96,4 @@ fn actions(comments: usize, composing: bool) -> Line<'static> {
         ));
     }
     Line::from(spans)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The action bar has to say that comments are riding along, or a person
-    /// cannot tell an approval from an approval-with-remarks.
-    #[test]
-    fn the_approve_action_says_when_comments_go_with_it() {
-        let bar = actions(2, false);
-        let text: String = bar.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("approve w/ comments"));
-    }
 }

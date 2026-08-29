@@ -92,16 +92,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
     );
 
-    let rendered = transcript::render(
-        app.transcript.cells(),
-        body.width,
-        app.expanded(),
-        app.plan_view(),
-    );
+    let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
     app.scroll
         .measure(rendered.lines.len(), usize::from(body.height));
-    // Keep the selected plan line on screen: the plan is in the scrollback
-    // now, so moving the selection scrolls the transcript like anything else.
+    // `/view-plan` scrolls the last plan's first line into view; the plan is
+    // in the scrollback now, so this is a transcript scroll like any other.
     if let Some(line) = app.wanted_plan_line(&rendered.plan_lines) {
         app.reveal_plan_line(line);
     }

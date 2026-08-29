@@ -177,6 +177,10 @@ pub struct App {
     /// Text waiting to go to the clipboard. Held rather than written here so
     /// the state tests never touch a terminal.
     pending_copy: Option<String>,
+    /// A plan file waiting to be opened in the person's editor. Held rather
+    /// than spawned here for the same reason as `pending_copy`: only the
+    /// event loop owns the terminal's raw mode, so only it can suspend it.
+    pending_edit: Option<std::path::PathBuf>,
     /// Drag-select over the transcript, since a captured mouse is one the
     /// terminal can no longer select with.
     pub(crate) selection: crate::selection::Selection,
@@ -237,6 +241,7 @@ impl App {
                 subagent_detail: None,
                 flash: None,
                 pending_copy: None,
+                pending_edit: None,
                 selection: crate::selection::Selection::default(),
                 should_quit: false,
                 config_home: None,

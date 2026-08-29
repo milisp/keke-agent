@@ -27,6 +27,7 @@ use crate::CallState;
 use crate::Cell;
 use crate::Turn;
 use crate::app::plan::PlanFocus;
+use crate::app::plan::PlanRow;
 
 fn call(id: &str, name: &str) -> ToolCall {
     ToolCall {
@@ -537,7 +538,7 @@ fn tool_arguments_collapse_to_one_line() {
 #[test]
 fn wrapped_text_keeps_its_block_shape() {
     let cells = vec![Cell::User("a b c d e f g h i j".to_string())];
-    let lines = crate::draw::transcript::render(&cells, 12, &Default::default(), None).lines;
+    let lines = crate::draw::transcript::render(&cells, 12, &Default::default()).lines;
     let rendered: Vec<String> = lines
         .iter()
         .map(|line| {
@@ -822,12 +823,6 @@ async fn the_plan_is_drawn_into_the_transcript_with_its_lines_numbered() {
     let drawn = rendered(&app);
     assert!(drawn.iter().any(|line| line.contains("   1 alpha")));
     assert!(drawn.iter().any(|line| line.contains("   2 bravo")));
-
-    // And moving the selection is a transcript scroll, not a panel's own.
-    app.handle_key(key(KeyCode::Char('j')));
-    let view = app.plan_view().expect("a plan being read");
-    assert_eq!((view.first, view.last), (1, 1));
-    assert!(view.selecting);
 }
 
 /// A plan is a document a person reads, edits, and shows to somebody else, so
@@ -871,28 +866,26 @@ async fn the_status_bar_drops_the_policy_while_planning() {
 }
 
 /// Approving is the moment a person decides how much of the plan may happen
-/// without them, so the panel under it asks while they read, and `a` answers
-/// with what they chose rather than with the policy underneath plan mode.
+/// without them, so the panel under it asks while they read, and Enter
+/// answers with the row they landed on rather than with the policy
+/// underneath plan mode.
 #[tokio::test]
-async fn approving_a_plan_carries_it_out_under_the_policy_chosen_on_the_panel() {
+async fn approving_a_plan_carries_it_out_under_the_row_chosen_on_the_panel() {
     let (mut app, scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::ModeChanged(SessionMode::Plan));
     app.apply(exit_plan_mode("do the thing"));
     assert_eq!(
-        app.plan_review().expect("a plan").policy(),
-        ApprovalPolicy::OnRequest,
-        "it starts at what the session already runs under"
+        app.plan_review().expect("a plan").row(),
+        PlanRow::ManualApprove,
+        "manually approving edits is the default row"
     );
 
     app.handle_key(key(KeyCode::Down));
     app.handle_key(key(KeyCode::Down));
-    assert_eq!(
-        app.plan_review().expect("a plan").policy(),
-        ApprovalPolicy::Never
-    );
+    assert_eq!(app.plan_review().expect("a plan").row(), PlanRow::AutoMode);
     assert!(scripted.answers().is_empty(), "picking is not answering");
 
-    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
     assert_eq!(
         scripted.answers(),
@@ -928,11 +921,11 @@ async fn exit_plan_mode_opens_the_plan_for_review() {
 }
 
 #[tokio::test]
-async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
+async fn approving_the_plan_allows_the_call_and_telling_keke_denies_it() {
     let (mut app, scripted, _updates, _local) = app_with(Vec::new());
 
     app.apply(exit_plan_mode("do the thing"));
-    app.handle_key(key(KeyCode::Char('a')));
+    app.handle_key(key(KeyCode::Enter));
     assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers(),
@@ -947,20 +940,24 @@ async fn approving_the_plan_allows_the_call_and_requesting_changes_denies_it() {
     assert!(scripted.modes().is_empty());
 
     app.apply(exit_plan_mode("do the other thing"));
-    app.handle_key(key(KeyCode::Char('s')));
-    assert!(app.plan_review().is_none(), "the composer takes over");
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.plan_focus(),
+        PlanFocus::Composer,
+        "the row that sends the plan back opens the composer"
+    );
+    type_text(&mut app, "narrower, please");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers().last(),
         Some(&(
             PermissionId("plan-1".to_string()),
             PermissionAnswer::Deny,
-            None
+            Some("narrower, please".to_string())
         ))
     );
-
-    // ...and the composer really does take the keyboard back.
-    type_text(&mut app, "narrower, please");
-    assert_eq!(app.input.text(), "narrower, please");
 }
 
 /// Quitting the plan is not requesting changes: it asks to leave the mode.
@@ -970,7 +967,7 @@ async fn quitting_the_plan_denies_it_and_asks_to_leave_plan_mode() {
     app.apply(Update::ModeChanged(SessionMode::Plan));
     app.apply(exit_plan_mode("do the thing"));
 
-    app.handle_key(key(KeyCode::Char('q')));
+    app.handle_key(key(KeyCode::Esc));
     assert!(app.plan_review().is_none());
     assert_eq!(
         scripted.answers(),
@@ -1004,7 +1001,6 @@ async fn an_empty_plan_still_opens_a_reviewable_surface() {
     app.handle_key(key(KeyCode::Char('y')));
     assert_eq!(app.take_pending_copy(), None, "there is nothing to copy");
 
-    app.handle_key(key(KeyCode::Char('a')));
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(
         scripted.answers(),
@@ -1018,7 +1014,10 @@ async fn an_empty_plan_still_opens_a_reviewable_surface() {
 
 #[tokio::test]
 async fn the_plan_review_takes_the_keyboard_from_the_composer() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
+    let (app, _scripted, _updates, _local) = app_with(Vec::new());
+    let mut app = app.with_config_home(home);
     app.apply(exit_plan_mode("line one"));
 
     type_text(&mut app, "hello");
@@ -1027,81 +1026,23 @@ async fn the_plan_review_takes_the_keyboard_from_the_composer() {
         "a keystroke must answer the prompt, not vanish into a box nobody is looking at"
     );
 
-    app.handle_key(key(KeyCode::Char('y')));
-    assert_eq!(app.take_pending_copy(), Some("line one".to_string()));
-}
-
-/// A comment names the lines it is about and quotes them, because the agent
-/// reads text and not the surface's data structure.
-#[tokio::test]
-async fn a_comment_on_a_selected_line_reaches_the_text_sent_with_the_approval() {
-    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
-    app.apply(exit_plan_mode("alpha\nbravo\ncharlie"));
-
-    // Down to `bravo`, then comment on it.
-    app.handle_key(key(KeyCode::Char('j')));
-    app.handle_key(key(KeyCode::Char('c')));
-    type_text(&mut app, "rewrite this");
-    app.handle_key(key(KeyCode::Enter));
-
-    let review = app.plan_review().expect("still reviewing");
-    assert_eq!(review.comments().len(), 1);
-
-    app.handle_key(key(KeyCode::Char('a')));
-    app.handle_key(key(KeyCode::Enter));
-    // Carried by the answer, not sent after it: the turn is parked on this
-    // question, so a prompt would be queued behind the rest of the turn and
-    // land once the work the comment was about had already been done.
-    assert_eq!(
-        scripted.answers(),
-        vec![(
-            PermissionId("plan-1".to_string()),
-            PermissionAnswer::Allow,
-            Some("Proposed plan line 2:\n> bravo\n\nComment:\nrewrite this".to_string())
-        )]
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    assert!(
+        app.take_pending_edit().is_some(),
+        "a keystroke on the preview must fire its shortcut, not fall through"
     );
-    assert!(scripted.prompts().is_empty(), "nothing follows as a prompt");
 }
 
-/// Comments travel with a denial too, ahead of the freeform notes.
+/// Selecting "tell Keke what to change" hands the keyboard to the composer,
+/// and Esc hands it back without answering the plan.
 #[tokio::test]
-async fn requesting_changes_sends_the_comments_with_the_revision_notes() {
-    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
-    app.apply(exit_plan_mode("alpha\nbravo"));
-
-    app.handle_key(key(KeyCode::Char('c')));
-    type_text(&mut app, "too vague");
-    app.handle_key(key(KeyCode::Enter));
-
-    app.handle_key(key(KeyCode::Tab));
-    type_text(&mut app, "smaller steps");
-    app.handle_key(key(KeyCode::Enter));
-
-    // The refusal reason is what the model reads as the call's result, so what
-    // the person wrote about the plan *is* the refusal.
-    assert_eq!(
-        scripted.answers(),
-        vec![(
-            PermissionId("plan-1".to_string()),
-            PermissionAnswer::Deny,
-            Some(
-                "Proposed plan line 1:\n> alpha\n\nComment:\ntoo vague\n\n\
-                 Additional feedback:\nsmaller steps"
-                    .to_string()
-            )
-        )]
-    );
-    assert!(scripted.prompts().is_empty(), "nothing follows as a prompt");
-}
-
-/// Tab hands the keyboard to the composer and Esc hands it back.
-#[tokio::test]
-async fn tab_moves_focus_to_the_composer_and_escape_returns_it() {
+async fn telling_keke_what_to_change_hands_focus_to_the_composer_and_escape_returns_it() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(exit_plan_mode("alpha"));
     assert_eq!(app.plan_focus(), PlanFocus::Preview);
 
-    app.handle_key(key(KeyCode::Tab));
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.plan_focus(), PlanFocus::Composer);
 
     app.handle_key(key(KeyCode::Esc));
@@ -1118,7 +1059,8 @@ async fn typing_in_the_composer_does_not_fire_the_previews_actions() {
     let (mut app, scripted, _updates, _local) = app_with(Vec::new());
     app.apply(exit_plan_mode("alpha"));
 
-    app.handle_key(key(KeyCode::Tab));
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
     type_text(&mut app, "say more here");
 
     assert_eq!(app.input.text(), "say more here");
@@ -1131,7 +1073,6 @@ async fn typing_in_the_composer_does_not_fire_the_previews_actions() {
 async fn view_plan_reopens_the_last_plan_as_a_record() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(exit_plan_mode("alpha\nbravo"));
-    app.handle_key(key(KeyCode::Char('a')));
     app.handle_key(key(KeyCode::Enter));
     assert!(app.plan_review().is_none());
 
@@ -1146,7 +1087,9 @@ async fn view_plan_reopens_the_last_plan_as_a_record() {
 async fn an_answered_plan_stays_in_the_scrollback_and_takes_no_more_answers() {
     let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     app.apply(exit_plan_mode("alpha"));
-    app.handle_key(key(KeyCode::Char('s')));
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Enter));
     let answered = scripted.answers();
     assert!(app.plan_review().is_none(), "the review is over");
 
@@ -1428,7 +1371,7 @@ fn status_bar(app: &App) -> String {
 
 /// Flatten a rendered transcript to plain strings.
 fn rendered(app: &App) -> Vec<String> {
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), app.plan_view())
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded())
         .lines
         .iter()
         .map(|line| {
@@ -1490,7 +1433,7 @@ fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_reads(&mut app, 3);
     // The map of what is on screen is a frame's, so draw one first.
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), app.plan_view());
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
     app.toggle_last_expandable();
 
     let lines = rendered(&app);

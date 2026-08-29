@@ -66,6 +66,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
+            KeyCode::Char('g') if control && self.plan_review().is_some() => self.edit_plan(),
             // Before the interrupt: a visible overlay owns escape, the way the
             // model picker above does. A subagent popup is open exactly while
             // the turn is busy, so without this it could never be closed.
@@ -243,17 +244,11 @@ impl App {
     }
 
     /// While the plan review is up, these keys drive it.
-    ///
-    /// Distinct letters from the one-line approval's `y`/`n`: this prompt is
-    /// read rather than glanced at, and a person scrolling a page of prose
-    /// should not find that `y` has already answered it.
     fn handle_plan_key(&mut self, key: KeyEvent) {
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         if self.plan_focus() == crate::app::plan::PlanFocus::Composer {
-            // Nothing here is a shortcut. The composer is where words go, so
-            // every printable key is a word — `a` and `s` included.
+            // Nothing here is a shortcut. The composer is where words go.
             match key.code {
-                KeyCode::Tab | KeyCode::Esc => self.focus_plan_preview(),
+                KeyCode::Esc => self.focus_plan_preview(),
                 KeyCode::Enter => self.submit_plan_composer(),
                 KeyCode::Char(ch) => self.input.insert_char(ch),
                 KeyCode::Backspace => self.input.backspace(),
@@ -267,19 +262,8 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Tab => self.toggle_plan_focus(),
-            KeyCode::Char('a') => self.approve_plan(),
-            KeyCode::Char('s') => self.request_plan_changes(),
-            KeyCode::Char('c') | KeyCode::Enter => self.begin_plan_comment(),
-            KeyCode::Char('y') => self.copy_plan(),
-            KeyCode::Char('q') | KeyCode::Esc => self.quit_plan(),
-            // Shift extends the selection instead of moving it, so a comment
-            // can cover a run of lines without a mode to enter and leave.
-            // The plan is read with j/k, and the arrows pick the policy it
-            // will be carried out under: two lists on screen at once, each
-            // with the keys a person is already using for it.
-            KeyCode::Char('k' | 'K') => self.move_plan_cursor(-1, shift),
-            KeyCode::Char('j' | 'J') => self.move_plan_cursor(1, shift),
+            KeyCode::Enter => self.commit_plan_row(),
+            KeyCode::Esc => self.quit_plan(),
             KeyCode::Up => self.move_plan_policy(-1),
             KeyCode::Down => self.move_plan_policy(1),
             KeyCode::PageUp => self.scroll.page_up(),
