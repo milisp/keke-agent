@@ -33,13 +33,7 @@ pub struct WriteFileOutput {
     /// `None` for a new file — there is nothing to diff against, so "N lines
     /// added, 0 removed" would just restate the line count under a busier
     /// name.
-    pub diff: Option<LineDiff>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LineDiff {
-    pub added: usize,
-    pub removed: usize,
+    pub diff: Option<support::LineDiff>,
 }
 
 impl ToolOutput for WriteFileOutput {
@@ -103,20 +97,7 @@ impl Tool for WriteFile {
             path: display,
             bytes: args.content.len(),
             created,
-            diff: previous.map(|previous| line_diff(&previous, &args.content)),
+            diff: previous.map(|previous| support::line_diff(&previous, &args.content)),
         })
     }
-}
-
-fn line_diff(before: &str, after: &str) -> LineDiff {
-    let mut added = 0;
-    let mut removed = 0;
-    for change in similar::TextDiff::from_lines(before, after).iter_all_changes() {
-        match change.tag() {
-            similar::ChangeTag::Insert => added += 1,
-            similar::ChangeTag::Delete => removed += 1,
-            similar::ChangeTag::Equal => {}
-        }
-    }
-    LineDiff { added, removed }
 }

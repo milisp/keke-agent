@@ -5,6 +5,7 @@
 //! root is a property of the session, not of the tool.
 
 mod bash;
+mod edit;
 mod grep;
 mod list_dir;
 mod read_file;
@@ -14,6 +15,9 @@ mod write_file;
 pub use bash::Bash;
 pub use bash::BashArgs;
 pub use bash::BashOutput;
+pub use edit::Edit;
+pub use edit::EditArgs;
+pub use edit::EditOutput;
 pub use grep::Grep;
 pub use grep::GrepArgs;
 pub use grep::GrepOutput;
@@ -43,6 +47,7 @@ pub fn builtin_tools() -> Vec<ArcTool> {
         Arc::new(Grep),
         Arc::new(Bash),
         Arc::new(WriteFile),
+        Arc::new(Edit),
     ]
 }
 
@@ -467,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pack_installs_all_five_tools() {
+    fn the_pack_installs_all_six_tools() {
         let mut builder = ExtensionRegistryBuilder::new();
         install(&mut builder);
         let registry = builder.build();
@@ -484,7 +489,110 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec!["read_file", "list_dir", "grep", "bash", "write_file"]
+            vec![
+                "read_file",
+                "list_dir",
+                "grep",
+                "bash",
+                "write_file",
+                "edit"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_replaces_a_unique_match() {
+        let (_dir, ctx) = workspace();
+        write(&ctx, "a.txt", "one\ntwo\nthree\n");
+
+        let out = Edit
+            .run(
+                ctx.clone(),
+                EditArgs {
+                    path: "a.txt".into(),
+                    old_string: "two".into(),
+                    new_string: "TWO".into(),
+                    replace_all: false,
+                },
+            )
+            .await
+            .expect("edit");
+
+        assert_eq!(out.replacements, 1);
+        let back =
+            std::fs::read_to_string(ctx.workspace_root.as_path().join("a.txt")).expect("read back");
+        assert_eq!(back, "one\nTWO\nthree\n");
+    }
+
+    #[tokio::test]
+    async fn edit_refuses_an_ambiguous_match() {
+        let (_dir, ctx) = workspace();
+        write(&ctx, "a.txt", "dup\ndup\n");
+
+        let error = Edit
+            .run(
+                ctx,
+                EditArgs {
+                    path: "a.txt".into(),
+                    old_string: "dup".into(),
+                    new_string: "x".into(),
+                    replace_all: false,
+                },
+            )
+            .await
+            .expect_err("ambiguous");
+
+        assert!(
+            matches!(&error, ToolError::Execution { code, .. } if code == "ambiguous_match"),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_replace_all_replaces_every_occurrence() {
+        let (_dir, ctx) = workspace();
+        write(&ctx, "a.txt", "dup\ndup\n");
+
+        let out = Edit
+            .run(
+                ctx.clone(),
+                EditArgs {
+                    path: "a.txt".into(),
+                    old_string: "dup".into(),
+                    new_string: "x".into(),
+                    replace_all: true,
+                },
+            )
+            .await
+            .expect("edit");
+
+        assert_eq!(out.replacements, 2);
+        let back =
+            std::fs::read_to_string(ctx.workspace_root.as_path().join("a.txt")).expect("read back");
+        assert_eq!(back, "x\nx\n");
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_a_missing_match() {
+        let (_dir, ctx) = workspace();
+        write(&ctx, "a.txt", "one\n");
+
+        let error = Edit
+            .run(
+                ctx,
+                EditArgs {
+                    path: "a.txt".into(),
+                    old_string: "missing".into(),
+                    new_string: "x".into(),
+                    replace_all: false,
+                },
+            )
+            .await
+            .expect_err("no match");
+
+        assert!(
+            matches!(&error, ToolError::Execution { code, .. } if code == "no_match"),
+            "{error:?}"
         );
     }
 }

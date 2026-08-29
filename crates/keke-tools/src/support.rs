@@ -73,6 +73,26 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Lines added and removed going from `before` to `after`.
+#[derive(Debug, serde::Serialize)]
+pub struct LineDiff {
+    pub added: usize,
+    pub removed: usize,
+}
+
+pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
+    let mut added = 0;
+    let mut removed = 0;
+    for change in similar::TextDiff::from_lines(before, after).iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added += 1,
+            similar::ChangeTag::Delete => removed += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    LineDiff { added, removed }
+}
+
 /// Cut `text` to the output budget, appending a note when anything was dropped.
 pub(crate) fn cap(text: String, note: &str) -> (String, bool) {
     if text.len() <= MAX_OUTPUT_BYTES {
