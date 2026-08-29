@@ -140,6 +140,7 @@ impl EditorSessions {
                 &self.config.home.home,
                 &cwd,
                 Arc::new(keke_core::SessionModeSwitch::default()),
+                self.config.require_plan_approval,
             )),
         )?;
         // What the session was last talking to wins over the server's config

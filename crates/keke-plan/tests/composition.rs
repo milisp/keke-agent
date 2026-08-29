@@ -133,6 +133,7 @@ fn harness() -> Harness {
         &mut builder,
         Arc::new(SessionModeSwitch::new(SessionMode::Plan)),
         keke_plan::PlanLocation::fixed(&plan_file),
+        false,
     );
     builder.approval_review_contributor(Arc::new(AlwaysAllow));
     let registry = builder.build();
@@ -227,4 +228,75 @@ async fn edits_stay_refused_even_when_nothing_is_being_asked_about() {
         dispatch(&harness, &call, ApprovalPolicy::Never).await,
         ToolStatus::Denied
     );
+}
+
+/// A harness with no reviewer at all and a configurable exit rule — the shape
+/// of a non-interactive run, which is exactly where the setting has to bite.
+fn unattended(require_exit_approval: bool) -> (Harness, std::sync::Arc<keke_plan::PlanMode>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    let plan_file = root.join("plan.md");
+
+    let mut builder = ExtensionRegistryBuilder::new();
+    let plan = keke_plan::install(
+        &mut builder,
+        Arc::new(SessionModeSwitch::new(SessionMode::Plan)),
+        keke_plan::PlanLocation::fixed(&plan_file),
+        require_exit_approval,
+    );
+    let registry = builder.build();
+
+    (
+        Harness {
+            _dir: dir,
+            plan_file,
+            registry,
+            ext_ctx: ExtensionContext::new(SessionId::new(), ThreadId::new()),
+            root: AbsPath::new(root).expect("absolute"),
+            memory: ApprovalMemory::default(),
+        },
+        plan,
+    )
+}
+
+fn exit_call() -> ToolCall {
+    ToolCall {
+        id: ToolCallId::new("x1"),
+        name: "exit_plan_mode".to_string(),
+        arguments: serde_json::json!({ "plan": "do the thing" }),
+    }
+}
+
+/// A plan nobody answered has not been approved, it has been assumed. Where a
+/// deployment asked for the exit to be a question, a policy that asks about
+/// nothing must not answer it on a person's behalf.
+#[tokio::test]
+async fn a_required_plan_approval_survives_a_policy_that_asks_nothing() {
+    let (harness, plan) = unattended(true);
+    start_turn(&harness).await;
+
+    let status = dispatch(&harness, &exit_call(), ApprovalPolicy::Never).await;
+
+    assert!(
+        matches!(status, ToolStatus::Denied),
+        "with nobody to ask, an unanswerable exit is refused rather than taken"
+    );
+    assert!(
+        plan.is_active(),
+        "an exit nobody approved leaves plan mode on"
+    );
+}
+
+/// The default follows the policy: a deployment that turned approvals off has
+/// said it does not want to be asked, and plan mode still refuses edits either
+/// way — only the exit stops being a question.
+#[tokio::test]
+async fn without_that_setting_a_silent_policy_lets_the_plan_out() {
+    let (harness, plan) = unattended(false);
+    start_turn(&harness).await;
+
+    let status = dispatch(&harness, &exit_call(), ApprovalPolicy::Never).await;
+
+    assert!(matches!(status, ToolStatus::Ok), "{status:?}");
+    assert!(!plan.is_active());
 }

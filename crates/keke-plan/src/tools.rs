@@ -208,7 +208,17 @@ impl Tool for ExitPlanMode {
     }
 
     fn capabilities(&self) -> ToolCapabilities {
-        ToolCapabilities::of_kind(ToolKind::Edit)
+        let capabilities = ToolCapabilities::of_kind(ToolKind::Edit);
+        // The call *is* the question: a plan nobody answered has not been
+        // approved, it has been assumed. Under `on-request` the kind already
+        // asks; this is what makes the exit still a question where a policy
+        // would have answered for the person — and what stops one approved
+        // plan from standing in for every plan after it.
+        if self.plan.requires_exit_approval() {
+            capabilities.always_asks()
+        } else {
+            capabilities
+        }
     }
 
     /// Nothing to exit when nothing was entered.

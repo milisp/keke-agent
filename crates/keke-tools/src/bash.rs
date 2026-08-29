@@ -1,4 +1,5 @@
 use keke_protocol::ContentBlock;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
 use keke_tool::Tool;
 use keke_tool::ToolCallContext;
@@ -79,6 +80,7 @@ impl Tool for Bash {
 
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities {
+            approval: ApprovalRequirement::ByPolicy,
             kind: ToolKind::Execute,
             // A shell command can touch anything the other calls in the step
             // are touching, so it never runs beside a sibling.

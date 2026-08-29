@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use keke_config_types::ApprovalPolicy;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ToolCapabilities;
 use keke_tool::ToolKind;
 
@@ -22,6 +23,13 @@ use keke_tool::ToolKind;
 /// "policy is on-request" is not.
 #[must_use]
 pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) -> Option<String> {
+    // Before the policy, because this is the tool saying the policy cannot
+    // answer for a person here — a call whose whole purpose is to be decided.
+    // Where there is nobody to ask, `dispatch` denies it with a reason, so a
+    // non-interactive run stops rather than proceeds unasked.
+    if capabilities.approval == ApprovalRequirement::Always {
+        return Some("needs a person's answer".to_string());
+    }
     match policy {
         // Non-interactive by construction. A deployment that sets this has
         // accepted the consequences elsewhere — usually a sandbox.
@@ -82,6 +90,7 @@ mod tests {
 
     fn capabilities(kind: ToolKind) -> ToolCapabilities {
         ToolCapabilities {
+            approval: ApprovalRequirement::ByPolicy,
             kind,
             concurrency_safe: kind.is_read_only(),
             timeout_millis: None,
@@ -93,6 +102,23 @@ mod tests {
         assert!(
             approval_reason(ApprovalPolicy::OnRequest, &capabilities(ToolKind::Read)).is_none()
         );
+    }
+
+    /// A tool whose call is the question is asked about under every policy —
+    /// including the one that exists so nothing is asked.
+    #[test]
+    fn a_tool_that_always_asks_is_asked_about_under_every_policy() {
+        let always = capabilities(ToolKind::Meta).always_asks();
+        for policy in [
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Never,
+        ] {
+            assert!(
+                approval_reason(policy, &always).is_some(),
+                "{policy:?} answered for a person it should not have"
+            );
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub use dynamic::TypedToolOutput;
 pub use error::ToolError;
 pub use stream::ToolEvent;
 pub use stream::ToolStream;
+pub use types::ApprovalRequirement;
 pub use types::ListToolsContext;
 pub use types::ToolCallContext;
 pub use types::ToolCapabilities;

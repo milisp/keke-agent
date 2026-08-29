@@ -353,6 +353,8 @@ impl Vendors {
 pub(crate) struct PlanSetup {
     pub mode: Arc<keke_core::SessionModeSwitch>,
     pub location: keke_plan::PlanLocation,
+    /// `require_plan_approval` from configuration.
+    pub require_exit_approval: bool,
 }
 
 impl PlanSetup {
@@ -362,10 +364,12 @@ impl PlanSetup {
         home: &keke_paths::AbsPath,
         cwd: &std::path::Path,
         mode: Arc<keke_core::SessionModeSwitch>,
+        require_exit_approval: bool,
     ) -> Self {
         Self {
             mode,
             location: keke_plan::PlanLocation::under_project(keke_core::project_dir(home, cwd)),
+            require_exit_approval,
         }
     }
 }
@@ -518,7 +522,12 @@ impl Composed {
         // guard is registered here too, and a guard's denial is final wherever
         // it sits in the order.
         let plan_mode = plan.map(|plan| {
-            keke_plan::install(&mut extensions, Arc::clone(&plan.mode), plan.location);
+            keke_plan::install(
+                &mut extensions,
+                Arc::clone(&plan.mode),
+                plan.location,
+                plan.require_exit_approval,
+            );
             plan.mode
         });
 

@@ -25,6 +25,7 @@ use keke_protocol::ContentBlock;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
 use keke_protocol::ToolStatus;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ArcTool;
 use keke_tool::ToolCallContext;
 use keke_tool::ToolError;
@@ -135,8 +136,15 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
 
     // After the guards, so a guard's denial is already final and no answer here
     // can undo it, and before the body, so nothing runs unapproved.
-    if let Some(reason) = approval_reason(policy, &tool.capabilities())
-        && !memory.is_always_allowed(&call.name)
+    let capabilities = tool.capabilities();
+    // A tool that exists to be decided is asked about every time. Remembering
+    // "allow always" for one would answer every later call on a person's
+    // behalf, which is the thing it said must not happen — a plan approved
+    // once would then approve every plan after it, unasked.
+    let standing = capabilities.approval == ApprovalRequirement::ByPolicy
+        && memory.is_always_allowed(&call.name);
+    if let Some(reason) = approval_reason(policy, &capabilities)
+        && !standing
     {
         let request = ApprovalRequest {
             call: call.clone(),

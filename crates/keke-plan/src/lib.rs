@@ -124,18 +124,39 @@ pub struct PlanMode {
     /// [`ExtensionContext`] naming the session. A guard and a tool have no
     /// context of their own, so they read what a turn boundary already settled.
     path: OnceLock<PathBuf>,
+    /// Whether leaving plan mode is a question even where the approval policy
+    /// would not ask one. See `require_plan_approval` in the configuration.
+    require_exit_approval: bool,
 }
 
 impl PlanMode {
     #[must_use]
     pub fn new(mode: Arc<SessionModeSwitch>, location: PlanLocation) -> Self {
+        Self::with_exit_approval(mode, location, false)
+    }
+
+    /// [`Self::new`], saying whether leaving plan mode must be asked about even
+    /// under a policy that would not ask.
+    #[must_use]
+    pub fn with_exit_approval(
+        mode: Arc<SessionModeSwitch>,
+        location: PlanLocation,
+        require_exit_approval: bool,
+    ) -> Self {
         Self {
             tracker: Mutex::new(PlanModeTracker::new()),
             mode,
             location,
             reentry: std::sync::atomic::AtomicBool::new(false),
             path: OnceLock::new(),
+            require_exit_approval,
         }
+    }
+
+    /// Whether `exit_plan_mode` asks whatever the policy says.
+    #[must_use]
+    pub fn requires_exit_approval(&self) -> bool {
+        self.require_exit_approval
     }
 
     /// The plan file, once a session has named itself.
@@ -272,8 +293,13 @@ pub fn install(
     registry: &mut ExtensionRegistryBuilder,
     mode: Arc<SessionModeSwitch>,
     location: PlanLocation,
+    require_exit_approval: bool,
 ) -> Arc<PlanMode> {
-    let plan = Arc::new(PlanMode::new(mode, location));
+    let plan = Arc::new(PlanMode::with_exit_approval(
+        mode,
+        location,
+        require_exit_approval,
+    ));
     let extension = Arc::new(PlanExtension {
         plan: Arc::clone(&plan),
     });

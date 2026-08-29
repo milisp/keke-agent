@@ -90,6 +90,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             &config.home.home,
             &cwd,
             Arc::clone(&mode),
+            config.require_plan_approval,
         )),
     )?;
 
@@ -129,6 +130,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                         &config.home.home,
                         &cwd,
                         Arc::clone(&mode),
+                        config.require_plan_approval,
                     )),
                 )?;
             }
