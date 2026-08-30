@@ -66,6 +66,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9"
 ratatui = "0.29"
 regex = "1"
+terminal-light = "1.9.1"
 # `socks` and `macos-system-configuration` are what make a proxy work: without
 # them a deployment behind a SOCKS proxy, or one whose proxy is set in macOS
 # System Settings rather than in the environment, cannot reach an issuer at all —

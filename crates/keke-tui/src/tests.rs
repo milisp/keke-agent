@@ -181,7 +181,7 @@ fn one_turn_of_prose_is_one_cell() {
 #[test]
 fn a_tool_result_revises_the_cell_the_call_opened() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    app.apply(Update::ToolCallStarted(call("c1", "read_file")));
+    app.apply(Update::ToolCallStarted(call("c1", "list_dir")));
     app.apply(Update::ToolCallEnded(ToolResult::ok(
         ToolCallId::new("c1"),
         "42 lines",
@@ -1446,6 +1446,59 @@ fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
     assert!(
         !rendered(&app).iter().any(|line| line.contains("src/f2.rs")),
         "expanding must be reversible"
+    );
+}
+
+#[test]
+fn a_successful_edit_shows_its_diff_without_expanding() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::ToolCallStarted(ToolCall {
+        id: ToolCallId::new("c1"),
+        name: "edit".to_string(),
+        arguments: serde_json::json!({
+            "path": "src/f0.rs",
+            "old_string": "old",
+            "new_string": "new",
+        }),
+    }));
+    app.apply(Update::ToolCallEnded(ToolResult {
+        id: ToolCallId::new("c1"),
+        status: ToolStatus::Ok,
+        content: vec![ContentBlock::text(
+            "edited src/f0.rs (+1 -1, 1 replacement)",
+        )],
+        value: Some(serde_json::json!({
+            "path": "src/f0.rs",
+            "replacements": 1,
+            "diff": { "added": 1, "removed": 1, "hunk": "-old\n+new\n" },
+        })),
+    }));
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.contains("-old")),
+        "an edit's diff should not need an extra click to see: {lines:?}"
+    );
+    assert!(lines.iter().any(|line| line.contains("+new")), "{lines:?}");
+
+    // GitHub tints the whole row, not just the text — a row's background,
+    // not its foreground colour, is what says "this line changed".
+    let drawn = crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
+    let added_row = drawn
+        .lines
+        .iter()
+        .find(|line| line.spans.iter().any(|span| span.content.contains("+new")))
+        .expect("the added line must be drawn");
+    assert!(
+        added_row.spans.iter().any(|span| span.style.bg.is_some()),
+        "an added line should carry a background tint, not just coloured text"
+    );
+
+    // The diff already says what changed; the raw `old_string=... new_string=...`
+    // args dump would just say it again, less legibly.
+    assert!(
+        !lines.iter().any(|line| line.contains("old_string=")),
+        "an edit's raw arguments are redundant once its diff is shown: {lines:?}"
     );
 }
 

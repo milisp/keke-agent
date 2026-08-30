@@ -14,6 +14,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+use super::diff::push_diff_block;
 use super::markdown;
 use crate::transcript::CallState;
 use crate::transcript::Cell;
@@ -22,11 +23,11 @@ use crate::transcript::ToolCell;
 use crate::transcript::verb;
 
 const USER: Color = Color::Cyan;
-const THINKING: Color = Color::DarkGray;
+pub(super) const THINKING: Color = Color::DarkGray;
 const NOTICE: Color = Color::Blue;
-const FAILURE: Color = Color::Red;
+pub(super) const FAILURE: Color = Color::Red;
 const DENIED: Color = Color::Yellow;
-const SUCCESS: Color = Color::Green;
+pub(super) const SUCCESS: Color = Color::Green;
 
 /// A drawn transcript, plus where its expandable headers landed.
 ///
@@ -259,7 +260,10 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
                 Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
             ]));
         }
-        if tool.arguments != tool.summary {
+        // An edit/write's raw `old_string=... new_string=...` dump is exactly
+        // what the diff below already shows, one line at a time instead of as
+        // a wall of `key=value` text — showing both says the same thing twice.
+        if tool.arguments != tool.summary && !crate::transcript::is_diff_tool(&tool.name) {
             push_block(
                 &mut lines,
                 "      ",
@@ -269,13 +273,17 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
             );
         }
         if let Some(detail) = &tool.detail {
-            push_block(
-                &mut lines,
-                "      ",
-                detail,
-                Style::new().fg(THINKING),
-                width,
-            );
+            if crate::transcript::is_diff_tool(&tool.name) {
+                push_diff_block(&mut lines, "      ", detail, width);
+            } else {
+                push_block(
+                    &mut lines,
+                    "      ",
+                    detail,
+                    Style::new().fg(THINKING),
+                    width,
+                );
+            }
         }
     }
     lines
@@ -314,7 +322,10 @@ fn default_open(group: &[Cell]) -> bool {
         Cell::Tool(tool) => match tool.state {
             CallState::Running => true,
             CallState::Finished(ToolStatus::Error | ToolStatus::Denied) => true,
-            CallState::Finished(ToolStatus::Ok | ToolStatus::Cancelled) => false,
+            CallState::Finished(ToolStatus::Ok) => {
+                crate::transcript::is_diff_tool(&tool.name) && tool.detail.is_some()
+            }
+            CallState::Finished(ToolStatus::Cancelled) => false,
         },
         _ => false,
     })
@@ -382,7 +393,7 @@ fn push_block(
 }
 
 /// Greedy word wrap, breaking inside a word only when it cannot fit alone.
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }

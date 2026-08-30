@@ -25,6 +25,7 @@ futures = { workspace = true }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
 serde_json = { workspace = true }
+terminal-light = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 unicode-width = { workspace = true }

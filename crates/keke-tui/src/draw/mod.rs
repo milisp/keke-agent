@@ -1,3 +1,4 @@
+pub(crate) mod diff;
 pub(crate) mod file_search;
 pub(crate) mod header;
 pub(crate) mod input;

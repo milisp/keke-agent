@@ -380,6 +380,16 @@ pub(crate) fn verb(name: &str) -> (&str, &str) {
     }
 }
 
+/// Whether a tool's detail is a diff worth showing without a click.
+///
+/// A clean `read_file` or `grep` folding away is the point — nothing to
+/// review. A clean `edit`/`write_file` is exactly the opposite: the diff is
+/// the one thing a person needs to see to trust what the agent just did, so
+/// it stays open even on success.
+pub(crate) fn is_diff_tool(name: &str) -> bool {
+    matches!(name, "edit" | "write_file")
+}
+
 /// The fields worth showing alone, in the order a reader would want them.
 ///
 /// A call is nearly always about one thing — the file, the command — and the
@@ -485,10 +495,30 @@ fn first_line(result: &ToolResult) -> Option<String> {
 /// as a "detail" it reads as if that one line were the whole story. A count is
 /// what a reader actually wants before deciding whether to expand.
 fn detail_line(name: &str, result: &ToolResult) -> Option<String> {
-    if name == "grep" {
-        return grep_summary(result);
+    match name {
+        "grep" => grep_summary(result),
+        // The headline already names the file; the first line of its
+        // contents is noise, not detail (an empty line or a stray `use`).
+        "read_file" => None,
+        "edit" | "write_file" => diff_hunk(result).or_else(|| first_line(result)),
+        _ => first_line(result),
     }
-    first_line(result)
+}
+
+/// The unified diff a write carried in [`ToolResult::value`], if any.
+///
+/// `content` only ever holds the terse summary the model sees (`edited
+/// path (+1 -2, ...)`); the lines that actually changed live in `value`
+/// instead, since that field is never charged against the model's context.
+fn diff_hunk(result: &ToolResult) -> Option<String> {
+    let hunk = result
+        .value
+        .as_ref()?
+        .get("diff")?
+        .get("hunk")?
+        .as_str()?
+        .trim_end();
+    (!hunk.is_empty()).then(|| hunk.to_string())
 }
 
 fn grep_summary(result: &ToolResult) -> Option<String> {
@@ -528,6 +558,50 @@ fn one_line(text: &str, limit: usize) -> String {
     }
     let kept: String = flattened.chars().take(limit.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+#[cfg(test)]
+mod detail_line_tests {
+    use super::*;
+
+    fn result_with_value(value: serde_json::Value) -> ToolResult {
+        ToolResult {
+            id: ToolCallId::new("c1"),
+            status: ToolStatus::Ok,
+            content: vec![ContentBlock::text("edited file.rs (+1 -1, 1 replacement)")],
+            value: Some(value),
+        }
+    }
+
+    #[test]
+    fn read_file_gets_no_detail() {
+        let result = ToolResult::ok(ToolCallId::new("c1"), "1\thello\n2\tworld\n");
+        assert_eq!(detail_line("read_file", &result), None);
+    }
+
+    #[test]
+    fn edit_detail_is_the_diff_hunk_not_the_model_summary() {
+        let result = result_with_value(serde_json::json!({
+            "path": "file.rs",
+            "replacements": 1,
+            "diff": { "added": 1, "removed": 1, "hunk": "-old\n+new\n" },
+        }));
+        assert_eq!(detail_line("edit", &result).as_deref(), Some("-old\n+new"));
+    }
+
+    #[test]
+    fn write_file_without_a_diff_falls_back_to_the_model_summary() {
+        let result = result_with_value(serde_json::json!({
+            "path": "file.rs",
+            "bytes": 12,
+            "created": true,
+            "diff": null,
+        }));
+        assert_eq!(
+            detail_line("write_file", &result).as_deref(),
+            Some("edited file.rs (+1 -1, 1 replacement)")
+        );
+    }
 }
 
 #[cfg(test)]
