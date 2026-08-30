@@ -32,10 +32,10 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     let (state, style) = match app.turn() {
         Turn::Idle => ("ready", Style::new().fg(Color::Green)),
         Turn::Running => ("working", Style::new().fg(Color::Magenta)),
-        Turn::AwaitingPermission => (
-            "blocked — awaiting approval",
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ),
+        // The approval panel owns the bottom of the screen while a call is
+        // blocked, and says everything this bar would — the status draw is
+        // skipped entirely then (see draw/mod.rs), so this arm never runs.
+        Turn::AwaitingPermission => ("blocked", Style::new().fg(Color::Yellow)),
     };
 
     let mut spans = vec![Span::styled(format!(" {state} "), style)];

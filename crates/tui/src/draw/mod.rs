@@ -4,6 +4,7 @@ pub(crate) mod header;
 pub(crate) mod input;
 pub(crate) mod markdown;
 pub(crate) mod menu;
+pub(crate) mod permission;
 pub(crate) mod picker;
 pub(crate) mod plan;
 pub(crate) mod status;
@@ -69,6 +70,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     // status bar says that the overlay does not already say better, so both
     // collapse and the pane reads as owning the bottom of the screen.
     let managing_mcp = app.mcp_picker().is_some();
+    // While a tool call is blocked on approval, the approval panel owns the
+    // composer's row and the keyboard: there is nothing to type, and the
+    // status bar's turn state is exactly what the panel is already saying.
+    let blocked = app.turn() == crate::app::Turn::AwaitingPermission;
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -83,19 +88,21 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // turn runs, and collapses to nothing when idle.
             Constraint::Length(turn_status::rows(app)),
             Constraint::Length(subagents::rows(app)),
-            Constraint::Length(if (planning && !composing) || managing_mcp {
+            Constraint::Length(if (planning && !composing) || managing_mcp || blocked {
                 0
             } else {
                 input::rows(app, frame.area().width)
             }),
+            Constraint::Length(permission::rows(app)),
             Constraint::Length(picker::rows(app, frame.area().height)),
             Constraint::Length(plan::rows(app)),
-            Constraint::Length(u16::from(!planning && !managing_mcp)),
+            Constraint::Length(u16::from(!planning && !managing_mcp && !blocked)),
         ])
         .split(frame.area());
 
-    let (header, body, menu, turn, agents, composer, picker_area, policies, footer) = (
+    let (header, body, menu, turn, agents, composer, approval, picker_area, policies, footer) = (
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
+        areas[9],
     );
 
     let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
@@ -148,6 +155,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     menu::draw(frame, menu, app);
     file_search::draw(frame, menu, app);
     input::draw(frame, composer, app);
+    permission::draw(frame, approval, app);
     turn_status::draw(frame, turn, app);
     subagents::draw(frame, agents, app);
     header::draw(frame, header, app);

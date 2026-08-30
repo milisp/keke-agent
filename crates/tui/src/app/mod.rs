@@ -703,4 +703,8 @@ impl App {
     pub fn open_permission_id(&self) -> Option<PermissionId> {
         self.transcript.open_permission_id()
     }
+
+    pub fn open_permission(&self) -> Option<&crate::transcript::PermissionCell> {
+        self.transcript.open_permission()
+    }
 }

@@ -16,7 +16,6 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::app::App;
-use crate::app::Turn;
 
 /// Grow with the text, but never past this, so the transcript keeps the screen.
 pub(crate) const MAX_ROWS: u16 = 8;
@@ -33,12 +32,6 @@ pub(crate) fn rows(app: &App, area_width: u16) -> u16 {
 }
 
 pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
-    let blocked = app.turn() == Turn::AwaitingPermission;
-    let border = if blocked {
-        Style::new().fg(Color::Yellow)
-    } else {
-        Style::new().fg(Color::DarkGray)
-    };
     // While a plan is being commented on, the box says which lines the words
     // are about: it is the only thing on screen that does, and a comment
     // attached to the wrong lines is worse than no comment.
@@ -46,9 +39,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     // Plan mode is said here as well as in the status bar: a person types into
     // this box, and what they send while planning is answered with a plan
     // rather than with work.
-    let title = if blocked {
-        " answer the prompt above ".to_string()
-    } else if let Some(label) = plan_title {
+    let title = if let Some(label) = plan_title {
         label
     } else if app.session_mode().is_plan() {
         " message \u{2014} plan mode, the agent plans before it builds ".to_string()
@@ -57,7 +48,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border)
+        .border_style(Style::new().fg(Color::DarkGray))
         .title(title);
     let inner = block.inner(area);
     let width = usize::from(inner.width).max(1);
@@ -100,14 +91,10 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
 
-    // No cursor while blocked: the keyboard is answering the prompt, and a
-    // blinking caret in a box that ignores letters is a lie.
-    if !blocked {
-        let x = inner.x + u16::try_from(cursor_display_column).unwrap_or(0);
-        let y = inner.y + u16::try_from(cursor_display_row - first).unwrap_or(0);
-        if x < inner.right() && y < inner.bottom() {
-            frame.set_cursor_position((x, y));
-        }
+    let x = inner.x + u16::try_from(cursor_display_column).unwrap_or(0);
+    let y = inner.y + u16::try_from(cursor_display_row - first).unwrap_or(0);
+    if x < inner.right() && y < inner.bottom() {
+        frame.set_cursor_position((x, y));
     }
 }
 

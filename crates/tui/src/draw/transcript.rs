@@ -18,7 +18,6 @@ use super::diff::push_diff_block;
 use super::markdown;
 use crate::transcript::CallState;
 use crate::transcript::Cell;
-use crate::transcript::PermissionCell;
 use crate::transcript::ToolCell;
 use crate::transcript::verb;
 
@@ -156,7 +155,6 @@ pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> R
                 out.lines.push(Line::default());
                 continue;
             }
-            Cell::Permission(prompt) => out.lines.extend(permission_lines(prompt, width)),
             Cell::Error(message) => {
                 let style = Style::new().fg(FAILURE);
                 push_block(&mut out.lines, "error: ", message, style, width);
@@ -425,43 +423,6 @@ fn default_open(group: &[Cell]) -> bool {
         },
         _ => false,
     })
-}
-
-fn permission_lines(prompt: &PermissionCell, width: usize) -> Vec<Line<'static>> {
-    let (marker, style) = match prompt.answer {
-        None => ("?", Style::new().fg(DENIED).add_modifier(Modifier::BOLD)),
-        Some(PermissionAnswer::Allow | PermissionAnswer::AllowAlways) => {
-            ("✓", Style::new().fg(SUCCESS))
-        }
-        Some(PermissionAnswer::Deny) => ("⊘", Style::new().fg(DENIED)),
-    };
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{marker} approve "), style),
-        Span::styled(prompt.name.clone(), style.add_modifier(Modifier::BOLD)),
-        Span::raw(" "),
-        Span::styled(prompt.summary.clone(), Style::new().fg(THINKING)),
-    ])];
-    push_block(
-        &mut lines,
-        "    ",
-        &prompt.reason,
-        Style::new().fg(THINKING),
-        width,
-    );
-    // Only while it is a question, plus the one answer the marker cannot
-    // spell: ✓ and ⊘ already say allowed and denied, and a key list under a
-    // prompt nobody can still answer is an instruction that does nothing.
-    match prompt.answer {
-        None => lines.push(Line::styled(
-            "    [y] allow  [a] always allow  [n] deny".to_string(),
-            style,
-        )),
-        Some(PermissionAnswer::AllowAlways) => {
-            lines.push(Line::styled("    always allowed".to_string(), style));
-        }
-        Some(_) => {}
-    }
-    lines
 }
 
 /// Wrap `text` to `width`, prefixing the first line and indenting the rest so

@@ -237,19 +237,22 @@ async fn a_permission_prompt_takes_the_letter_keys() {
 }
 
 #[test]
-fn an_answered_prompt_keeps_the_decision_on_screen() {
+fn answering_a_prompt_clears_it_rather_than_leaving_it_in_the_scrollback() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::PermissionRequested {
         id: PermissionId("p1".to_string()),
         call: call("c1", "bash"),
         reason: "runs a command".to_string(),
     });
+    assert!(app.open_permission().is_some());
+
     app.answer_permission(PermissionAnswer::Deny);
 
-    let Some(Cell::Permission(prompt)) = app.transcript.last() else {
-        panic!("the prompt must stay in the scrollback");
-    };
-    assert_eq!(prompt.answer, Some(PermissionAnswer::Deny));
+    assert!(app.open_permission().is_none());
+    assert!(
+        app.transcript.cells().is_empty(),
+        "the prompt was never a scrollback cell"
+    );
 }
 
 #[test]

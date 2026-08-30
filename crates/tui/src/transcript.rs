@@ -37,15 +37,19 @@ pub struct ToolCell {
     pub detail: Option<String>,
 }
 
-/// An approval request and, once given, the answer.
+/// A tool call waiting on approval.
+///
+/// Not a scrollback cell: a tool prompt is a question about what happens
+/// next, not something said, so it lives beside the transcript in its own
+/// slot — [`Transcript::open_permission`] — and is drawn in the panel under
+/// it, the way the MCP picker is drawn beside the composer rather than
+/// mixed into the cells it manages.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PermissionCell {
     pub id: PermissionId,
     pub name: String,
     pub summary: String,
     pub reason: String,
-    /// `None` while the turn is blocked on this prompt.
-    pub answer: Option<PermissionAnswer>,
 }
 
 /// A plan the agent asked to leave plan mode with.
@@ -71,7 +75,6 @@ pub enum Cell {
     User(String),
     Assistant(String),
     Tool(ToolCell),
-    Permission(PermissionCell),
     /// A `Update::Failed`, or a local error. Never terminal.
     Error(String),
     /// Out-of-band host chatter — a login URL, a device code.
@@ -85,6 +88,9 @@ pub enum Cell {
 #[derive(Debug, Default)]
 pub struct Transcript {
     cells: Vec<Cell>,
+    /// The tool call currently blocking the turn, if any. Cleared the moment
+    /// it is answered — see [`PermissionCell`] for why this is not a cell.
+    open_permission: Option<PermissionCell>,
     /// Set by [`Transcript::seal`]; makes the next delta open a new cell
     /// instead of extending the one already on screen.
     sealed: bool,
@@ -219,13 +225,12 @@ impl Transcript {
 
     pub fn request_permission(&mut self, id: PermissionId, call: &ToolCall, reason: String) {
         self.sealed = true;
-        self.cells.push(Cell::Permission(PermissionCell {
+        self.open_permission = Some(PermissionCell {
             id,
             name: call.name.clone(),
             summary: headline(&call.arguments, &self.cwd_prefix),
             reason,
-            answer: None,
-        }));
+        });
     }
 
     /// Put a proposed plan in the scrollback, where it stays.
@@ -244,27 +249,28 @@ impl Transcript {
         }));
     }
 
-    /// Record the answer in place, so the scrollback shows what was decided.
+    /// Answer the prompt, or the plan's cell if it was that instead.
     pub fn answer_permission(&mut self, id: &PermissionId, answer: PermissionAnswer) {
+        if self.open_permission.as_ref().is_some_and(|p| &p.id == id) {
+            self.open_permission = None;
+            return;
+        }
         for cell in self.cells.iter_mut().rev() {
-            match cell {
-                Cell::Permission(prompt) if &prompt.id == id => {
-                    prompt.answer = Some(answer);
-                    return;
-                }
-                Cell::Plan(plan) if &plan.id == id => {
-                    plan.answer = Some(answer);
-                    return;
-                }
-                _ => {}
+            if let Cell::Plan(plan) = cell
+                && &plan.id == id
+            {
+                plan.answer = Some(answer);
+                return;
             }
         }
     }
 
     /// The id of whatever is blocking the turn — a tool prompt or a plan.
     pub fn open_permission_id(&self) -> Option<PermissionId> {
+        if let Some(prompt) = &self.open_permission {
+            return Some(prompt.id.clone());
+        }
         self.cells.iter().rev().find_map(|cell| match cell {
-            Cell::Permission(prompt) if prompt.answer.is_none() => Some(prompt.id.clone()),
             Cell::Plan(plan) if plan.answer.is_none() => Some(plan.id.clone()),
             _ => None,
         })
@@ -278,12 +284,9 @@ impl Transcript {
         })
     }
 
-    /// The prompt currently blocking the turn, if any.
+    /// The tool call currently blocking the turn, if any.
     pub fn open_permission(&self) -> Option<&PermissionCell> {
-        self.cells.iter().rev().find_map(|cell| match cell {
-            Cell::Permission(prompt) if prompt.answer.is_none() => Some(prompt),
-            _ => None,
-        })
+        self.open_permission.as_ref()
     }
 
     /// Rebuild the visible transcript from a resumed session's history.
