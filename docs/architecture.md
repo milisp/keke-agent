@@ -437,10 +437,12 @@ Two rules shape it:
   instead of opening one.
 - **A registration is not a credential.** A `client_id` from dynamic
   registration is public by construction, so it lives in a plain
-  `mcp-clients.json` and survives `logout`; the tokens go to the same 0600
-  per-vendor store every provider login writes to, filed under the server's name
-  *and* a digest of its URL — two projects each with a `github` server must not
-  share a token.
+  `mcp/clients.json` and survives `logout`; the tokens go to the same 0600
+  per-vendor store shape every provider login writes to, but under their own
+  `mcp/` subdirectory — a project can configure far more remote MCP servers
+  than it has providers, and a flat listing shared with provider logins does
+  not scale to that. Filed under the server's name *and* a digest of its URL —
+  two projects each with a `github` server must not share a token.
 
 ### A server is a URL or a program
 

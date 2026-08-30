@@ -196,23 +196,18 @@ async fn signing_in_makes_a_protected_server_usable() {
     assert!(auth.has_credential());
     assert_eq!(auth.bearer().await.as_deref(), Some("access-1"));
 
-    // The credential is a file only this person can read, in their own
-    // directory — the same store a provider login writes to.
-    let files: Vec<String> = std::fs::read_dir(dir.path())
+    // The credential is a file only this person can read, under its own
+    // `mcp/` directory — kept apart from every provider login's flat listing.
+    let files: Vec<String> = std::fs::read_dir(dir.path().join("mcp"))
         .expect("readable")
         .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
         .collect();
     assert!(
-        files
-            .iter()
-            .any(|name| name.starts_with("auth.mcp-vercel-")),
+        files.iter().any(|name| name.starts_with("auth.vercel-")),
         "{files:?}"
     );
     // The registration is kept beside it, and is not a secret.
-    assert!(
-        files.iter().any(|name| name == "mcp-clients.json"),
-        "{files:?}"
-    );
+    assert!(files.iter().any(|name| name == "clients.json"), "{files:?}");
 }
 
 #[tokio::test]

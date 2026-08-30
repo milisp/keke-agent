@@ -543,9 +543,10 @@ impl Composed {
         let subagents = keke_subagent::install(&mut extensions, subagent_limits);
         keke_skills::install(&mut extensions, &plugins);
         // The credential home is handed in rather than discovered: where the
-        // harness keeps state is the composition root's to know, and a remote
-        // MCP server's token belongs in the same directory as every other
-        // login's.
+        // harness keeps state is the composition root's to know. `AuthHome`
+        // files remote MCP servers' tokens under their own `mcp/`
+        // subdirectory of it, keeping a project with many configured servers
+        // out of the same flat listing as every other provider login.
         keke_mcp::install_with(
             &mut extensions,
             &plugins,

@@ -58,7 +58,10 @@ const REFRESH_MARGIN: i64 = 60;
 /// Where MCP credentials and registrations are kept.
 ///
 /// Composed by the host, which is the only layer that knows where the harness
-/// keeps state.
+/// keeps state. Remote MCP servers' tokens are filed under their own `mcp/`
+/// subdirectory rather than beside every other provider's `auth.*.json`: a
+/// project can configure many remote servers, and a flat directory shared with
+/// provider logins turns unreadable long before a project's server count does.
 #[derive(Clone, Debug)]
 pub struct AuthHome {
     tokens: VendorAuthStore,
@@ -68,9 +71,14 @@ pub struct AuthHome {
 impl AuthHome {
     #[must_use]
     pub fn new(home: &AbsPath) -> Self {
+        let mcp = home.as_path().join("mcp");
+        // Appending a fixed, non-empty relative segment to an already-absolute
+        // path is always absolute; `AbsPath::new` cannot fail here.
+        #[allow(clippy::expect_used)]
+        let mcp_home = AbsPath::new(&mcp).expect("home joined with a relative segment is absolute");
         Self {
-            tokens: VendorAuthStore::new(home.clone()),
-            clients: home.as_path().join("mcp-clients.json"),
+            tokens: VendorAuthStore::new(mcp_home),
+            clients: mcp.join("clients.json"),
         }
     }
 }
@@ -626,19 +634,26 @@ fn well_known(url: &str, document: &str) -> Vec<String> {
     candidates
 }
 
-/// The file name a server's tokens are filed under.
+/// The file name a server's tokens are filed under, within [`AuthHome`]'s
+/// `mcp/` directory.
 ///
 /// Derived from the name *and* the URL: two projects may each configure a
 /// `github` server pointing somewhere different, and a shared file would hand
 /// one of them the other's token.
 fn vendor_slug(name: &str, url: &str) -> String {
-    let mut slug = String::from("mcp-");
+    let mut slug = String::new();
     for ch in name.chars() {
         match ch {
             'a'..='z' | '0'..='9' => slug.push(ch),
             'A'..='Z' => slug.push(ch.to_ascii_lowercase()),
             _ => slug.push('-'),
         }
+    }
+    // `Vendor` requires the slug to start with a lowercase letter or digit,
+    // which a server name is not guaranteed to: a name starting with a symbol
+    // like `!` would otherwise be rejected.
+    if !slug.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        slug.insert(0, 's');
     }
     // A short digest of the URL rather than the URL itself: the slug is a file
     // name, and a person reading their own directory should not find a full
@@ -732,7 +747,7 @@ mod tests {
         let one = vendor_slug("github", "https://a.test/mcp");
         let two = vendor_slug("github", "https://b.test/mcp");
         assert_ne!(one, two);
-        assert!(one.starts_with("mcp-github-"), "{one}");
+        assert!(one.starts_with("github-"), "{one}");
         // It is a file name, so it has to survive `Vendor`'s validation.
         assert!(Vendor::new(one).is_ok());
         assert!(Vendor::new(vendor_slug("Weird Name!", "https://c.test")).is_ok());
