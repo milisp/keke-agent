@@ -189,7 +189,7 @@ pub(super) async fn tui(
         .ok();
     let prompts = prompt_history(&config.home.home, &history_cwd, session_id);
     let (conversation, updates) = (opened.conversation, opened.updates);
-    keke_tui::run(
+    let result = keke_tui::run(
         conversation,
         updates,
         commands,
@@ -224,7 +224,14 @@ pub(super) async fn tui(
             })),
         },
     )
-    .await
+    .await;
+    // Printed after the terminal is restored, so a person who quit with
+    // Ctrl-C/Ctrl-D lands back at a shell prompt that already tells them how
+    // to pick the conversation back up.
+    if let Some(id) = session_id {
+        println!("keke resume {id}");
+    }
+    result
 }
 /// This project's past prompts, plus the sink new ones are appended to.
 ///
