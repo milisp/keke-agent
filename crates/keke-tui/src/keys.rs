@@ -72,7 +72,11 @@ impl App {
             // the turn is busy, so without this it could never be closed.
             KeyCode::Esc if self.close_subagent() => {}
             KeyCode::Esc if self.turn().is_busy() => self.interrupt(),
-            KeyCode::Char('d') if control => self.quit(),
+            // Emacs binds Ctrl-D to delete-forward, but on an empty line it
+            // has always meant EOF, so quit only when there is nothing to
+            // delete.
+            KeyCode::Char('d') if control && self.input.is_empty() => self.quit(),
+            KeyCode::Char('d') if control => self.input.delete(),
             KeyCode::Char('l') if control => self.scroll.follow(),
             KeyCode::Char('o') if control => self.toggle_last_expandable(),
             KeyCode::PageUp => self.scroll.page_up(),
