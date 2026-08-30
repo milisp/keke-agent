@@ -29,6 +29,8 @@ pub(super) async fn mcp(action: McpAction, config: Config) -> Result<()> {
         McpAction::Login { name } => login(&name, &config.home).await,
         McpAction::Logout { name } => logout(&name, &config.home),
         McpAction::Remove { name, scope } => remove(&name, scope, &config.home),
+        McpAction::Enable { name } => set_disabled(&name, false, &config.home),
+        McpAction::Disable { name } => set_disabled(&name, true, &config.home),
     }
 }
 
@@ -265,6 +267,7 @@ pub(crate) fn statuses(home: &HomeLayout) -> Result<Vec<keke_tui::McpServerStatu
                 remote,
                 signed_in,
                 allowed,
+                enabled: !server.disabled,
             });
         }
     }
@@ -310,7 +313,12 @@ fn list(home: &HomeLayout) -> Result<()> {
         let trust = store.evaluate(plugin);
         println!("{} [{}, {trust}]", plugin.name, plugin.scope);
         for server in &plugin.mcp_servers {
-            println!("  {}: {}", server.name, server.transport.describe());
+            let disabled = if server.disabled { " (disabled)" } else { "" };
+            println!(
+                "  {}: {}{disabled}",
+                server.name,
+                server.transport.describe()
+            );
         }
         if !trust.permits_running() {
             println!(
@@ -346,6 +354,14 @@ fn get(name: &str, home: &HomeLayout) -> Result<()> {
     println!("transport: {}", server.transport.kind());
     println!("reached by: {}", server.transport.describe());
     println!("configured in: {} [{}]", plugin.name, plugin.scope);
+    println!(
+        "enabled: {}",
+        if server.disabled {
+            format!("no — `keke mcp enable {name}`")
+        } else {
+            "yes".to_string()
+        }
+    );
     if !server.transport.is_local() {
         let signed_in = credential(name, home).is_ok_and(|auth| auth.has_credential());
         println!(
@@ -367,6 +383,54 @@ fn get(name: &str, home: &HomeLayout) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Flip whether a server starts, wherever `keke mcp add` put it.
+///
+/// Searches both scopes the way `remove` does, for the same reason: a person
+/// asking to disable `name` does not know or care which file it landed in.
+fn set_disabled(name: &str, disabled: bool, home: &HomeLayout) -> Result<()> {
+    for scope in [McpScope::User, McpScope::Project] {
+        let path = file(scope, home);
+        let mut document = McpDocument::open(&path)?;
+        if document.set_disabled(name, disabled) {
+            document.save(&path)?;
+            println!(
+                "{} `{}` in {}",
+                if disabled { "disabled" } else { "enabled" },
+                name,
+                path.display()
+            );
+            return Ok(());
+        }
+    }
+    bail!(
+        "no server named `{name}` was configured by `keke mcp add`\n\nif a plugin contributes it, remove the plugin: `keke plugin remove <name>`"
+    );
+}
+
+/// Managing servers from inside the interface: toggling, removing, and
+/// re-reading the list after either.
+///
+/// Holds the layout rather than a resolved server for the same reason
+/// [`SignIn`] does — a name is re-resolved against whatever `.mcp.json` says
+/// at the moment a person acts, not against what it said when `/mcp` opened.
+pub(crate) struct Manage {
+    pub home: HomeLayout,
+}
+
+impl keke_tui::McpManage for Manage {
+    fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String> {
+        set_disabled(name, disabled, &self.home).map_err(|error| error.to_string())
+    }
+
+    fn remove(&self, name: &str) -> Result<(), String> {
+        remove(name, None, &self.home).map_err(|error| error.to_string())
+    }
+
+    fn refresh(&self) -> Result<Vec<keke_tui::McpServerStatus>, String> {
+        statuses(&self.home).map_err(|error| error.to_string())
+    }
 }
 
 fn remove(name: &str, scope: Option<McpScope>, home: &HomeLayout) -> Result<()> {

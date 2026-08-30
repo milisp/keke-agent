@@ -72,6 +72,9 @@ pub struct App {
     /// so a report arriving late lands on the row it is about rather than on
     /// whichever row happens to be highlighted.
     mcp_activity: std::collections::HashMap<String, String>,
+    /// Toggling, removing, and refreshing a server from `/mcp`. `None` in a
+    /// surface with no way to write `.mcp.json` back.
+    manage: Option<Arc<dyn crate::mcp::McpManage>>,
     /// Where a login flow's progress goes. Held so a sign-in started from
     /// `/mcp` reaches the transcript the same way a startup login's does.
     notices: Option<UnboundedSender<Notice>>,
@@ -211,6 +214,7 @@ impl App {
                 commands: SlashCommands::default(),
                 mcp: Vec::new(),
                 mcp_activity: std::collections::HashMap::new(),
+                manage: None,
                 sign_in: None,
                 notices: None,
                 file_search: FileSearchState::new(cwd),
@@ -258,9 +262,11 @@ impl App {
         mut self,
         servers: Vec<crate::mcp::McpServerStatus>,
         sign_in: Option<Arc<dyn crate::mcp::McpSignIn>>,
+        manage: Option<Arc<dyn crate::mcp::McpManage>>,
     ) -> Self {
         self.mcp = servers;
         self.sign_in = sign_in;
+        self.manage = manage;
         self
     }
 

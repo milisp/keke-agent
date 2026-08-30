@@ -234,8 +234,27 @@ impl App {
         }
     }
 
-    /// While the model overlay is up, these keys drive it.
+    /// While the model or provider overlay is up, these keys drive it.
     fn handle_picker_key(&mut self, key: KeyEvent) {
+        // The MCP overlay manages servers rather than switching one thing, so
+        // it spends letters model/provider give to the filter on shortcuts
+        // instead — a management pane earns its keys back one at a time, not
+        // by matching whatever the picker before it did.
+        if self.mcp_picker().is_some() {
+            match key.code {
+                KeyCode::Up => self.move_picker_selection(-1),
+                KeyCode::Down | KeyCode::Tab => self.move_picker_selection(1),
+                KeyCode::Enter | KeyCode::Char('i') => self.auth_selected_mcp(),
+                KeyCode::Char(' ') => self.toggle_selected_mcp(),
+                KeyCode::Char('x') => self.remove_selected_mcp(),
+                KeyCode::Char('r') => self.refresh_mcp(),
+                KeyCode::Esc => self.close_picker(),
+                KeyCode::Backspace => self.backspace_in_picker(),
+                KeyCode::Char(ch) => self.type_into_picker(ch),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Up => self.move_picker_selection(-1),
             KeyCode::Down | KeyCode::Tab => self.move_picker_selection(1),

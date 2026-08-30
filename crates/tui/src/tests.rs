@@ -2210,6 +2210,7 @@ fn server(name: &str, remote: bool, signed_in: bool) -> crate::McpServerStatus {
         remote,
         signed_in,
         allowed: true,
+        enabled: true,
     }
 }
 
@@ -2218,6 +2219,7 @@ async fn mcp_opens_an_overlay_over_what_is_configured() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     let mut app = app.with_mcp(
         vec![server("files", false, false), server("vercel", true, false)],
+        None,
         None,
     );
 
@@ -2240,7 +2242,7 @@ async fn mcp_opens_an_overlay_over_what_is_configured() {
 #[tokio::test]
 async fn mcp_with_nothing_configured_says_so_instead_of_opening() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(Vec::new(), None);
+    let mut app = app.with_mcp(Vec::new(), None, None);
 
     type_text(&mut app, "/mcp");
     app.handle_key(key(KeyCode::Enter));
@@ -2258,7 +2260,7 @@ async fn mcp_with_nothing_configured_says_so_instead_of_opening() {
 #[tokio::test]
 async fn enter_on_a_row_reports_on_the_row_and_keeps_the_overlay_open() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("vercel", true, false)], None);
+    let mut app = app.with_mcp(vec![server("vercel", true, false)], None, None);
 
     type_text(&mut app, "/mcp");
     app.handle_key(key(KeyCode::Enter));
@@ -2282,7 +2284,7 @@ async fn enter_on_a_row_reports_on_the_row_and_keeps_the_overlay_open() {
 #[tokio::test]
 async fn login_progress_lands_on_the_row_while_the_overlay_is_open() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("vercel", true, false)], None);
+    let mut app = app.with_mcp(vec![server("vercel", true, false)], None, None);
     app.open_mcp_picker();
     let before = app.transcript.len();
 
@@ -2306,7 +2308,7 @@ async fn login_progress_lands_on_the_row_while_the_overlay_is_open() {
 #[tokio::test]
 async fn login_progress_with_no_overlay_open_still_reaches_the_transcript() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("vercel", true, false)], None);
+    let mut app = app.with_mcp(vec![server("vercel", true, false)], None, None);
 
     app.apply_notice(crate::login::Notice::McpProgress {
         name: "vercel".to_string(),
@@ -2326,7 +2328,7 @@ async fn an_untrusted_server_reports_the_trust_problem_not_the_token_one() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
     let mut held = server("shipped", true, false);
     held.allowed = false;
-    let mut app = app.with_mcp(vec![held], None);
+    let mut app = app.with_mcp(vec![held], None, None);
 
     type_text(&mut app, "/mcp login shipped");
     app.handle_key(key(KeyCode::Enter));
@@ -2342,7 +2344,7 @@ async fn an_untrusted_server_reports_the_trust_problem_not_the_token_one() {
 #[tokio::test]
 async fn a_finished_login_stops_the_list_asking_for_one() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("vercel", true, false)], None);
+    let mut app = app.with_mcp(vec![server("vercel", true, false)], None, None);
 
     app.apply_notice(crate::login::Notice::McpProgress {
         name: "vercel".to_string(),
@@ -2367,7 +2369,7 @@ async fn a_finished_login_stops_the_list_asking_for_one() {
 #[tokio::test]
 async fn signing_in_without_a_credential_store_says_where_to_do_it() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("vercel", true, false)], None);
+    let mut app = app.with_mcp(vec![server("vercel", true, false)], None, None);
 
     type_text(&mut app, "/mcp login vercel");
     app.handle_key(key(KeyCode::Enter));
@@ -2381,7 +2383,7 @@ async fn signing_in_without_a_credential_store_says_where_to_do_it() {
 #[tokio::test]
 async fn signing_in_to_a_local_server_is_refused_where_it_was_typed() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("files", false, false)], None);
+    let mut app = app.with_mcp(vec![server("files", false, false)], None, None);
 
     type_text(&mut app, "/mcp login files");
     app.handle_key(key(KeyCode::Enter));
@@ -2395,7 +2397,7 @@ async fn signing_in_to_a_local_server_is_refused_where_it_was_typed() {
 #[tokio::test]
 async fn an_unknown_server_name_is_refused_rather_than_started() {
     let (app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
-    let mut app = app.with_mcp(vec![server("vercel", true, true)], None);
+    let mut app = app.with_mcp(vec![server("vercel", true, true)], None, None);
 
     type_text(&mut app, "/mcp login nothing-like-that");
     app.handle_key(key(KeyCode::Enter));

@@ -370,6 +370,7 @@ fn plugin_with_server(
                     .collect(),
             },
             plugin_root: root,
+            disabled: false,
         }],
         unsupported: Vec::new(),
     }

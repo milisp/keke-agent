@@ -206,6 +206,11 @@ pub struct ResolvedMcpServer {
     pub name: String,
     pub transport: McpTransport,
     pub plugin_root: AbsPath,
+    /// Set by `keke mcp disable`, or the `/mcp` overlay's space key. A
+    /// disabled server is still listed — that is the whole point, since a
+    /// server nobody can see again cannot be re-enabled — it is just never
+    /// started.
+    pub disabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +277,11 @@ pub struct McpServerEntry {
     pub url: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Kept configured but not started. Absent (rather than `false`) is the
+    /// overwhelmingly common case, so it is left out of a written entry
+    /// rather than spelled out every time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
 }
 
 impl McpServerEntry {

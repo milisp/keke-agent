@@ -64,6 +64,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     // exactly what the panel below the plan is asking about.
     let planning = app.plan_review().is_some();
     let composing = planning && app.plan_focus() == crate::app::plan::PlanFocus::Composer;
+    // The MCP overlay is a management pane, not a box over the composer: while
+    // it is open there is nothing to type into the composer and nothing the
+    // status bar says that the overlay does not already say better, so both
+    // collapse and the pane reads as owning the bottom of the screen.
+    let managing_mcp = app.mcp_picker().is_some();
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -78,14 +83,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // turn runs, and collapses to nothing when idle.
             Constraint::Length(turn_status::rows(app)),
             Constraint::Length(subagents::rows(app)),
-            Constraint::Length(if planning && !composing {
+            Constraint::Length(if (planning && !composing) || managing_mcp {
                 0
             } else {
                 input::rows(app, frame.area().width)
             }),
             Constraint::Length(picker::rows(app, frame.area().height)),
             Constraint::Length(plan::rows(app)),
-            Constraint::Length(u16::from(!planning)),
+            Constraint::Length(u16::from(!planning && !managing_mcp)),
         ])
         .split(frame.area());
 

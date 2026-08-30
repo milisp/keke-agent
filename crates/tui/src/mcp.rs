@@ -29,6 +29,9 @@ pub struct McpServerStatus {
     /// Whether keke will actually reach it, or is holding it back for want of
     /// trust.
     pub allowed: bool,
+    /// Whether a person has left this one running. `false` means configured
+    /// but disabled — still listed, just never started.
+    pub enabled: bool,
 }
 
 /// Signing in to a remote server.
@@ -42,6 +45,21 @@ pub trait McpSignIn: Send + Sync + 'static {
         name: String,
         ui: Arc<dyn LoginUi>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+}
+
+/// Changing what is configured, from inside the interface.
+///
+/// A trait rather than a direct call for the same reason as [`McpSignIn`]: the
+/// `.mcp.json` a server lives in belongs to the host, which knows the scopes
+/// and the trust store. The interface only ever gets a name and a verdict.
+pub trait McpManage: Send + Sync + 'static {
+    /// Flip whether `name` starts. Returns the row's new state.
+    fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String>;
+    /// Drop `name` from whichever file configured it.
+    fn remove(&self, name: &str) -> Result<(), String>;
+    /// Re-read every server from disk, picking up an edit made outside the
+    /// overlay — by hand, by `keke mcp add`, or by a plugin that just landed.
+    fn refresh(&self) -> Result<Vec<McpServerStatus>, String>;
 }
 
 /// Why `/mcp` has nothing to open.

@@ -222,6 +222,9 @@ pub(super) async fn tui(
             sign_in: Some(std::sync::Arc::new(super::mcp::SignIn {
                 home: config.home.clone(),
             })),
+            manage: Some(std::sync::Arc::new(super::mcp::Manage {
+                home: config.home.clone(),
+            })),
         },
     )
     .await;

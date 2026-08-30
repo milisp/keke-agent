@@ -132,6 +132,16 @@ pub(crate) enum McpAction {
         #[arg(long, value_enum)]
         scope: Option<McpScope>,
     },
+    /// Leave a server configured but stop starting it.
+    Disable {
+        /// The server's name, as `list` prints it.
+        name: String,
+    },
+    /// Undo `disable`.
+    Enable {
+        /// The server's name, as `list` prints it.
+        name: String,
+    },
 }
 
 /// How a server is reached.

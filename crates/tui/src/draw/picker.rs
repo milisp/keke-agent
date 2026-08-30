@@ -26,6 +26,19 @@ const MIN_WIDTH: u16 = 24;
 /// Filter line + two borders. A panel shorter than this plus one list row
 /// cannot be read.
 const CHROME: u16 = 3;
+/// The MCP overlay draws a divider, not a box (see [`draw`]), so it spends
+/// one row on chrome rather than two.
+const CHROME_MCP: u16 = 2;
+
+/// How much of the panel's height is chrome rather than list rows, for the
+/// picker this frame is showing.
+fn chrome(picker: &Picker) -> u16 {
+    if picker.kind() == crate::picker::PickerKind::Mcp {
+        CHROME_MCP
+    } else {
+        CHROME
+    }
+}
 
 /// One row as the overlay needs it: what a person reads, whatever else is
 /// worth saying about it, and whether it is the one in force. Built here
@@ -87,6 +100,8 @@ fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
                 // about a row, so it displaces the standing status.
                 let state = if let Some(activity) = app.mcp_activity(&server.name) {
                     activity.to_string()
+                } else if !server.enabled {
+                    "disabled \u{2014} space to enable".to_string()
                 } else if !server.allowed {
                     format!("held back \u{2014} keke plugin trust {}", server.plugin)
                 } else if !server.remote {
@@ -94,12 +109,14 @@ fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
                 } else if server.signed_in {
                     "signed in".to_string()
                 } else {
-                    "not signed in \u{2014} enter".to_string()
+                    "not signed in \u{2014} i to sign in".to_string()
                 };
                 Row {
                     // The mark means "nothing to do here", which for a server
                     // is a reachable one that needs no token.
-                    current: server.allowed && (!server.remote || server.signed_in),
+                    current: server.enabled
+                        && server.allowed
+                        && (!server.remote || server.signed_in),
                     label: server.name.clone(),
                     detail: format!("{}  \u{b7}  {state}", server.transport),
                 }
@@ -107,7 +124,7 @@ fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
             .collect::<Vec<_>>();
         return Some((
             picker,
-            " mcp servers \u{2014} type to filter, enter signs in, esc closes ",
+            " mcp servers \u{2014} space enable/disable, x remove, i auth, r refresh, esc closes ",
             rows,
         ));
     }
@@ -117,12 +134,13 @@ fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
 /// How tall the picker is this frame, borders and filter line included.
 /// Zero when it is closed, or when the 50% cap would leave it unreadable.
 pub(crate) fn rows(app: &App, height: u16) -> u16 {
-    let Some((_, _, rows)) = content(app) else {
+    let Some((picker, _, rows)) = content(app) else {
         return 0;
     };
-    let wanted = u16::try_from(rows.len().clamp(1, MAX_ROWS)).unwrap_or(1) + CHROME;
+    let chrome = chrome(picker);
+    let wanted = u16::try_from(rows.len().clamp(1, MAX_ROWS)).unwrap_or(1) + chrome;
     let capped = wanted.min(height / 2);
-    if capped < CHROME + 1 { 0 } else { capped }
+    if capped < chrome + 1 { 0 } else { capped }
 }
 
 pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -136,7 +154,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let selected = app.picker_selected();
-    let visible = usize::from(area.height.saturating_sub(CHROME)).max(1);
+    let visible = usize::from(area.height.saturating_sub(chrome(picker))).max(1);
     let first = selected.saturating_sub(visible.saturating_sub(1));
 
     let mut lines = vec![Line::from(vec![
@@ -178,8 +196,17 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(spans));
     }
 
+    // The MCP overlay owns the input and status rows too (see `draw::draw`),
+    // so it reads as a management pane rather than a box floating over the
+    // rest of the screen — a divider on top is all that separates it from
+    // what it displaced.
+    let borders = if picker.kind() == crate::picker::PickerKind::Mcp {
+        Borders::TOP
+    } else {
+        Borders::ALL
+    };
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(borders)
         .border_style(Style::new().fg(Color::Cyan))
         .title(title);
     frame.render_widget(Paragraph::new(lines).block(block), area);

@@ -259,6 +259,7 @@ fn installed_tools(url: &str, auth: AuthHome) -> Vec<String> {
                 headers: Vec::new(),
             },
             plugin_root: root,
+            disabled: false,
         }],
         unsupported: Vec::new(),
     };

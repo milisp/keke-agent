@@ -192,15 +192,90 @@ impl App {
             // The overlay stays open: signing in to one server is rarely the
             // only thing a person came here to do, and a box that vanishes on
             // enter makes them retype `/mcp` to see whether it worked.
-            Some(crate::picker::PickerKind::Mcp) => {
-                let wanted = self.picker_mcp().get(at).map(|server| server.name.clone());
-                if let Some(wanted) = wanted
-                    && let Err(refusal) = self.mcp_login(&wanted)
-                {
-                    self.mcp_activity.insert(wanted, refusal);
+            Some(crate::picker::PickerKind::Mcp) => self.auth_selected_mcp(),
+            None => {}
+        }
+    }
+
+    /// `i` on the overlay, and what enter has always done there: start signing
+    /// in to the highlighted server.
+    pub(crate) fn auth_selected_mcp(&mut self) {
+        let at = self.picker_selected();
+        let wanted = self.picker_mcp().get(at).map(|server| server.name.clone());
+        if let Some(wanted) = wanted
+            && let Err(refusal) = self.mcp_login(&wanted)
+        {
+            self.mcp_activity.insert(wanted, refusal);
+        }
+    }
+
+    /// `space` on the overlay: flip whether the highlighted server starts.
+    pub(crate) fn toggle_selected_mcp(&mut self) {
+        let at = self.picker_selected();
+        let rows = self.picker_mcp();
+        let Some(server) = rows.get(at) else {
+            return;
+        };
+        let name = server.name.clone();
+        let disabled = server.enabled;
+        let Some(manage) = self.manage.clone() else {
+            self.mcp_activity.insert(
+                name,
+                "this interface cannot change `.mcp.json` — edit it directly".to_string(),
+            );
+            return;
+        };
+        match manage.set_disabled(&name, disabled) {
+            Ok(()) => {
+                if let Some(row) = self.mcp.iter_mut().find(|row| row.name == name) {
+                    row.enabled = !disabled;
+                }
+                self.mcp_activity.remove(&name);
+            }
+            Err(refusal) => {
+                self.mcp_activity.insert(name, refusal);
+            }
+        }
+    }
+
+    /// `x` on the overlay: drop the highlighted server from whichever file
+    /// configured it.
+    pub(crate) fn remove_selected_mcp(&mut self) {
+        let at = self.picker_selected();
+        let rows = self.picker_mcp();
+        let Some(server) = rows.get(at) else {
+            return;
+        };
+        let name = server.name.clone();
+        let Some(manage) = self.manage.clone() else {
+            self.mcp_activity.insert(
+                name,
+                "this interface cannot change `.mcp.json` — edit it directly".to_string(),
+            );
+            return;
+        };
+        match manage.remove(&name) {
+            Ok(()) => {
+                self.mcp.retain(|row| row.name != name);
+                self.mcp_activity.remove(&name);
+                if self.mcp.is_empty() {
+                    self.close_picker();
                 }
             }
-            None => {}
+            Err(refusal) => {
+                self.mcp_activity.insert(name, refusal);
+            }
+        }
+    }
+
+    /// `r` on the overlay: re-read every server from disk.
+    pub(crate) fn refresh_mcp(&mut self) {
+        let Some(manage) = self.manage.clone() else {
+            return;
+        };
+        match manage.refresh() {
+            Ok(servers) => self.mcp = servers,
+            Err(refusal) => self.transcript.push(Cell::Error(refusal)),
         }
     }
 

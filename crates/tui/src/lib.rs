@@ -55,6 +55,7 @@ pub use login::Notice;
 pub use picker::ProviderChoice;
 
 pub use login::TuiLoginUi;
+pub use mcp::McpManage;
 pub use mcp::McpServerStatus;
 pub use mcp::McpSignIn;
 pub use scroll::Scrollback;
@@ -126,6 +127,10 @@ pub struct SessionDefaults {
 pub struct Mcp {
     pub servers: Vec<McpServerStatus>,
     pub sign_in: Option<Arc<dyn McpSignIn>>,
+    /// Toggling, removing, and refreshing from the overlay. `None` leaves
+    /// those keys reported as unsupported rather than panicking on a `.mcp.json`
+    /// the host gave the surface no way to write.
+    pub manage: Option<Arc<dyn McpManage>>,
 }
 
 /// Run the interface until the person quits.
@@ -153,7 +158,7 @@ pub async fn run(
     let (notices, notice_stream) = tokio::sync::mpsc::unbounded_channel();
     let is_resumed = !resumed.history.is_empty() || resumed.usage.total() > 0;
     let mut app = app
-        .with_mcp(mcp.servers, mcp.sign_in)
+        .with_mcp(mcp.servers, mcp.sign_in, mcp.manage)
         .with_notices(notices)
         .with_commands(commands)
         .with_approval_policy(defaults.approval)

@@ -161,6 +161,7 @@ pub fn install_with(
 ) {
     let servers: Vec<Arc<McpServer>> = plugins
         .mcp_servers()
+        .filter(|resolved| !resolved.disabled)
         .map(|resolved| Arc::new(McpServer::new(resolved, options.clone())))
         .collect();
 

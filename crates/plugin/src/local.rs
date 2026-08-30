@@ -94,6 +94,15 @@ impl McpDocument {
         self.servers.mcp_servers.remove(name).is_some()
     }
 
+    /// Set whether one server is started, reporting whether it was there.
+    pub fn set_disabled(&mut self, name: &str, disabled: bool) -> bool {
+        let Some(entry) = self.servers.mcp_servers.get_mut(name) else {
+            return false;
+        };
+        entry.disabled = disabled;
+        true
+    }
+
     /// Write the document back, creating the directory if it is missing.
     pub fn save(&self, path: &Path) -> Result<(), PluginError> {
         let mut root = self.root.clone();

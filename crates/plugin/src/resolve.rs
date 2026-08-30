@@ -454,11 +454,13 @@ pub(crate) fn servers_in(file: McpFile, plugin: &str, root: &AbsPath) -> Vec<Res
     file.mcp_servers
         .into_iter()
         .filter_map(|(name, entry)| {
+            let disabled = entry.disabled;
             Some(ResolvedMcpServer {
                 plugin: plugin.to_string(),
                 name,
                 transport: entry.transport()?,
                 plugin_root: root.clone(),
+                disabled,
             })
         })
         .collect()
