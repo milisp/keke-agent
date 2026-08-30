@@ -181,7 +181,7 @@ fn one_turn_of_prose_is_one_cell() {
 #[test]
 fn a_tool_result_revises_the_cell_the_call_opened() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    app.apply(Update::ToolCallStarted(call("c1", "list_dir")));
+    app.apply(Update::ToolCallStarted(call("c1", "bash")));
     app.apply(Update::ToolCallEnded(ToolResult::ok(
         ToolCallId::new("c1"),
         "42 lines",
@@ -1400,6 +1400,24 @@ fn finished_reads(app: &mut App, count: usize) {
     }
 }
 
+/// A run of a tool with side effects, unlike [`finished_reads`] — exploration
+/// runs stay open by default (see `default_open`), so the default-collapse
+/// tests need a tool that still folds away on a clean finish.
+fn finished_commands(app: &mut App, count: usize) {
+    for index in 0..count {
+        let id = format!("c{index}");
+        app.apply(Update::ToolCallStarted(ToolCall {
+            id: ToolCallId::new(&id),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": format!("echo {index}") }),
+        }));
+        app.apply(Update::ToolCallEnded(ToolResult::ok(
+            ToolCallId::new(&id),
+            "12 lines",
+        )));
+    }
+}
+
 #[test]
 fn a_call_is_named_by_what_it_acted_on_not_by_its_argument_names() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
@@ -1416,15 +1434,15 @@ fn a_call_is_named_by_what_it_acted_on_not_by_its_argument_names() {
 #[test]
 fn a_run_of_finished_calls_collapses_to_one_countable_line() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    finished_reads(&mut app, 3);
+    finished_commands(&mut app, 3);
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("Read 3 files")),
+        lines.iter().any(|line| line.contains("Ran 3 commands")),
         "{lines:?}"
     );
     assert!(
-        !lines.iter().any(|line| line.contains("src/f1.rs")),
+        !lines.iter().any(|line| line.contains("echo 1")),
         "a collapsed run must not still list its calls: {lines:?}"
     );
 }
@@ -1432,19 +1450,19 @@ fn a_run_of_finished_calls_collapses_to_one_countable_line() {
 #[test]
 fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    finished_reads(&mut app, 3);
+    finished_commands(&mut app, 3);
     // The map of what is on screen is a frame's, so draw one first.
     crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
     app.toggle_last_expandable();
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("src/f2.rs")),
+        lines.iter().any(|line| line.contains("echo 2")),
         "{lines:?}"
     );
     app.toggle_last_expandable();
     assert!(
-        !rendered(&app).iter().any(|line| line.contains("src/f2.rs")),
+        !rendered(&app).iter().any(|line| line.contains("echo 2")),
         "expanding must be reversible"
     );
 }
@@ -1528,7 +1546,7 @@ fn a_running_call_is_open_without_any_toggle() {
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("path=src/lib.rs")),
+        lines.iter().any(|line| line.contains("src/lib.rs")),
         "a call in flight is shown open, as it happens, with no toggle needed: {lines:?}"
     );
 }
@@ -1546,7 +1564,7 @@ fn a_run_that_errored_stays_open_after_it_finishes() {
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("path=src/lib.rs")),
+        lines.iter().any(|line| line.contains("src/lib.rs")),
         "an error stays open by default, not just its collapsed marker: {lines:?}"
     );
 }
@@ -1554,12 +1572,24 @@ fn a_run_that_errored_stays_open_after_it_finishes() {
 #[test]
 fn a_clean_run_folds_away_once_it_finishes() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    finished_commands(&mut app, 3);
+
+    let lines = rendered(&app);
+    assert!(
+        !lines.iter().any(|line| line.contains("echo 2")),
+        "a run that finished cleanly folds away without a manual collapse: {lines:?}"
+    );
+}
+
+#[test]
+fn a_clean_exploration_run_stays_open() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_reads(&mut app, 3);
 
     let lines = rendered(&app);
     assert!(
-        !lines.iter().any(|line| line.contains("src/f2.rs")),
-        "a run that finished cleanly folds away without a manual collapse: {lines:?}"
+        lines.iter().any(|line| line.contains("src/f2.rs")),
+        "an exploration run stays open even on a clean finish, so what it read is visible without a click: {lines:?}"
     );
 }
 

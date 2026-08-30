@@ -163,9 +163,17 @@ impl Transcript {
     ///
     /// One turn of prose is one cell: a delta per cell would make wrapping and
     /// copy-out wrong for anyone whose provider chunks by token.
+    ///
+    /// A whitespace-only delta after a seal never opens a new cell. Some
+    /// providers emit one between tool calls as a heartbeat; `replay` already
+    /// drops such text (it only pushes a message with non-blank `text()`), so
+    /// letting it through live would plant an invisible `Cell::Assistant`
+    /// between two tool calls that only the live path ever sees — breaking
+    /// the run they'd otherwise group into, live but not on resume.
     pub fn push_text_delta(&mut self, delta: &str) {
         match self.cells.last_mut() {
             Some(Cell::Assistant(text)) if !self.sealed => text.push_str(delta),
+            _ if delta.trim().is_empty() => {}
             _ => {
                 self.cells.push(Cell::Assistant(delta.to_string()));
                 self.sealed = false;
@@ -332,10 +340,9 @@ impl Transcript {
             .rev()
             .find_map(|(index, cell)| match cell {
                 Cell::Tool(tool) if !matches!(tool.state, CallState::Running) => {
-                    let verb = verb(&tool.name).0;
                     // Only the first call of a run carries the header.
                     match index.checked_sub(1).map(|before| &self.cells[before]) {
-                        Some(before) if groups_with(before, verb) => None,
+                        Some(before) if groups_with(before, &tool.name) => None,
                         _ => Some(index),
                     }
                 }
@@ -359,9 +366,31 @@ impl Transcript {
 }
 
 /// Whether a finished call belongs in the run being gathered.
-pub(crate) fn groups_with(cell: &Cell, run: &str) -> bool {
+pub(crate) fn groups_with(cell: &Cell, anchor: &str) -> bool {
     matches!(cell, Cell::Tool(tool)
-        if !matches!(tool.state, CallState::Running) && verb(&tool.name).0 == run)
+        if !matches!(tool.state, CallState::Running) && same_run(&tool.name, anchor))
+}
+
+/// A read-only exploration tool: safe to fold into one "Exploring" run
+/// alongside other exploration tools, since none of them changes anything a
+/// person would need to review individually.
+pub(crate) fn is_exploration_tool(name: &str) -> bool {
+    matches!(name, "read_file" | "list_dir" | "grep")
+}
+
+/// Whether two tool calls belong in the same run for display purposes.
+///
+/// Exploration tools (`read_file`, `list_dir`, `grep`) group with each other
+/// regardless of order — a person skimming `read, list, read` wants one
+/// "Exploring" run, not three headers for a search that never wrote anything.
+/// Anything else (`bash`, `edit`, `write_file`, ...) only groups with itself,
+/// since those are the calls whose effects need to stay individually visible.
+pub(crate) fn same_run(a: &str, b: &str) -> bool {
+    if is_exploration_tool(a) && is_exploration_tool(b) {
+        true
+    } else {
+        a == b
+    }
 }
 
 /// Past tense and the plural noun for a tool, so a run of calls reads as one
@@ -490,16 +519,14 @@ fn first_line(result: &ToolResult) -> Option<String> {
 
 /// The collapsed line shown once a call finishes.
 ///
-/// Most tools read fine as their own first line of output. `grep` does not: a
-/// hit's raw `file:line:code` text is the noisiest line in the transcript, and
-/// as a "detail" it reads as if that one line were the whole story. A count is
-/// what a reader actually wants before deciding whether to expand.
+/// The headline already names what a read-only exploration call acted on —
+/// the file, the directory, the pattern — so its output would only repeat
+/// that as noise (a hit's raw `file:line:code` text, a directory listing, an
+/// empty line or a stray `use`). `read_file`, `list_dir`, and `grep` show
+/// nothing here; everything else reads fine as its own first line of output.
 fn detail_line(name: &str, result: &ToolResult) -> Option<String> {
     match name {
-        "grep" => grep_summary(result),
-        // The headline already names the file; the first line of its
-        // contents is noise, not detail (an empty line or a stray `use`).
-        "read_file" => None,
+        "read_file" | "list_dir" | "grep" => None,
         "edit" | "write_file" => diff_hunk(result).or_else(|| first_line(result)),
         _ => first_line(result),
     }
@@ -521,34 +548,6 @@ fn diff_hunk(result: &ToolResult) -> Option<String> {
     (!hunk.is_empty()).then(|| hunk.to_string())
 }
 
-fn grep_summary(result: &ToolResult) -> Option<String> {
-    let text = result
-        .content
-        .iter()
-        .find_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })?
-        .trim();
-    if text.is_empty() || text.starts_with("no matches") {
-        return (!text.is_empty()).then(|| one_line(text, 120));
-    }
-    let truncated = text
-        .lines()
-        .next_back()
-        .is_some_and(|line| line.starts_with('…'));
-    let count = text
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !line.starts_with('…'))
-        .count();
-    let noun = if count == 1 { "match" } else { "matches" };
-    Some(if truncated {
-        format!("{count}+ {noun}")
-    } else {
-        format!("{count} {noun}")
-    })
-}
-
 /// Flatten to a single line and ellipsize, counting characters rather than
 /// bytes so a multi-byte path is not cut mid-codepoint.
 fn one_line(text: &str, limit: usize) -> String {
@@ -558,6 +557,49 @@ fn one_line(text: &str, limit: usize) -> String {
     }
     let kept: String = flattened.chars().take(limit.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+#[cfg(test)]
+mod push_text_delta_tests {
+    use super::*;
+
+    #[test]
+    fn a_blank_delta_between_sealed_tools_does_not_split_the_run() {
+        let mut transcript = Transcript::default();
+        transcript.start_tool(&ToolCall {
+            id: ToolCallId::new("c1"),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "a.rs"}),
+        });
+        transcript.finish_tool(&ToolResult::ok(ToolCallId::new("c1"), "ok"));
+        transcript.seal();
+        transcript.push_text_delta("");
+        transcript.push_text_delta("   ");
+        transcript.start_tool(&ToolCall {
+            id: ToolCallId::new("c2"),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "b.rs"}),
+        });
+
+        let tool_count = transcript
+            .cells()
+            .iter()
+            .filter(|cell| matches!(cell, Cell::Tool(_)))
+            .count();
+        assert_eq!(
+            transcript.cells().len(),
+            tool_count,
+            "no stray cell in between: {:?}",
+            transcript.cells()
+        );
+    }
+
+    #[test]
+    fn real_text_between_tool_calls_still_opens_its_own_cell() {
+        let mut transcript = Transcript::default();
+        transcript.push_text_delta("hello");
+        assert_eq!(transcript.cells().len(), 1);
+    }
 }
 
 #[cfg(test)]
@@ -577,6 +619,18 @@ mod detail_line_tests {
     fn read_file_gets_no_detail() {
         let result = ToolResult::ok(ToolCallId::new("c1"), "1\thello\n2\tworld\n");
         assert_eq!(detail_line("read_file", &result), None);
+    }
+
+    #[test]
+    fn list_dir_gets_no_detail() {
+        let result = ToolResult::ok(ToolCallId::new("c1"), "src/\nCargo.toml\n");
+        assert_eq!(detail_line("list_dir", &result), None);
+    }
+
+    #[test]
+    fn grep_gets_no_detail() {
+        let result = ToolResult::ok(ToolCallId::new("c1"), "src/lib.rs:1:foo\n");
+        assert_eq!(detail_line("grep", &result), None);
     }
 
     #[test]
