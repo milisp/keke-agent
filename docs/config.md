@@ -64,9 +64,10 @@ account = "work@corp.com"
 `keke --provider xai` then spends the key and `keke --provider grok` the login.
 
 Known kinds are `grok`, `codex`, `anthropic`, `ollama`, and
-`openai-compatible`. Leaving `kind` out means `openai-compatible`, which is
-what every declaration meant before instances existed — so nothing about an
-existing config changes.
+`openai-compatible`. Leaving `kind` out means `openai-compatible` — except on a
+route a built-in already answers to, where it means that built-in, so
+`[providers.grok]` configures grok rather than quietly becoming a nameless
+endpoint that happens to be called grok.
 
 ### Accounts
 
@@ -97,12 +98,20 @@ to be exported would spend the wrong quota under the wrong identity.
 | `headers` | No | Extra HTTP headers sent with every request |
 | `web_search` | No | The vendor's own web search — see below. Off unless set |
 
+A block named after a built-in route — `grok`, `codex`, `anthropic`, `ollama` —
+configures that built-in rather than replacing it, so `kind` only needs stating
+when you want a different one. Every other route defaults to
+`openai-compatible` and needs a `base_url`.
+
 ### Web Search
 
 An instance of `kind = "codex"` or `kind = "grok"` can offer the vendor's hosted
 web search, which the vendor runs inside the model call:
 
 ```toml
+[providers.grok.web_search]
+mode = "live"              # that is the whole of a minimal grok setup
+
 [providers.codex.web_search]
 mode = "live"              # disabled (default), cached, indexed, live
 context_size = "medium"    # low, medium, high

@@ -108,6 +108,33 @@ fn builtin_defaults() -> Vec<keke_config_types::ProviderDeclaration> {
     ]
 }
 
+/// Fill in what a declaration on a built-in's own route did not restate.
+///
+/// `[providers.grok.web_search]` is a person configuring the grok that is
+/// already there, not a person describing a new endpoint that happens to be
+/// called grok — but a declaration carries every field, so the one they did not
+/// write arrives as `None` and the route loses the vendor behind it. Only
+/// `kind` is inherited, because it is the field that decides which
+/// implementation, which login, and which default address the route gets: a
+/// route demoted to the generic wire provider authenticates with a key that
+/// vendor's proxy has never been given, and reports it as a dead credential
+/// rather than as a missing `kind`.
+///
+/// A stated `kind` is left alone. Pointing a route named `grok` at the generic
+/// provider on purpose is a thing to be able to say.
+fn adopt_builtin_kind(
+    mut declaration: keke_config_types::ProviderDeclaration,
+) -> keke_config_types::ProviderDeclaration {
+    if declaration.kind.is_none()
+        && let Some(builtin) = builtin_defaults()
+            .into_iter()
+            .find(|default| default.route == declaration.route)
+    {
+        declaration.kind = builtin.kind;
+    }
+    declaration
+}
+
 /// What every instance is built from: the credentials, the per-vendor auth
 /// providers, and the shared model-listing cache.
 struct Vendors {
@@ -444,6 +471,11 @@ impl Composed {
         // vendor cannot be reached at all.
         let catalog = keke_catalog::CatalogCache::new(home, catalog_ttl.get());
 
+        // A declaration on a built-in's own route configures it, which means
+        // inheriting what it did not restate — see `adopt_builtin_kind`.
+        let declared: Vec<keke_config_types::ProviderDeclaration> =
+            declared.iter().cloned().map(adopt_builtin_kind).collect();
+
         // Every instance that will be built, so the auth providers exist
         // before anything asks for one. Declarations first, for the same
         // reason they are registered first: a named route configures the
@@ -501,7 +533,7 @@ impl Composed {
         // rather than colliding with it. A person who names a route has said
         // more about it than a default can, and the default that would have
         // taken the name is the one that yields.
-        for declaration in declared {
+        for declaration in &declared {
             let provider = vendors.instance(declaration)?;
             providers.register(provider).with_context(|| {
                 format!("registering declared provider `{}`", declaration.route)
@@ -661,6 +693,48 @@ mod tests {
         assert_eq!(xai.info().base_url, keke_provider_grok::DEFAULT_BASE_URL);
         assert_eq!(grok.info().wire_api, WireApi::Responses);
         assert_eq!(xai.info().wire_api, WireApi::ChatCompletions);
+    }
+
+    /// Configuring a built-in must not cost it the vendor behind it.
+    ///
+    /// `[providers.grok.web_search]` names the route and nothing else, so the
+    /// declaration reaches here with no `kind`. Read literally that is a
+    /// generic endpoint called grok: no login, no subscription address, and a
+    /// turn that fails as `no auth context` — the vendor's proxy reporting a
+    /// credential it was never sent. Turning a setting on must not be how
+    /// someone discovers that.
+    #[test]
+    fn configuring_a_builtin_route_keeps_the_vendor_it_names() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let vendors = vendors(home.path());
+
+        let mut declared = builtin("grok", "grok");
+        declared.kind = None;
+        declared.web_search = Some(keke_config_types::WebSearchConfig::enabled(
+            keke_config_types::WebSearchMode::Live,
+        ));
+
+        let adopted = adopt_builtin_kind(declared);
+        assert_eq!(adopted.kind.as_deref(), Some("grok"));
+
+        let provider = vendors.instance(&adopted).expect("the grok instance");
+        assert_eq!(provider.info().auth_id.as_deref(), Some("grok"));
+        assert_eq!(provider.info().env_key.as_deref(), Some("XAI_API_KEY"));
+    }
+
+    /// Only a route a built-in already answers to inherits one, and only when
+    /// the declaration left the question open.
+    #[test]
+    fn a_stated_kind_and_an_unknown_route_are_left_as_written() {
+        let mut stated = builtin("grok", "openai-compatible");
+        assert_eq!(
+            adopt_builtin_kind(stated.clone()).kind.as_deref(),
+            Some("openai-compatible")
+        );
+
+        stated.route = "my-gateway".to_string();
+        stated.kind = None;
+        assert!(adopt_builtin_kind(stated).kind.is_none());
     }
 
     /// A stated address is the instance's own. The credential decided this
