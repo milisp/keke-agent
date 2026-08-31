@@ -216,11 +216,18 @@ impl SessionMeta {
                 self.approval_policy.clone_from(approval_policy);
             }
             SessionEvent::ModelRequest {
+                messages,
                 reasoning_effort,
                 model,
                 ..
             } => {
-                self.baseline = Some(at);
+                // Only a turn's first step carries a `messages` snapshot;
+                // later steps log an empty one (see `turn.rs`) and must not
+                // move the baseline, or `load_session` would seek to a line
+                // `history_from_log` cannot rebuild a history from.
+                if !messages.is_empty() {
+                    self.baseline = Some(at);
+                }
                 self.reasoning_effort = *reasoning_effort;
                 if let Some(model) = model {
                     self.last_step_model = Some(model.clone());

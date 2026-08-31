@@ -143,10 +143,16 @@ impl Session {
             self.log(event).await?;
         }
         let specs = tool_specs(&tools);
+        let tool_names: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
 
         let mut usage = Usage::default();
+        // What the last logged `ModelRequest` said, so a step that changed
+        // neither the model nor the reasoning effort doesn't log again.
+        // `tools` never varies within a turn (`specs` is fixed above the
+        // loop), so it is not part of this comparison.
+        let mut last_logged: Option<(Option<keke_protocol::ReasoningEffort>, String)> = None;
 
-        for _step in 0..MAX_STEPS_PER_TURN {
+        for step in 0..MAX_STEPS_PER_TURN {
             let request = ModelRequest {
                 model: self.model.get().to_string(),
                 system: Some(system.clone()),
@@ -158,15 +164,36 @@ impl Session {
             };
 
             // Logged before the call, so a crash mid-request still leaves the
-            // request that caused it on disk.
-            self.log(SessionEvent::ModelRequest {
-                turn,
-                messages: request.messages.clone(),
-                tools: specs.iter().map(|spec| spec.name.clone()).collect(),
-                reasoning_effort: request.reasoning_effort,
-                model: Some(request.model.clone()),
-            })
-            .await?;
+            // request that caused it on disk. Only the first step of a turn
+            // carries the full `messages` snapshot: later steps within the
+            // same turn only append a `ModelResponse` and `ToolCallEnd`s onto
+            // it, and `history_from_log` already replays those onto the last
+            // snapshot it found. Logging the whole history again on every
+            // step made the log grow quadratically in the number of steps for
+            // no reconstructive benefit.
+            //
+            // Beyond the first step, a step is logged at all only when the
+            // model or the reasoning effort actually changed since the last
+            // logged step — both can be switched mid-turn from outside this
+            // loop, which is genuinely model-visible and must be logged per
+            // invariant 6, but a step that repeats the same values the model
+            // already saw has nothing new to record.
+            let current = (request.reasoning_effort, request.model.clone());
+            if step == 0 || last_logged.as_ref() != Some(&current) {
+                self.log(SessionEvent::ModelRequest {
+                    turn,
+                    messages: if step == 0 {
+                        request.messages.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    tools: tool_names.clone(),
+                    reasoning_effort: request.reasoning_effort,
+                    model: Some(request.model.clone()),
+                })
+                .await?;
+                last_logged = Some(current);
+            }
 
             let (message, stop_reason, step_usage) = self.stream_one_step(turn, request).await?;
             usage.add(step_usage);

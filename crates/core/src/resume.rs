@@ -400,16 +400,19 @@ fn summarize(log: &LogPath) -> Result<SessionSummary, RolloutError> {
 
 /// Rebuild the model-visible history from a log.
 ///
-/// The last `ModelRequest` is the baseline — it is the history the model
-/// actually saw — and everything logged after it is replayed onto it in order.
-/// A turn that was logged but never reached the model (an error, a cancel
-/// before the first request) contributes its input, so the person's words are
-/// never lost.
+/// The last `ModelRequest` that carries a snapshot is the baseline — it is
+/// the history the model actually saw as of that step — and everything
+/// logged after it is replayed onto it in order. Only a turn's first step
+/// logs a snapshot; later steps in the same turn log an empty `messages` and
+/// are skipped here, since their contribution (a `ModelResponse` and any
+/// `ToolCallEnd`s) is already replayed from the tail. A turn that was logged
+/// but never reached the model (an error, a cancel before the first request)
+/// contributes its input, so the person's words are never lost.
 #[must_use]
 pub fn history_from_log(events: &[SessionEvent]) -> Vec<Message> {
-    let baseline = events
-        .iter()
-        .rposition(|event| matches!(event, SessionEvent::ModelRequest { .. }));
+    let baseline = events.iter().rposition(
+        |event| matches!(event, SessionEvent::ModelRequest { messages, .. } if !messages.is_empty()),
+    );
 
     let (mut history, tail) = match baseline {
         Some(at) => match &events[at] {
@@ -550,6 +553,59 @@ mod tests {
 
         let history = history_from_log(&events);
         assert_eq!(history.len(), 3);
+        assert_eq!(history[1], reply);
+        assert_eq!(history[2].role, Role::Tool);
+    }
+
+    /// A turn's later steps log an empty `messages` snapshot (see `turn.rs`)
+    /// to avoid re-logging the whole history on every step. Those events must
+    /// not be picked as the baseline — the last one that actually carries a
+    /// snapshot still is, and the empty ones are skipped over like any other
+    /// tail event.
+    #[test]
+    fn a_later_steps_empty_snapshot_is_not_the_baseline() {
+        let turn = TurnId::new();
+        let call = ToolCall {
+            id: ToolCallId::new("c1"),
+            name: "read_file".to_string(),
+            arguments: serde_json::Value::Null,
+        };
+        let reply = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(call.clone())],
+        };
+        let events = vec![
+            SessionEvent::ModelRequest {
+                turn,
+                messages: vec![Message::user("read it")],
+                tools: Vec::new(),
+                reasoning_effort: None,
+                model: None,
+            },
+            SessionEvent::ModelResponse {
+                turn,
+                message: reply.clone(),
+                stop_reason: StopReason::ToolUse,
+                usage: Usage::default(),
+            },
+            SessionEvent::ToolCallStart { turn, call },
+            SessionEvent::ToolCallEnd {
+                turn,
+                result: result("c1"),
+            },
+            // The second step's request: no fresh snapshot.
+            SessionEvent::ModelRequest {
+                turn,
+                messages: Vec::new(),
+                tools: Vec::new(),
+                reasoning_effort: None,
+                model: None,
+            },
+        ];
+
+        let history = history_from_log(&events);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0], Message::user("read it"));
         assert_eq!(history[1], reply);
         assert_eq!(history[2].role, Role::Tool);
     }
