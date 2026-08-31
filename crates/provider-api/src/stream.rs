@@ -30,6 +30,16 @@ pub enum StreamChunk {
     ToolCallArgsDelta { id: ToolCallId, delta: String },
     /// The in-flight tool call is complete and its arguments are parseable.
     ToolCallEnd { id: ToolCallId },
+    /// A tool the vendor ran for itself, inside this model call.
+    ///
+    /// Never dispatched locally — there is no [`ToolCallStart`]/[`ToolCallEnd`]
+    /// pair to close, and no entry for it in the engine's tool registry to look
+    /// up. It exists only so the engine can log that the vendor acted on the
+    /// model's behalf; see `keke_protocol::SessionEvent::HostedToolCall`.
+    ///
+    /// [`ToolCallStart`]: Self::ToolCallStart
+    /// [`ToolCallEnd`]: Self::ToolCallEnd
+    HostedToolCall { name: String, query: Option<String> },
     /// Usage, which most vendors report only once at the end.
     Usage(Usage),
     /// The reply is finished. Always the last chunk of a successful stream.

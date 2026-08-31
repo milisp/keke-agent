@@ -88,6 +88,23 @@ pub enum SessionEvent {
         turn: TurnId,
         result: ToolResult,
     },
+    /// A tool the vendor executed for itself, inside the model call, rather
+    /// than one the engine dispatched.
+    ///
+    /// Distinct from [`Self::ToolCallStart`]/[`Self::ToolCallEnd`]: those name
+    /// a call the engine looks up in its own tool registry and runs, and a
+    /// hosted tool has no entry there to find — OpenAI's and xAI's `web_search`
+    /// run at the vendor, where neither the approval seam nor a `ToolGuard`
+    /// can see them. Without a line of its own, a search the model acted on
+    /// would be model-visible and unlogged, which invariant 6 forbids.
+    HostedToolCall {
+        turn: TurnId,
+        /// The hosted tool's name, as the vendor named it (e.g. `web_search`).
+        name: String,
+        /// The query the vendor's tool ran, when the wire reports one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
     /// Model-visible text an extension put in front of the model.
     ///
     /// A `ContextContributor`'s fragment reaches the request inside the *system*

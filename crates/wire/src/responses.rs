@@ -188,6 +188,17 @@ struct OutputItem {
     id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    /// Only `web_search_call` items carry this, and only once the search has
+    /// run — it is absent on `response.output_item.added` and present on
+    /// `response.output_item.done`.
+    #[serde(default)]
+    action: Option<WebSearchAction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebSearchAction {
+    #[serde(default)]
+    query: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,8 +304,17 @@ impl WireDecoder for Decoder {
             }
             "response.output_item.added" => self.on_item_added(&event, out),
             "response.function_call_arguments.delta" => self.on_arguments_delta(&event, out),
-            "response.function_call_arguments.done" | "response.output_item.done" => {
-                self.close_call(event.output_index, out);
+            "response.function_call_arguments.done" => self.close_call(event.output_index, out),
+            "response.output_item.done" => {
+                if event
+                    .item
+                    .as_ref()
+                    .is_some_and(|item| item.kind == "web_search_call")
+                {
+                    self.on_web_search_call(&event, out);
+                } else {
+                    self.close_call(event.output_index, out);
+                }
             }
             "response.completed" | "response.incomplete" => self.on_completed(&event, out),
             "response.failed" | "error" => self.on_failed(&event, out),
@@ -347,6 +367,22 @@ impl Decoder {
                 ended: false,
             },
         );
+    }
+
+    /// A hosted `web_search` tool the vendor ran and already resolved — unlike
+    /// a `function_call`, it never opens/streams/closes across three events;
+    /// everything worth logging is on this one `output_item.done`.
+    fn on_web_search_call(&mut self, event: &ResponseEvent, out: &mut Sink) {
+        self.saw_tool_call = true;
+        let query = event
+            .item
+            .as_ref()
+            .and_then(|item| item.action.as_ref())
+            .and_then(|action| action.query.clone());
+        out.push(StreamChunk::HostedToolCall {
+            name: "web_search".to_string(),
+            query,
+        });
     }
 
     fn on_arguments_delta(&mut self, event: &ResponseEvent, out: &mut Sink) {

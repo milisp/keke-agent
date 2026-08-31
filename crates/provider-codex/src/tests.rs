@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::StreamExt;
 use keke_auth_api::AuthError;
 use keke_auth_api::AuthFuture;
 use keke_auth_api::AuthHeaders;
@@ -9,6 +10,7 @@ use keke_auth_api::LoginUi;
 use keke_config_types::WebSearchConfig;
 use keke_config_types::WebSearchMode;
 use keke_provider_api::ModelProvider;
+use keke_provider_api::StreamChunk;
 use serde_json::json;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -294,6 +296,73 @@ async fn an_unconfigured_instance_sends_no_search_tool() {
     let request = &server.received_requests().await.expect("recorded")[0];
     let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json");
     assert!(body.get("tools").is_none());
+}
+
+/// The search itself runs at the vendor, invisibly to the harness's own tool
+/// dispatch — but the fact that it ran, and what it asked, must still land on
+/// the durable record (`AGENTS.md` invariant 6). This asserts that the wire
+/// decoder surfaces a `web_search_call` item as a `StreamChunk`, rather than
+/// silently dropping it the way an unrecognized item kind otherwise would.
+#[tokio::test]
+async fn a_hosted_search_call_is_surfaced_as_a_stream_chunk() {
+    let server = MockServer::start().await;
+    let frames = [
+        json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "web_search_call", "id": "ws_1", "status": "in_progress"},
+        }),
+        json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed",
+                "action": {"type": "search", "query": "rust async traits"},
+            },
+        }),
+        json!({
+            "type": "response.completed",
+            "response": {"usage": {"input_tokens": 1, "output_tokens": 1}},
+        }),
+    ];
+    let body: String = frames
+        .iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect();
+    Mock::given(method("POST"))
+        .and(path("/backend-api/codex/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let provider = CodexProvider::new(
+        Arc::new(StubAuth),
+        Endpoint {
+            base_url: format!("{}/backend-api/codex", server.uri()),
+            fixed_sampling: true,
+            ..Endpoint::default()
+        },
+        None,
+    );
+
+    let chunks: Vec<StreamChunk> = provider
+        .stream(keke_provider_api::ModelRequest {
+            model: "gpt-5.6-luna".to_string(),
+            ..keke_provider_api::ModelRequest::default()
+        })
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|chunk| chunk.expect("no stream error"))
+        .collect();
+
+    assert!(chunks.contains(&StreamChunk::HostedToolCall {
+        name: "web_search".to_string(),
+        query: Some("rust async traits".to_string()),
+    }));
 }
 
 #[tokio::test]

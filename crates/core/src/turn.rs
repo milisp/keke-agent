@@ -408,6 +408,17 @@ impl Session {
                     }
                 }
                 StreamChunk::ToolCallEnd { .. } => {}
+                StreamChunk::HostedToolCall { name, query } => {
+                    // Not fed into `assembler.calls`: that path assembles a
+                    // `ContentBlock::ToolCall` the turn loop later dispatches
+                    // against the local tool registry, and a hosted tool has
+                    // no entry there — dispatching it would report the
+                    // vendor's own search back to the model as an unknown
+                    // tool. Logged directly instead, so it is still on the
+                    // record (invariant 6) without going through dispatch.
+                    self.log(SessionEvent::HostedToolCall { turn, name, query })
+                        .await?;
+                }
                 StreamChunk::Usage(usage) => assembler.usage = usage,
                 StreamChunk::Done(reason) => {
                     return Ok((assembler.finish(), reason, assembler.usage));
