@@ -10,6 +10,7 @@ mod app;
 mod banner;
 mod clipboard;
 pub(crate) mod draw;
+mod export;
 mod file_search;
 mod history;
 mod input;

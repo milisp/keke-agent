@@ -41,6 +41,8 @@ pub enum Builtin {
     Provider,
     /// Puts the last reply on the system clipboard.
     Copy,
+    /// Writes the messages so far to the file named as an argument.
+    Export,
     /// Lists the MCP servers and their state, and signs in to a remote one.
     Mcp,
     /// Asks the session to plan first, optionally with the prompt to plan
@@ -178,6 +180,11 @@ fn builtins() -> Vec<SlashCommand> {
             Builtin::Copy,
             "copy",
             "copy the last reply to the clipboard",
+        ),
+        (
+            Builtin::Export,
+            "export",
+            "write the messages so far to a file — `/export <path>`",
         ),
         (
             Builtin::Mcp,

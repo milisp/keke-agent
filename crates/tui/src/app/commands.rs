@@ -32,6 +32,7 @@ impl App {
             SlashAction::Builtin(Builtin::New) => self.start_new_session(),
             SlashAction::Builtin(Builtin::Quit) => self.should_quit = true,
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
+            SlashAction::Builtin(Builtin::Export) => self.export_command(arguments),
             SlashAction::Builtin(Builtin::Mcp) => self.mcp_command(arguments),
             SlashAction::Builtin(Builtin::Plan) => self.plan_command(arguments),
             SlashAction::Builtin(Builtin::ViewPlan) => self.view_plan_command(),
@@ -92,6 +93,22 @@ impl App {
         }
         self.transcript.push(Cell::User(task.to_string()));
         self.send_text(task.to_string());
+    }
+
+    /// `/export <path>` — the messages so far, as Markdown.
+    ///
+    /// The path is reported back in full: a relative one was resolved against
+    /// the working directory, and a person who has to guess where the file
+    /// landed has not really been given it.
+    fn export_command(&mut self, arguments: &str) {
+        let outcome = crate::export::destination(arguments, self.cwd())
+            .and_then(|path| crate::export::write(self.transcript.cells(), &path).map(|()| path));
+        match outcome {
+            Ok(path) => self
+                .transcript
+                .push(Cell::Notice(format!("exported to {}", path.display()))),
+            Err(refusal) => self.transcript.push(Cell::Error(refusal)),
+        }
     }
 
     /// `/mcp`, and `/mcp login <name>`.
