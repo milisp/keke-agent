@@ -147,7 +147,10 @@ async fn exec_runs_a_tool_and_records_a_replayable_session() {
             "model_response",
             "tool_call_start",
             "tool_call_end",
-            "model_request",
+            // The second step reuses the same model and reasoning effort as
+            // the first, so its `model_request` is not re-logged — it is
+            // reconstructable by replaying the `ModelResponse`/`ToolCallEnd`
+            // events above onto the first step's snapshot.
             "model_response",
             "turn_end",
         ]
