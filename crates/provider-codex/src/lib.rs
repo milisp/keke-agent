@@ -12,11 +12,13 @@
 //! catalog. Everything about the request and the stream is `keke-wire`'s.
 
 mod catalog;
+mod web_search;
 
 use std::sync::Arc;
 
 use keke_auth_api::AuthProvider;
 use keke_catalog::CatalogCache;
+use keke_config_types::WebSearchConfig;
 use keke_provider_api::ModelInfo;
 use keke_provider_api::ModelProvider;
 use keke_provider_api::ModelRequest;
@@ -61,6 +63,9 @@ pub struct CodexProvider {
     /// directory — a test — gets.
     cache: Option<CatalogCache>,
     client_version: String,
+    /// The hosted search tool this instance advertises, built once because it
+    /// is the same on every request. `None` when the deployment offers none.
+    web_search: Option<serde_json::Value>,
 }
 
 /// How to reach OpenAI for one session.
@@ -87,6 +92,11 @@ pub struct Endpoint {
     /// Sent as the `client_version` query parameter on `/models` — see
     /// [`DEFAULT_CLIENT_VERSION`].
     pub client_version: String,
+    /// Whether this instance offers OpenAI's hosted web search, and on what
+    /// terms. Defaults to offering none: the search runs at the vendor, inside
+    /// the model call, where neither the approval seam nor a `ToolGuard` can
+    /// see it — so a person turns it on rather than discovering it is on.
+    pub web_search: WebSearchConfig,
 }
 
 impl Default for Endpoint {
@@ -101,6 +111,7 @@ impl Default for Endpoint {
             base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             fixed_sampling: true,
             client_version: DEFAULT_CLIENT_VERSION.to_string(),
+            web_search: WebSearchConfig::default(),
         }
     }
 }
@@ -117,6 +128,7 @@ impl CodexProvider {
             wire = wire.with_fixed_sampling();
         }
         let client_version = endpoint.client_version;
+        let web_search = web_search::tool(&endpoint.web_search);
         Self {
             info: ProviderInfo {
                 route: endpoint.route,
@@ -129,6 +141,7 @@ impl CodexProvider {
             wire,
             cache,
             client_version,
+            web_search,
         }
     }
 
@@ -148,10 +161,16 @@ impl ModelProvider for CodexProvider {
         &self.info
     }
 
+    /// The hosted search is attached here rather than by the engine, because
+    /// the engine is not allowed to know that this vendor has one — and because
+    /// it is a property of the endpoint, not of the turn.
     fn stream<'a>(
         &'a self,
-        request: ModelRequest,
+        mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
+        if let Some(tool) = &self.web_search {
+            request.hosted_tools.push(tool.clone());
+        }
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }
 

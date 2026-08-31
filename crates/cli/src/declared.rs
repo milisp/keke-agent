@@ -366,6 +366,7 @@ mod tests {
             proxy_username: None,
             proxy_password_env_key: None,
             headers,
+            web_search: None,
         }
     }
 

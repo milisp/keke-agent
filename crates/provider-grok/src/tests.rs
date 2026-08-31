@@ -493,6 +493,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
             description: "read a file".to_string(),
             input_schema: json!({"type": "object"}),
         }],
+        hosted_tools: Vec::new(),
         max_output_tokens: Some(256),
         temperature: Some(0.5),
         reasoning_effort: None,

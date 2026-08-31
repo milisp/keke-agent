@@ -48,11 +48,18 @@ pub fn responses_body(request: &ModelRequest, stream: bool, sampling_is_fixed: b
     if let Some(system) = &request.system {
         body.insert("instructions".to_string(), json!(system));
     }
-    if !request.tools.is_empty() {
-        body.insert(
-            "tools".to_string(),
-            json!(request.tools.iter().map(wire_tool).collect::<Vec<_>>()),
-        );
+    // Hosted tools travel in the same list as the harness's own: to this API a
+    // tool the vendor executes and a tool it asks the caller to execute differ
+    // only in their `type`. They go last so a vendor's tool can never displace
+    // one the harness advertised under the same name.
+    let tools: Vec<Value> = request
+        .tools
+        .iter()
+        .map(wire_tool)
+        .chain(request.hosted_tools.iter().cloned())
+        .collect();
+    if !tools.is_empty() {
+        body.insert("tools".to_string(), Value::Array(tools));
     }
     // An endpoint that fixes its own sampling refuses to be told: naming either
     // of these is a 400 there, so the engine's budget is left unstated rather

@@ -158,6 +158,10 @@ impl Session {
                 system: Some(system.clone()),
                 messages: self.history.clone(),
                 tools: specs.clone(),
+                // Left to the provider: the engine advertises the tools it can
+                // run, and a tool the vendor runs for itself is the vendor's to
+                // add.
+                hosted_tools: Vec::new(),
                 max_output_tokens: Some(self.config.max_output_tokens.get()),
                 temperature: None,
                 reasoning_effort: self.effort.get(),
@@ -312,6 +316,7 @@ impl Session {
             system: None,
             messages,
             tools: Vec::new(),
+            hosted_tools: Vec::new(),
             max_output_tokens: Some(self.config.max_output_tokens.get()),
             temperature: None,
             // Summarizing is keke's own errand, not the user's turn, and it is

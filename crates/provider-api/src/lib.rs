@@ -51,6 +51,17 @@ pub struct ModelRequest {
     pub system: Option<String>,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
+    /// Tools the *vendor* runs, already in that vendor's own wire shape and
+    /// appended to the request's tool list verbatim — OpenAI's `web_search` is
+    /// the first.
+    ///
+    /// Opaque JSON rather than a modelled type because there is nothing neutral
+    /// to model: no two vendors agree on what a hosted search is called or what
+    /// it takes, and a shape invented here would be one every provider had to
+    /// translate back out of. The engine never fills this; only the provider
+    /// that owns the wire does, from its own configuration, on the way into
+    /// [`ModelProvider::stream`]. A wire format with no hosted tools ignores it.
+    pub hosted_tools: Vec<Value>,
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
     /// How hard the model should think, when a level was chosen. `None` leaves

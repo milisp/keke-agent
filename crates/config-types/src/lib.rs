@@ -219,6 +219,209 @@ pub struct ProviderDeclaration {
     /// reserved for the provider's own credential and may not be set here.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    /// Whether this instance offers the vendor's own web search, and on what
+    /// terms. Unset means it does not — see [`WebSearchConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<WebSearchConfig>,
+}
+
+/// How much of the web a vendor-hosted search may reach.
+///
+/// Not a boolean because the access levels are not degrees of the same thing: a
+/// deployment that may not make live outbound fetches on a person's behalf can
+/// still answer from an index the vendor already holds, and one that permits
+/// live fetches may still want them confined to pages the vendor has indexed.
+/// Collapsing the three would leave the strictest deployments with nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchMode {
+    /// No search tool is offered at all.
+    ///
+    /// The default, unlike upstream codex: a hosted tool is a request the
+    /// vendor executes and bills without the harness seeing it, so it is opted
+    /// into rather than out of.
+    #[default]
+    Disabled,
+    /// Only what the vendor has already indexed. No live fetches.
+    Cached,
+    /// Live fetches, restricted to indexed URLs.
+    Indexed,
+    /// Live fetches, unrestricted.
+    Live,
+}
+
+impl WebSearchMode {
+    /// The wire spelling, for anywhere outside a `serde` path.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Cached => "cached",
+            Self::Indexed => "indexed",
+            Self::Live => "live",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`]. `None` for anything else, including a
+    /// spelling from a future build — a mode this build cannot enforce must
+    /// never be read as one it can.
+    #[must_use]
+    pub fn parse(wire: &str) -> Option<Self> {
+        match wire {
+            "disabled" => Some(Self::Disabled),
+            "cached" => Some(Self::Cached),
+            "indexed" => Some(Self::Indexed),
+            "live" => Some(Self::Live),
+            _ => None,
+        }
+    }
+
+    /// The access permitted by both this mode and `requested`.
+    ///
+    /// Narrowing only, in the spirit of the approval seam: composing two
+    /// opinions about how far a search may reach can restrict it and can never
+    /// widen it, so no ordering of them grants access neither one allowed.
+    #[must_use]
+    pub fn restrict_to(self, requested: Self) -> Self {
+        match (self, requested) {
+            (Self::Disabled, _) | (_, Self::Disabled) => Self::Disabled,
+            (Self::Cached, _) | (_, Self::Cached) => Self::Cached,
+            (Self::Indexed, _) | (_, Self::Indexed) => Self::Indexed,
+            (Self::Live, Self::Live) => Self::Live,
+        }
+    }
+
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+}
+
+/// How much search context a hosted search pulls into the turn.
+///
+/// More context is a better answer and a larger bill, and which trade a
+/// deployment wants is exactly the kind of choice that does not belong in a
+/// plugin constant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchContextSize {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl WebSearchContextSize {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+/// Roughly where the person searching is, which localizes results.
+///
+/// Every field is optional and none is inferred: a location keke guessed from
+/// the machine's timezone would be sent to the vendor with every search without
+/// anyone having asked for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct WebSearchLocation {
+    /// Two-letter ISO country code, e.g. `US`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// Region or state, e.g. `California`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    /// IANA timezone, e.g. `America/Los_Angeles`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
+impl WebSearchLocation {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.country.is_none()
+            && self.region.is_none()
+            && self.city.is_none()
+            && self.timezone.is_none()
+    }
+}
+
+/// A provider instance's hosted web search.
+///
+/// Hosted means the vendor runs the search itself, inside the model call: no
+/// tool call reaches the harness, so neither the approval seam nor a
+/// [`ToolGuard`](../keke_tool/index.html) sees it. That is why the mode
+/// defaults to [`WebSearchMode::Disabled`] and why the domain lists are here —
+/// a deployment that may only consult approved sources cannot express that
+/// anywhere else once the search is the vendor's to run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct WebSearchConfig {
+    #[serde(default)]
+    pub mode: WebSearchMode,
+    #[serde(default)]
+    pub context_size: WebSearchContextSize,
+    /// Domains results are confined to. Empty means the whole web.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_location: Option<WebSearchLocation>,
+    /// Whether the search may return images as well as text. Costs context, so
+    /// it is stated rather than assumed.
+    #[serde(default)]
+    pub include_images: bool,
+}
+
+impl WebSearchConfig {
+    /// A config that offers search at `mode` and nothing else set.
+    #[must_use]
+    pub fn enabled(mode: WebSearchMode) -> Self {
+        Self {
+            mode,
+            ..Self::default()
+        }
+    }
+
+    /// Reject a config whose settings cannot take effect, naming why.
+    ///
+    /// A restriction that is silently ignored is worse than one that is
+    /// refused: someone who wrote `allowed_domains` and left the mode unset
+    /// would otherwise read the file as "search, confined to these domains"
+    /// when it means "no search at all", and would find out which it was from
+    /// the bill.
+    pub fn check(&self) -> Result<(), String> {
+        if !self.mode.is_enabled() {
+            if !self.allowed_domains.is_empty() {
+                return Err(
+                    "web_search.allowed_domains is set but web_search.mode is disabled".to_string(),
+                );
+            }
+            if self.user_location.as_ref().is_some_and(|l| !l.is_empty()) {
+                return Err(
+                    "web_search.user_location is set but web_search.mode is disabled".to_string(),
+                );
+            }
+        }
+        for domain in &self.allowed_domains {
+            let domain = domain.trim();
+            if domain.is_empty() {
+                return Err("web_search.allowed_domains contains an empty entry".to_string());
+            }
+            if domain.contains('/') || domain.contains(' ') {
+                return Err(format!(
+                    "web_search.allowed_domains takes hostnames, not URLs or paths: {domain}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A provider (and optionally a model) chosen by where the session is running.
@@ -650,6 +853,57 @@ impl Default for SubagentLimits {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// Composing two opinions about how far a search may reach can only narrow
+    /// it, so no ordering of them grants access neither one allowed.
+    #[test]
+    fn a_permissive_search_mode_cannot_widen_a_restrictive_one() {
+        use WebSearchMode::Cached;
+        use WebSearchMode::Disabled;
+        use WebSearchMode::Indexed;
+        use WebSearchMode::Live;
+
+        for (a, b) in [
+            (Disabled, Live),
+            (Cached, Live),
+            (Indexed, Live),
+            (Cached, Indexed),
+        ] {
+            assert_eq!(a.restrict_to(b), a, "{a:?} widened by {b:?}");
+            assert_eq!(b.restrict_to(a), a, "{a:?} widened by {b:?}, reversed");
+        }
+        assert_eq!(Live.restrict_to(Live), Live);
+    }
+
+    /// Someone who wrote a domain list and left the mode unset meant "search,
+    /// confined to these" — telling them it means "no search" is cheaper than
+    /// letting them find out from the bill.
+    #[test]
+    fn a_restriction_that_cannot_take_effect_is_refused() {
+        let config = WebSearchConfig {
+            allowed_domains: vec!["docs.rs".to_string()],
+            ..WebSearchConfig::default()
+        };
+        assert!(config.check().is_err());
+
+        let enabled = WebSearchConfig {
+            mode: WebSearchMode::Live,
+            ..config
+        };
+        assert!(enabled.check().is_ok());
+    }
+
+    /// The filter takes hostnames; a URL written there matches nothing and
+    /// silently lifts the restriction it was meant to impose.
+    #[test]
+    fn a_url_in_the_domain_list_is_refused() {
+        let config = WebSearchConfig {
+            mode: WebSearchMode::Live,
+            allowed_domains: vec!["https://docs.rs/serde".to_string()],
+            ..WebSearchConfig::default()
+        };
+        assert!(config.check().is_err());
+    }
 
     fn entry(pattern: &str) -> DirectoryOverride {
         DirectoryOverride {

@@ -349,6 +349,16 @@ impl Config {
         for entry in &merged.dir {
             entry.check().map_err(invalid)?;
         }
+        // A search restriction that cannot take effect is refused here rather
+        // than dropped at the provider, where the only evidence of it would be
+        // the vendor's bill.
+        for (route, declaration) in &merged.providers {
+            if let Some(web_search) = &declaration.web_search {
+                web_search
+                    .check()
+                    .map_err(|error| invalid(format!("providers.{route}: {error}")))?;
+            }
+        }
         // Applied on top of the merged file layers and beneath the CLI flags the
         // composition root applies afterwards: where a person is standing is a
         // better answer than a global default, and a worse one than what they

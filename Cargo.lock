@@ -1932,6 +1932,7 @@ dependencies = [
  "futures",
  "keke-auth-api",
  "keke-catalog",
+ "keke-config-types",
  "keke-paths",
  "keke-protocol",
  "keke-provider-api",

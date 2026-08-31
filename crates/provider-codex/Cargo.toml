@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 keke-auth-api = { workspace = true }
 keke-catalog = { workspace = true }
+keke-config-types = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-wire = { workspace = true }
 serde = { workspace = true }

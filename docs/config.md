@@ -95,6 +95,34 @@ to be exported would spend the wrong quota under the wrong identity.
 | `proxy_username` | No | Basic-auth username for the proxy |
 | `proxy_password_env_key` | No | Environment variable holding the proxy password |
 | `headers` | No | Extra HTTP headers sent with every request |
+| `web_search` | No | The vendor's own web search — see below. Off unless set |
+
+### Web Search
+
+An instance of `kind = "codex"` can offer OpenAI's hosted web search, which the
+vendor runs inside the model call:
+
+```toml
+[providers.codex.web_search]
+mode = "live"              # disabled (default), cached, indexed, live
+context_size = "medium"    # low, medium, high
+allowed_domains = ["docs.rs", "rust-lang.org"]
+include_images = false
+
+[providers.codex.web_search.user_location]
+country = "US"
+city = "San Francisco"
+timezone = "America/Los_Angeles"
+```
+
+`mode` is what the search may reach, and the levels are not degrees of one
+setting: `cached` answers only from what the vendor already holds, `indexed`
+permits live fetches but confines them to pages it has indexed, and `live`
+permits them anywhere. It is off by default because the search happens at the
+vendor — no tool call reaches keke, so nothing you approve or guard locally
+sees it. `allowed_domains` takes hostnames, not URLs, and a restriction written
+against `mode = "disabled"` is rejected at startup rather than silently doing
+nothing.
 
 ### Header Values
 

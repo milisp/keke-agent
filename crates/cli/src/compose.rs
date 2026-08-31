@@ -90,6 +90,7 @@ fn builtin(route: &str, kind: &str) -> keke_config_types::ProviderDeclaration {
         proxy_username: None,
         proxy_password_env_key: None,
         headers: std::collections::BTreeMap::new(),
+        web_search: None,
     }
 }
 
@@ -233,6 +234,7 @@ impl Vendors {
                 // ChatGPT backend, whatever credential happens to be stored.
                 fixed_sampling: if stated { false } else { subscription },
                 client_version: keke_provider_codex::DEFAULT_CLIENT_VERSION.to_string(),
+                web_search: declaration.web_search.clone().unwrap_or_default(),
             },
             Some(self.catalog.clone()),
         )) as ArcProvider)
