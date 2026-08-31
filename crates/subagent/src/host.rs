@@ -381,6 +381,12 @@ async fn run_child(
         parent_cancelled,
     )
     .await;
+    // The `meter` task inside `run_one` is aborted as soon as the turn ends,
+    // which can discard a `StepUsage` update that was already queued but not
+    // yet processed. The report's own usage is authoritative regardless, so
+    // set it explicitly rather than leaving the row to whatever the meter
+    // task raced its way to.
+    host.note_tokens(&report.id, report.usage.input_tokens);
     host.note_finished(&report.id, report.status);
     report
 }
