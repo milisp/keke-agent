@@ -57,6 +57,14 @@ pub enum Update {
     ThinkingDelta(String),
     ToolCallStarted(ToolCall),
     ToolCallEnded(ToolResult),
+    /// A tool the vendor ran for itself inside the model call — a hosted
+    /// `web_search`, say. It arrives already resolved, so it is one update
+    /// rather than a started/ended pair, and it carries no call id: there is
+    /// no engine-side call for a surface to revise later.
+    HostedToolCall {
+        name: String,
+        query: Option<String>,
+    },
     /// Approval is needed before a tool runs. A surface answers with
     /// [`Conversation::respond_to_permission`].
     PermissionRequested {

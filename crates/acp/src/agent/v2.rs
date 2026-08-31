@@ -502,6 +502,23 @@ async fn pump(
                     ),
                 )?;
             }
+            // Reported once, already completed: the vendor ran it and told us
+            // afterwards, so there is no in-progress phase a client could show.
+            Update::HostedToolCall { name, query } => {
+                let title = match &query {
+                    Some(query) => format!("{name}: {query}"),
+                    None => name.clone(),
+                };
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::ToolCallUpdate(
+                        ToolCallUpdate::new(format!("hosted:{name}"))
+                            .title(title)
+                            .status(ToolCallStatus::Completed),
+                    ),
+                )?;
+            }
             Update::ToolCallEnded(result) => {
                 let content: Vec<ToolCallContent> = result
                     .content

@@ -519,6 +519,11 @@ impl App {
                 self.thinking = false;
                 self.transcript.start_tool(&call);
             }
+            Update::HostedToolCall { name, query } => {
+                self.begin_turn();
+                self.thinking = false;
+                self.transcript.hosted_tool(&name, query.as_deref());
+            }
             Update::ToolCallEnded(result) => {
                 if !self.transcript.finish_tool(&result) {
                     // A result with no call on screen still has to be visible;

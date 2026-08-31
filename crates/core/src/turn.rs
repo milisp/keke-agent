@@ -416,6 +416,11 @@ impl Session {
                     // vendor's own search back to the model as an unknown
                     // tool. Logged directly instead, so it is still on the
                     // record (invariant 6) without going through dispatch.
+                    self.emit(TurnUpdate::HostedToolCall {
+                        turn,
+                        name: name.clone(),
+                        query: query.clone(),
+                    });
                     self.log(SessionEvent::HostedToolCall { turn, name, query })
                         .await?;
                 }

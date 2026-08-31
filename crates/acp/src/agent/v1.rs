@@ -480,6 +480,20 @@ async fn pump(
                 .status(ToolCallStatus::InProgress);
                 notify(&cx, &id, SessionUpdate::ToolCall(started))?;
             }
+            // Reported once, already completed: the vendor ran it and told us
+            // afterwards, so there is no in-progress phase a client could show.
+            Update::HostedToolCall { name, query } => {
+                let title = match &query {
+                    Some(query) => format!("{name}: {query}"),
+                    None => name.clone(),
+                };
+                let done = agent_client_protocol::schema::v1::ToolCall::new(
+                    format!("hosted:{name}"),
+                    title,
+                )
+                .status(ToolCallStatus::Completed);
+                notify(&cx, &id, SessionUpdate::ToolCall(done))?;
+            }
             Update::ToolCallEnded(result) => {
                 let fields = ToolCallUpdateFields::new()
                     .status(acp_status(result.status))

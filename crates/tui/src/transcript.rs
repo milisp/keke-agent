@@ -207,6 +207,24 @@ impl Transcript {
         }));
     }
 
+    /// Put a tool the vendor ran for itself in the scrollback.
+    ///
+    /// Pushed already finished: it is reported after the fact, so there is no
+    /// running phase to draw and nothing later will revise it. The id is
+    /// synthetic — no engine call owns it — and deliberately not `Running`, so
+    /// [`Self::finish_tool`] can never mistake it for an open call.
+    pub fn hosted_tool(&mut self, name: &str, query: Option<&str>) {
+        self.sealed = true;
+        self.cells.push(Cell::Tool(ToolCell {
+            id: ToolCallId::new(format!("hosted:{name}")),
+            name: name.to_string(),
+            summary: query.unwrap_or_default().to_string(),
+            arguments: query.map(|q| format!("query={q}")).unwrap_or_default(),
+            state: CallState::Finished(ToolStatus::Ok),
+            detail: None,
+        }));
+    }
+
     /// Revise the cell the call opened. Returns whether one was found.
     pub fn finish_tool(&mut self, result: &ToolResult) -> bool {
         let Some(cell) = self.cells.iter_mut().rev().find_map(|cell| match cell {

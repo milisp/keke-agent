@@ -52,6 +52,18 @@ pub enum TurnUpdate {
     ToolCallEnded {
         result: ToolResult,
     },
+    /// A tool the vendor ran for itself inside the model call — see
+    /// [`keke_protocol::SessionEvent::HostedToolCall`].
+    ///
+    /// Its own update rather than a `ToolCallStarted`/`ToolCallEnded` pair:
+    /// there is no engine-side call to start or end, and it arrives already
+    /// resolved. A surface that only drew engine tool calls would show a turn
+    /// that silently paused while the vendor searched the web.
+    HostedToolCall {
+        turn: TurnId,
+        name: String,
+        query: Option<String>,
+    },
     /// One model step's token accounting, as soon as the provider reports it.
     ///
     /// Live rather than only at the end of the turn: a surface showing what a

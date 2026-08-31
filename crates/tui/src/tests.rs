@@ -202,6 +202,51 @@ fn a_tool_result_revises_the_cell_the_call_opened() {
 }
 
 #[test]
+fn a_hosted_tool_call_is_shown_as_a_finished_call() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::HostedToolCall {
+        name: "web_search".to_string(),
+        query: Some("latest xAI Grok bot news".to_string()),
+    });
+
+    let tools: Vec<_> = app
+        .transcript
+        .cells()
+        .iter()
+        .filter_map(|cell| match cell {
+            Cell::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tools.len(), 1, "the vendor's search must be on screen");
+    assert_eq!(tools[0].name, "web_search");
+    assert_eq!(tools[0].summary, "latest xAI Grok bot news");
+    // Nothing will revise it, so it must never sit on screen as running.
+    assert_eq!(tools[0].state, CallState::Finished(ToolStatus::Ok));
+}
+
+#[test]
+fn a_hosted_tool_call_is_not_revised_by_a_later_result() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::HostedToolCall {
+        name: "web_search".to_string(),
+        query: None,
+    });
+    app.apply(Update::ToolCallEnded(ToolResult::ok(
+        ToolCallId::new("hosted:web_search"),
+        "done",
+    )));
+
+    assert!(
+        app.transcript
+            .cells()
+            .iter()
+            .any(|cell| matches!(cell, Cell::Error(_))),
+        "a stray result must not be absorbed by the hosted call's cell"
+    );
+}
+
+#[test]
 fn a_result_for_an_unknown_call_is_reported_rather_than_dropped() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::ToolCallEnded(ToolResult::ok(
