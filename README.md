@@ -2,70 +2,26 @@
 
 [中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
-keke is a local terminal coding agent built for zero-vendor lock-in. 
-Works with subscriptions you already have (ChatGPT, Grok), standard API keys, or self-hosted local models.
+**keke** is a local terminal coding agent built in Rust for zero vendor lock-in.  
+**7 MB download · zero external runtime dependencies · instant startup.**
 
-## Architecture at a Glance
-
-keke enforces a strict, automated tier hierarchy (`check-layering.py`). Higher tiers can depend on lower tiers, but **NEVER** vice versa. The core is 100% vendor-free and anti-rot.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Tier 3: Surfaces                         │
-│             (keke-cli, keke-tui, keke-acp)                  │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ (Strictly Downward Dependencies)
-┌──────────────────────────────▼──────────────────────────────┐
-│                    Tier 2: Plugins                          │
-│       (keke-provider-grok, keke-mcp, keke-plan, etc.)       │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-┌──────────────────────────────▼──────────────────────────────┐
-│             Tier 1.5: Engine-Dependent Tools                │
-│                     (keke-subagent)                         │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-┌──────────────────────────────▼──────────────────────────────┐
-│                    Tier 1: Engine Core                      │
-│        (keke-core: Vendor-Free Session & Turn Loop)         │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-┌──────────────────────────────▼──────────────────────────────┐
-│              Tier 0.5: Shared Implementation                │
-│            (keke-wire, keke-catalog, keke-oauth)            │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-┌──────────────────────────────▼──────────────────────────────┐
-│               Tier 0: Seams & Contract Crates               │
-│     (keke-paths, keke-protocol, keke-tool, APIs, etc.)      │
-└─────────────────────────────────────────────────────────────┘
-          ▲
-          └───── [ Enforced by CI: scripts/check-layering.py ]
-```
+[![asciicast](https://asciinema.org/a/eUqMzR5n59Pfsta5.svg)](https://asciinema.org/a/eUqMzR5n59Pfsta5)
 
 ## Why keke?
 
-- **Protocol: ACP for every client**
-  Speaks the open Agent Client Protocol for both external client integrations and its internal TUI/agent seam.
-- **Multi-Account & Per-Directory Routing**
-  Login to multiple subscription accounts (e.g., ChatGPT, Grok, work/personal) and automatically route requests based on workspace directory path.
-- **Script & CI First (`keke exec`)**
-  Supports one-shot execution out of the box for non-interactive scripting and automated CI pipelines.
-- **Vendor-Isolated Engine**
-  No vendor-specific logic inside `keke-core`. Adding standard model endpoints requires zero engine code changes — just a quick entry in `config.toml`.
+- **Use what you already pay for**  
+  Sign in with ChatGPT (Codex) or Grok subscriptions, or drop in any API key. No need to switch providers just to try a different model.
+
+- **Multi-account, per-directory routing**  
+  Log in to work and personal accounts once. keke automatically picks the right one based on the directory you’re in.
+
+- **Script- and CI-friendly**  
+  `keke exec "..."` runs one-shot tasks non-interactively — ready for scripts and pipelines.
+
+- **Vendor-isolated core**  
+  `keke-core` contains zero vendor-specific logic. Point it at any OpenAI-compatible endpoint with a few lines in `config.toml`.
 
 ## Install
-
-### Shell (recommended)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/install.sh | sh
-```
-
-This downloads the latest prebuilt binary for your platform into
-`~/.local/bin` (override with `KEKE_INSTALL_DIR`). Piping a remote script into
-`sh` runs it with your privileges — inspect it first if that matters to you:
-`curl -fsSL .../install.sh | less`.
 
 ### npm
 
@@ -76,6 +32,17 @@ npm install -g @milisp/keke
 You can also grab a binary directly from the
 [latest release](https://github.com/milisp/keke-agent/releases/latest), or build
 from source with `cargo build --release`.
+
+### Shell
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/milisp/keke-agent/main/scripts/install.sh | sh
+```
+
+This downloads the latest prebuilt binary for your platform into
+`~/.local/bin` (override with `KEKE_INSTALL_DIR`). Piping a remote script into
+`sh` runs it with your privileges — inspect it first if that matters to you:
+`curl -fsSL .../install.sh | less`.
 
 ## Try it (30 seconds)
 
@@ -103,17 +70,6 @@ all other settings are documented in [`docs/config.md`](docs/config.md).
 - **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
   execute on `git clone` alone; a person must approve them, keyed to their
   exact contents, not their path. There's no flag to turn that gate off.
-
-## Status
-
-Usable day to day. `keke exec`, the TUI, and the ACP server all run real
-sessions end to end; runtime plugins (skills, commands, hooks, MCP servers)
-install in the Claude Code format, and repository-provided ones stay inert
-until you approve them. `/model` switches models inside a running session
-(tied to their provider so config can't persist an invalid pairing), and the
-agent can spawn subagents — isolated child sessions given one task that
-report back a single answer instead of their whole search trace. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next.
 
 ## License
 
