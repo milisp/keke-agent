@@ -146,16 +146,23 @@ pub(crate) fn responses_request(
     if !domains.is_empty() {
         spec.insert("filters".to_string(), json!({ "allowed_domains": domains }));
     }
+    // Shaped to match xAI's own CLI request for the same call, field for
+    // field, so that anywhere this fails and that succeeds the difference is
+    // somewhere other than the body.
+    //
+    // `tool_choice` names the tool rather than leaving it to the model: this
+    // call exists only to search, so a model that answers it from memory has
+    // not declined a tool, it has failed to do the one thing it was asked.
     Ok(json!({
         "model": model,
         "input": query,
         "tools": [Value::Object(spec)],
-        // The one tool in the list, so nothing competes with it for the
-        // model's attention — which is the whole reason this call is separate
-        // from the conversation's.
-        "tool_choice": "auto",
+        "tool_choice": {"type": "web_search"},
         "store": false,
         "stream": false,
+        "temperature": 0.1,
+        "top_p": 0.95,
+        "max_output_tokens": 8192,
     }))
 }
 

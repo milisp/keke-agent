@@ -146,12 +146,13 @@ those sites (and, with it, to the web — xAI otherwise searches X as well),
 `user_location.country` localizes results, and `include_images` has no
 counterpart and is ignored.
 
-xAI serves a search at its pay-per-token address only. A grok *subscription*
-login reaches `https://cli-chat-proxy.grok.com/v1`, which drops the request's
-search tool without saying so — the model then answers from what it already
-knew, and nothing reports that no search ran. keke refuses the setting there
-rather than accepting it and not honoring it; spend an API key on a second
-route instead:
+xAI's search is not reaching a grok *subscription* login as of this writing.
+The proxy at `https://cli-chat-proxy.grok.com/v1` accepts a request carrying
+the `web_search` tool and answers it without searching — `num_sources_used: 0`,
+`num_server_side_tools_used: 0`, and the model replies from what it already
+knew. The setting is still accepted there rather than refused, since the shape
+keke sends matches xAI's own CLI and the gate is somewhere this end cannot see.
+An xAI API key at `https://api.x.ai/v1` is the address to use if you have one:
 
 ```toml
 [providers.xai]
@@ -161,8 +162,6 @@ base_url = "https://api.x.ai/v1"
 [providers.xai.web_search]
 mode = "live"
 ```
-
-and run `keke --provider xai`.
 
 On `grok`, `allowed_domains` is the deployment's policy and the model's own
 per-call list can only narrow it — a model naming a site the config left out
