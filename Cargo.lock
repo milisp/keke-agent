@@ -2048,6 +2048,7 @@ dependencies = [
  "keke-paths",
  "keke-plugin-api",
  "keke-protocol",
+ "keke-provider-api",
  "keke-tool",
  "regex",
  "schemars 0.8.22",

@@ -126,6 +126,11 @@ impl EditorSessions {
         resume: Option<keke_core::ResumedSession>,
     ) -> Result<keke_acp::Opened> {
         let (approvals, requests) = keke_acp::approvals();
+        // Resolved before the composition rather than after it: which route
+        // this session talks to decides which tools it gets — a provider with
+        // a web search contributes one — and the registry is frozen once
+        // built.
+        let route = self.active_route();
         let composed = Composed::build(
             &self.config.home,
             &self.config.providers,
@@ -142,12 +147,13 @@ impl EditorSessions {
                 Arc::new(keke_core::SessionModeSwitch::default()),
                 self.config.require_plan_approval,
             )),
+            &route,
         )?;
         // What the session was last talking to wins over the server's config
         // default: a client reopening a session means to continue it, not to
         // switch it back to whatever keke was started with.
         let mut config = self.config.clone();
-        config.model.provider = self.active_route();
+        config.model.provider = route;
         if let Some(model) = resume.as_ref().and_then(|resumed| resumed.model.clone()) {
             config.model.model = model;
         }
@@ -202,6 +208,9 @@ impl keke_acp::SessionFactory for EditorSessions {
             None,
             // Not a session: nothing to plan in, so nothing to install.
             None,
+            // Listing routes, not talking to one, so no route's tools are
+            // wanted here.
+            "",
         ) else {
             return Vec::new();
         };
@@ -293,6 +302,7 @@ impl keke_acp::SessionFactory for EditorSessions {
                 self.config.subagents,
                 None,
                 None,
+                "",
             )
             .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?;
             let provider = composed.providers.get(&method_id).map_err(|_| {

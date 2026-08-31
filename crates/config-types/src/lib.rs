@@ -377,6 +377,15 @@ pub struct WebSearchConfig {
     /// it is stated rather than assumed.
     #[serde(default)]
     pub include_images: bool,
+    /// Which model runs the search, when it should not be the session's own.
+    ///
+    /// The search is a second, self-contained model call — a query in, a
+    /// summary and its sources out — so the model that answers it need not be
+    /// the one holding the conversation, and paying conversation rates to
+    /// summarize five search results is a deployment's money to save. Unset
+    /// means the session's model does it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl WebSearchConfig {
@@ -408,6 +417,16 @@ impl WebSearchConfig {
                     "web_search.user_location is set but web_search.mode is disabled".to_string(),
                 );
             }
+            if self.model.is_some() {
+                return Err("web_search.model is set but web_search.mode is disabled".to_string());
+            }
+        }
+        if self
+            .model
+            .as_ref()
+            .is_some_and(|model| model.trim().is_empty())
+        {
+            return Err("web_search.model is empty; remove it or name a model".to_string());
         }
         for domain in &self.allowed_domains {
             let domain = domain.trim();

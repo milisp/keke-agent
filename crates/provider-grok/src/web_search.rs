@@ -112,3 +112,135 @@ pub(crate) fn tool(config: &WebSearchConfig) -> Result<Option<Value>, String> {
     }
     Ok(Some(Value::Object(spec)))
 }
+
+/// The domains one search may reach.
+///
+/// A configured allowlist is authoritative and the model's own list narrows it
+/// rather than replacing it. Letting the model's list win would make the
+/// deployment's setting advisory — a model that wanted a domain the config
+/// excluded need only name it — and the approval seam's rule is the same one:
+/// composing two opinions about reach may restrict and may never widen.
+pub(crate) fn confine(config: &WebSearchConfig, requested: &[String]) -> Vec<String> {
+    if config.allowed_domains.is_empty() {
+        return requested.to_vec();
+    }
+    if requested.is_empty() {
+        return config.allowed_domains.clone();
+    }
+    config
+        .allowed_domains
+        .iter()
+        .filter(|domain| requested.iter().any(|wanted| wanted == *domain))
+        .cloned()
+        .collect()
+}
+
+/// One search as a self-contained request on the responses wire.
+pub(crate) fn responses_request(
+    model: &str,
+    query: &str,
+    domains: &[String],
+) -> Result<Value, String> {
+    let mut spec = Map::new();
+    spec.insert("type".to_string(), json!("web_search"));
+    if !domains.is_empty() {
+        spec.insert("filters".to_string(), json!({ "allowed_domains": domains }));
+    }
+    Ok(json!({
+        "model": model,
+        "input": query,
+        "tools": [Value::Object(spec)],
+        // The one tool in the list, so nothing competes with it for the
+        // model's attention — which is the whole reason this call is separate
+        // from the conversation's.
+        "tool_choice": "auto",
+        "store": false,
+        "stream": false,
+    }))
+}
+
+/// One search as a self-contained request on the chat-completions wire.
+pub(crate) fn chat_request(
+    config: &WebSearchConfig,
+    model: &str,
+    query: &str,
+    domains: &[String],
+) -> Result<Value, String> {
+    let mut confined = config.clone();
+    confined.allowed_domains = domains.to_vec();
+    let Some(params) = parameters(&confined)? else {
+        return Err("web search is disabled for this endpoint".to_string());
+    };
+    Ok(json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": query }],
+        "search_parameters": params,
+        "stream": false,
+    }))
+}
+
+/// The summary and sources in a responses-wire reply.
+///
+/// Annotations are where the citations live; the `web_search_call` items the
+/// same reply carries are the vendor narrating its own work and hold no URL.
+pub(crate) fn read_responses(body: &Value) -> (String, Vec<(String, Option<String>)>) {
+    let mut summary = String::new();
+    let mut citations = Vec::new();
+    let items = body.get("output").and_then(Value::as_array);
+    for item in items.into_iter().flatten() {
+        for part in item
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                summary.push_str(text);
+            }
+            for annotation in part
+                .get("annotations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(url) = annotation.get("url").and_then(Value::as_str) {
+                    citations.push((
+                        url.to_string(),
+                        annotation
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    ));
+                }
+            }
+        }
+    }
+    (summary, citations)
+}
+
+/// The summary and sources in a chat-completions reply.
+///
+/// This wire reports its sources as a flat `citations` array of URLs beside
+/// the choices rather than as annotations inside the text, which is the whole
+/// reason the two wires are read separately instead of through one shape that
+/// would fit neither.
+pub(crate) fn read_chat(body: &Value) -> (String, Vec<(String, Option<String>)>) {
+    let summary = body
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let citations = body
+        .get("citations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|url| (url.to_string(), None))
+        .collect();
+    (summary, citations)
+}

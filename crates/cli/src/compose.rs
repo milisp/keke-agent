@@ -207,21 +207,48 @@ impl Vendors {
         let auth = self.auth_for(declaration, "grok")?;
         let subscription = is_subscription(auth.as_ref());
         let stated_wire = declaration.wire.map(crate::declared::wire_api);
+        let base_url = self.address(
+            declaration,
+            "XAI_BASE_URL",
+            if subscription {
+                GROK_SUBSCRIPTION_BASE_URL
+            } else {
+                keke_provider_grok::DEFAULT_BASE_URL
+            },
+        );
+        // The subscription proxy serves no search. It answers a request
+        // carrying the hosted `web_search` tool by echoing `"tools": []` and
+        // `num_server_side_tools_used: 0` — the entry is dropped, the model
+        // replies from what it already knew, and nothing says so — and it
+        // answers the other spelling with `410: live search deprecated`. An
+        // address that quietly drops a capability must not be described as
+        // having it, so the setting is refused where it cannot take effect
+        // rather than accepted and then not honored.
+        if declaration
+            .web_search
+            .as_ref()
+            .is_some_and(|search| search.mode.is_enabled())
+            && base_url.trim_end_matches('/') == GROK_SUBSCRIPTION_BASE_URL
+        {
+            anyhow::bail!(
+                "`[providers.{}.web_search]` is set, but a grok subscription login reaches \
+                 {GROK_SUBSCRIPTION_BASE_URL}, which serves no web search: it drops the request\'s \
+                 search tool without saying so. Spend an xAI API key instead — declare a second \
+                 route, e.g.\n\n\
+                 [providers.xai]\nkind = \"grok\"\nbase_url = \"{}\"\n\n\
+                 [providers.xai.web_search]\nmode = \"live\"\n\n\
+                 — and run keke with `--provider xai`.",
+                declaration.route,
+                keke_provider_grok::DEFAULT_BASE_URL,
+            );
+        }
         let provider = keke_provider_grok::GrokProvider::new(
             auth,
             keke_provider_grok::Endpoint {
                 route: declaration.route.clone(),
                 display_name: Self::display_name(declaration, "Grok"),
                 auth_id: auth_id("grok", declaration.account.as_deref()),
-                base_url: self.address(
-                    declaration,
-                    "XAI_BASE_URL",
-                    if subscription {
-                        GROK_SUBSCRIPTION_BASE_URL
-                    } else {
-                        keke_provider_grok::DEFAULT_BASE_URL
-                    },
-                ),
+                base_url,
                 wire_api: stated_wire.unwrap_or(if subscription {
                     WireApi::Responses
                 } else {
@@ -233,6 +260,7 @@ impl Vendors {
                 // `responses` for this vendor.
                 fixed_sampling: stated_wire.map_or(subscription, |wire| wire == WireApi::Responses),
                 web_search: declaration.web_search.clone().unwrap_or_default(),
+                default_model: declaration.default_model.clone(),
             },
             Some(self.catalog.clone()),
         )?;
@@ -440,6 +468,7 @@ impl Composed {
         subagent_limits: keke_config_types::SubagentLimits,
         approvals: Option<Arc<keke_acp::Approvals>>,
         plan: Option<PlanSetup>,
+        route: &str,
     ) -> Result<Self> {
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -551,6 +580,23 @@ impl Composed {
         // --- extensions ----------------------------------------------------
         let mut extensions = ExtensionRegistryBuilder::new();
         keke_tools::install(&mut extensions);
+
+        // `web_search` is offered only when the route this session will talk
+        // to has a search to run, and the route is settled here because a
+        // session keeps the provider it was built with — `/provider` says so
+        // itself, and a tool list that outlived its backend would advertise a
+        // search against an account this session never uses.
+        //
+        // The engine learns nothing about which vendor that is. It sees a
+        // tool; the tool holds a `WebSearchBackend`; only this line knows the
+        // two were introduced.
+        if let Some(search) = providers
+            .get(route)
+            .ok()
+            .and_then(|provider| provider.web_search())
+        {
+            keke_tools::install_web_search(&mut extensions, search);
+        }
 
         // Plan mode reviews approvals ahead of every other extension, because
         // the one request it answers — a write to the plan file it told the
@@ -710,6 +756,10 @@ mod tests {
 
         let mut declared = builtin("grok", "grok");
         declared.kind = None;
+        // The search itself is configured at the pay-per-token address, which
+        // is the only one of xAI's two that serves one — see
+        // `a_search_is_refused_at_the_address_that_does_not_serve_one`.
+        declared.base_url = Some(keke_provider_grok::DEFAULT_BASE_URL.to_string());
         declared.web_search = Some(keke_config_types::WebSearchConfig::enabled(
             keke_config_types::WebSearchMode::Live,
         ));
@@ -720,6 +770,45 @@ mod tests {
         let provider = vendors.instance(&adopted).expect("the grok instance");
         assert_eq!(provider.info().auth_id.as_deref(), Some("grok"));
         assert_eq!(provider.info().env_key.as_deref(), Some("XAI_API_KEY"));
+    }
+
+    /// A capability the address drops must not be described as one it has.
+    ///
+    /// The grok subscription proxy answers a request carrying the hosted
+    /// `web_search` tool by echoing `"tools": []`, so the model replies from
+    /// what it already knew and nothing reports that the search never ran —
+    /// which is exactly the silent under-delivery invariant 8 exists to
+    /// prevent. The setting is refused where it cannot take effect, and the
+    /// message names the address that does serve one.
+    #[test]
+    fn a_search_is_refused_at_the_address_that_does_not_serve_one() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let vendors = vendors(home.path());
+
+        let mut declared = builtin("grok", "grok");
+        declared.web_search = Some(keke_config_types::WebSearchConfig::enabled(
+            keke_config_types::WebSearchMode::Live,
+        ));
+
+        let error = vendors
+            .instance(&declared)
+            .err()
+            .expect("a search the proxy drops is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(GROK_SUBSCRIPTION_BASE_URL),
+            "{message} should name the address that serves no search"
+        );
+        assert!(
+            message.contains(keke_provider_grok::DEFAULT_BASE_URL),
+            "{message} should name the address that does"
+        );
+
+        // The same declaration pointed at the address that serves one builds.
+        declared.base_url = Some(keke_provider_grok::DEFAULT_BASE_URL.to_string());
+        vendors
+            .instance(&declared)
+            .expect("the pay-per-token address serves a search");
     }
 
     /// Only a route a built-in already answers to inherits one, and only when

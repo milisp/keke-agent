@@ -219,6 +219,7 @@ fn a_confined_search_names_its_domains_and_its_locale() {
             ..keke_config_types::WebSearchLocation::default()
         }),
         include_images: true,
+        model: None,
     })
     .expect("a tool");
 

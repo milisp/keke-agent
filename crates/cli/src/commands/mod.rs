@@ -92,6 +92,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             Arc::clone(&mode),
             config.require_plan_approval,
         )),
+        &config.model.provider,
     )?;
 
     // A directory override that names a route nobody registered is not a
@@ -132,6 +133,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                         Arc::clone(&mode),
                         config.require_plan_approval,
                     )),
+                    &config.model.provider,
                 )?;
             }
             // Not an error: the person was asked a question and chose not to

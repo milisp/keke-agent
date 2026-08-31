@@ -11,6 +11,7 @@
 mod error;
 mod info;
 mod stream;
+mod web_search;
 
 pub use error::ProviderError;
 pub use info::ModelInfo;
@@ -22,6 +23,10 @@ pub use info::WireApi;
 pub use keke_protocol::ReasoningEffort;
 pub use stream::StreamChunk;
 pub use stream::StreamEvent;
+pub use web_search::ArcWebSearch;
+pub use web_search::WebSearchBackend;
+pub use web_search::WebSearchCitation;
+pub use web_search::WebSearchResults;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -108,6 +113,17 @@ pub trait ModelProvider: Send + Sync + 'static {
     /// authentication failure as "no models".
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
         Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// This provider's web search, when it has one *and* the deployment asked
+    /// for it.
+    ///
+    /// `None` is the default and means the session offers no `web_search`
+    /// tool at all, rather than one that fails when called: a tool advertised
+    /// and then refused costs the model a turn to learn what its absence would
+    /// have told it for free.
+    fn web_search(&self) -> Option<ArcWebSearch> {
+        None
     }
 }
 

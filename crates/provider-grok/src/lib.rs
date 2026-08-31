@@ -65,6 +65,12 @@ pub struct Endpoint {
     /// model call, where neither the approval seam nor a `ToolGuard` can see
     /// it — so a person turns it on rather than discovering it is on.
     pub web_search: WebSearchConfig,
+    /// What this route serves when nothing named a model, as the deployment
+    /// declared it. Used only to decide which model runs a search when
+    /// `web_search.model` is unset — the conversation's own model is chosen by
+    /// the surface long after this, and a provider that guessed one here would
+    /// be answering a question that was not asked of it.
+    pub default_model: Option<String>,
 }
 
 impl Default for Endpoint {
@@ -78,6 +84,7 @@ impl Default for Endpoint {
             wire_api: WireApi::ChatCompletions,
             fixed_sampling: false,
             web_search: WebSearchConfig::default(),
+            default_model: None,
         }
     }
 }
@@ -85,15 +92,20 @@ impl Default for Endpoint {
 /// xAI's Grok models.
 pub struct GrokProvider {
     info: ProviderInfo,
-    wire: WireClient,
+    wire: Arc<WireClient>,
     /// `None` disables caching entirely, which is what a surface with no home
     /// directory — a test — gets.
     cache: Option<CatalogCache>,
-    /// The hosted search this instance asks for, built once because it is the
-    /// same on every request, and in the shape this endpoint's wire wants:
-    /// a `search_parameters` field on chat-completions, a tool entry on
-    /// responses. `None` when the deployment offers none.
-    search: Option<Value>,
+    /// What answers the `web_search` tool, or `None` when the deployment
+    /// offers no search.
+    ///
+    /// A backend rather than a blob spliced into every request: xAI's hosted
+    /// search reaches the model as a bare `{"type":"web_search"}` entry with
+    /// no description, which a coding agent in a repository does not read as
+    /// "the way to reach the web" — it greps, then shells out to `curl`. Ran
+    /// from a described tool instead, the search is a call the model can see,
+    /// a guard can deny, and the rollout log records.
+    search: Option<Arc<GrokWebSearch>>,
 }
 
 impl GrokProvider {
@@ -108,11 +120,15 @@ impl GrokProvider {
         endpoint: Endpoint,
         cache: Option<CatalogCache>,
     ) -> Result<Self, ProviderError> {
-        let search = match endpoint.wire_api {
+        // Refused here rather than per turn, by asking for the shape this
+        // endpoint would send: a mode xAI cannot express is a launch failure,
+        // not a bill.
+        let offers_search = match endpoint.wire_api {
             WireApi::Responses => web_search::tool(&endpoint.web_search),
             _ => web_search::parameters(&endpoint.web_search),
         }
-        .map_err(ProviderError::InvalidRequest)?;
+        .map_err(ProviderError::InvalidRequest)?
+        .is_some();
         let base_url = if endpoint.base_url.trim().is_empty() {
             DEFAULT_BASE_URL.to_string()
         } else {
@@ -122,6 +138,15 @@ impl GrokProvider {
         if endpoint.fixed_sampling {
             wire = wire.with_fixed_sampling();
         }
+        let wire = Arc::new(wire);
+        let search = offers_search.then(|| {
+            Arc::new(GrokWebSearch {
+                wire: Arc::clone(&wire),
+                wire_api: endpoint.wire_api,
+                config: endpoint.web_search.clone(),
+                default_model: endpoint.default_model.clone(),
+            })
+        });
         Ok(Self {
             info: ProviderInfo {
                 route: endpoint.route,
@@ -149,24 +174,25 @@ impl ModelProvider for GrokProvider {
         &self.info
     }
 
-    /// The hosted search is attached here rather than by the engine, because
-    /// the engine is not allowed to know that this vendor has one — and because
-    /// it is a property of the endpoint, not of the turn.
+    /// Nothing about the search is spliced into the conversation's request.
+    ///
+    /// The hosted forms — a tool entry on responses, `search_parameters` on
+    /// chat-completions — are both invisible to everything that reviews and
+    /// records a turn, and the tool-entry form is invisible to the model too:
+    /// it carries no description, and a coding agent reads its surroundings
+    /// and shells out instead. So the capability is offered as an ordinary
+    /// tool, and [`GrokWebSearch`] answers it in a call of its own.
     fn stream<'a>(
         &'a self,
-        mut request: ModelRequest,
+        request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
-        if let Some(search) = &self.search {
-            match self.info.wire_api {
-                WireApi::Responses => request.hosted_tools.push(search.clone()),
-                _ => {
-                    request
-                        .vendor_params
-                        .insert("search_parameters".to_string(), search.clone());
-                }
-            }
-        }
         Box::pin(self.wire.stream(self.info.wire_api, request))
+    }
+
+    fn web_search(&self) -> Option<keke_provider_api::ArcWebSearch> {
+        self.search
+            .clone()
+            .map(|search| search as keke_provider_api::ArcWebSearch)
     }
 
     /// What xAI serves, from the cache when it is current and from the vendor
@@ -213,6 +239,113 @@ fn fallback(cached: Option<keke_catalog::Cached>) -> Vec<ModelInfo> {
     match cached {
         Some(cached) if !cached.models.is_empty() => cached.models,
         _ => catalog::bundled(),
+    }
+}
+
+/// xAI's search, run as a call of its own.
+///
+/// The shape is deliberately the one xAI's own CLI uses: a separate,
+/// non-streaming request carrying the hosted search and nothing else, whose
+/// prose answer and citations come back as a tool result. The conversation's
+/// request is left alone, so the model's tool list holds one described
+/// `web_search` and no bare vendor entry competing with it.
+pub struct GrokWebSearch {
+    wire: Arc<WireClient>,
+    wire_api: WireApi,
+    config: WebSearchConfig,
+    default_model: Option<String>,
+}
+
+impl GrokWebSearch {
+    /// Which model summarizes the results.
+    ///
+    /// A search is a self-contained call — query in, summary and sources out —
+    /// so the deployment may name a cheaper model for it. Failing that this
+    /// route's declared default, and failing that whatever xAI lists first,
+    /// which is the same answer a surface with no model configured gets.
+    async fn model(&self) -> Result<String, ProviderError> {
+        if let Some(model) = self
+            .config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
+            return Ok(model.to_string());
+        }
+        if let Some(model) = self
+            .default_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
+            return Ok(model.to_string());
+        }
+        let models = catalog::parse(&self.wire.fetch("/models").await?)
+            .map_err(|error| ProviderError::Protocol(format!("undecodable model list: {error}")))?;
+        models.first().map(|model| model.id.clone()).ok_or_else(|| {
+            ProviderError::InvalidRequest(
+                "no model to run the search with: set `web_search.model` or the route's \
+                 `default_model`"
+                    .to_string(),
+            )
+        })
+    }
+}
+
+impl keke_provider_api::WebSearchBackend for GrokWebSearch {
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        allowed_domains: &'a [String],
+    ) -> ProviderFuture<'a, Result<keke_provider_api::WebSearchResults, ProviderError>> {
+        Box::pin(async move {
+            let domains = web_search::confine(&self.config, allowed_domains);
+            let model = self.model().await?;
+            // Each wire keeps this capability somewhere else — a tool entry on
+            // responses, a top-level field on chat-completions — and reports
+            // its sources somewhere else too, so both halves are per-wire
+            // rather than one shape that would fit neither.
+            let (path, body) = match self.wire_api {
+                WireApi::Responses => (
+                    "/responses",
+                    web_search::responses_request(&model, query, &domains),
+                ),
+                _ => (
+                    "/chat/completions",
+                    web_search::chat_request(&self.config, &model, query, &domains),
+                ),
+            };
+            let body = body.map_err(ProviderError::InvalidRequest)?;
+            let raw = self.wire.post(path, &body).await?;
+            // Trace rather than debug: the reply is the search's whole content,
+            // which is a person's query and its answers, and belongs in a log
+            // only when someone has turned one on to look at this.
+            tracing::trace!(%raw, "xAI answered the search");
+            let reply: Value = serde_json::from_str(&raw)
+                .map_err(|error| ProviderError::Protocol(format!("undecodable search: {error}")))?;
+            let (summary, citations) = match self.wire_api {
+                WireApi::Responses => web_search::read_responses(&reply),
+                _ => web_search::read_chat(&reply),
+            };
+            // An empty answer is reported as one rather than as a successful
+            // search of nothing: a model told "here are your results" with no
+            // results writes as if it had them.
+            if summary.trim().is_empty() && citations.is_empty() {
+                return Err(ProviderError::Protocol(
+                    "the search returned no results and no sources".to_string(),
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            Ok(keke_provider_api::WebSearchResults {
+                summary,
+                citations: citations
+                    .into_iter()
+                    .filter(|(url, _)| seen.insert(url.clone()))
+                    .map(|(url, title)| keke_provider_api::WebSearchCitation { url, title })
+                    .collect(),
+            })
+        })
     }
 }
 

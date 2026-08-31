@@ -10,6 +10,7 @@ mod grep;
 mod list_dir;
 mod read_file;
 mod support;
+mod web_search;
 mod write_file;
 
 pub use bash::Bash;
@@ -27,6 +28,10 @@ pub use list_dir::ListDirOutput;
 pub use read_file::ReadFile;
 pub use read_file::ReadFileArgs;
 pub use read_file::ReadFileOutput;
+pub use web_search::WebSearch;
+pub use web_search::WebSearchArgs;
+pub use web_search::WebSearchOutput;
+pub use web_search::install_web_search;
 pub use write_file::WriteFile;
 pub use write_file::WriteFileArgs;
 pub use write_file::WriteFileOutput;
@@ -594,5 +599,85 @@ mod tests {
             matches!(&error, ToolError::Execution { code, .. } if code == "no_match"),
             "{error:?}"
         );
+    }
+
+    /// The model's own domain list reaches the backend, and the sources come
+    /// back where the model will read them: a summary with no URLs under it is
+    /// a claim nobody can check.
+    #[tokio::test]
+    async fn web_search_passes_the_query_through_and_renders_its_sources() {
+        struct Stub;
+        impl keke_provider_api::WebSearchBackend for Stub {
+            fn search<'a>(
+                &'a self,
+                query: &'a str,
+                allowed_domains: &'a [String],
+            ) -> keke_provider_api::ProviderFuture<
+                'a,
+                Result<keke_provider_api::WebSearchResults, keke_provider_api::ProviderError>,
+            > {
+                Box::pin(async move {
+                    Ok(keke_provider_api::WebSearchResults {
+                        summary: format!("{query} confined to {allowed_domains:?}"),
+                        citations: vec![keke_provider_api::WebSearchCitation {
+                            url: "https://example.test/a".to_string(),
+                            title: Some("A".to_string()),
+                        }],
+                    })
+                })
+            }
+        }
+
+        let (_dir, ctx) = workspace();
+        let out = WebSearch::new(Arc::new(Stub))
+            .run(
+                ctx,
+                WebSearchArgs {
+                    query: "grok-bot".into(),
+                    allowed_domains: vec!["x.ai".into()],
+                },
+            )
+            .await
+            .expect("a search");
+
+        assert!(out.summary.contains("grok-bot"));
+        assert!(out.summary.contains("x.ai"));
+        let rendered = match &out.render()[0] {
+            ContentBlock::Text { text } => text.clone(),
+            block => panic!("{block:?}"),
+        };
+        assert!(rendered.contains("https://example.test/a"));
+        assert!(rendered.contains('A'));
+    }
+
+    /// An empty query is the model's mistake to fix, not a search to run.
+    #[tokio::test]
+    async fn web_search_refuses_an_empty_query() {
+        struct Never;
+        impl keke_provider_api::WebSearchBackend for Never {
+            fn search<'a>(
+                &'a self,
+                _query: &'a str,
+                _allowed_domains: &'a [String],
+            ) -> keke_provider_api::ProviderFuture<
+                'a,
+                Result<keke_provider_api::WebSearchResults, keke_provider_api::ProviderError>,
+            > {
+                unreachable!("an empty query must never reach the backend")
+            }
+        }
+
+        let (_dir, ctx) = workspace();
+        let error = WebSearch::new(Arc::new(Never))
+            .run(
+                ctx,
+                WebSearchArgs {
+                    query: "  ".into(),
+                    allowed_domains: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("an empty query");
+        assert!(matches!(error, ToolError::InvalidArgs { .. }), "{error:?}");
     }
 }

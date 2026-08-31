@@ -105,8 +105,11 @@ when you want a different one. Every other route defaults to
 
 ### Web Search
 
-An instance of `kind = "codex"` or `kind = "grok"` can offer the vendor's hosted
-web search, which the vendor runs inside the model call:
+An instance of `kind = "codex"` or `kind = "grok"` can offer the vendor's web
+search. On a `grok` instance this becomes an ordinary `web_search` tool in the
+model's tool list, dispatched and logged like any other tool call and answered
+by a separate request to xAI; a `codex` instance still hands the search to the
+vendor to run inside the model call.
 
 ```toml
 [providers.grok.web_search]
@@ -117,6 +120,7 @@ mode = "live"              # disabled (default), cached, indexed, live
 context_size = "medium"    # low, medium, high
 allowed_domains = ["docs.rs", "rust-lang.org"]
 include_images = false
+model = "grok-4-fast"      # grok only: which model runs the search
 
 [providers.codex.web_search.user_location]
 country = "US"
@@ -141,6 +145,31 @@ chooses how many results are paid for, `allowed_domains` confines the search to
 those sites (and, with it, to the web — xAI otherwise searches X as well),
 `user_location.country` localizes results, and `include_images` has no
 counterpart and is ignored.
+
+xAI serves a search at its pay-per-token address only. A grok *subscription*
+login reaches `https://cli-chat-proxy.grok.com/v1`, which drops the request's
+search tool without saying so — the model then answers from what it already
+knew, and nothing reports that no search ran. keke refuses the setting there
+rather than accepting it and not honoring it; spend an API key on a second
+route instead:
+
+```toml
+[providers.xai]
+kind = "grok"
+base_url = "https://api.x.ai/v1"
+
+[providers.xai.web_search]
+mode = "live"
+```
+
+and run `keke --provider xai`.
+
+On `grok`, `allowed_domains` is the deployment's policy and the model's own
+per-call list can only narrow it — a model naming a site the config left out
+does not get it. `model` names which model summarizes the results, since a
+search is a self-contained call and need not be answered at conversation rates;
+unset, the route's `default_model` runs it, and failing that whatever xAI lists
+first.
 
 ### Header Values
 

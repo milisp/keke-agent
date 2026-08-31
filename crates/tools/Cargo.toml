@@ -11,6 +11,7 @@ repository.workspace = true
 keke-paths = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
 keke-tool = { workspace = true }
 regex = { workspace = true }
 ignore = { workspace = true }

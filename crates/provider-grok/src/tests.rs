@@ -712,9 +712,12 @@ mod web_search {
         )
     }
 
-    /// The body the endpoint actually receives, which is where a field dropped
-    /// between the provider and the wire would show up.
-    async fn body_for(config: WebSearchConfig, wire_api: WireApi) -> serde_json::Value {
+    /// The body the *conversation's* endpoint receives.
+    ///
+    /// Nothing about the search may appear here: a hosted entry the model
+    /// cannot see the point of is what sent it to `curl`, and one it can see
+    /// still runs where no guard and no log can reach it.
+    async fn turn_body(config: WebSearchConfig, wire_api: WireApi) -> serde_json::Value {
         let server = MockServer::start().await;
         let (route, frame) = match wire_api {
             WireApi::Responses => (
@@ -752,74 +755,228 @@ mod web_search {
         serde_json::from_slice(&requests[0].body).expect("a JSON request body")
     }
 
-    /// The default: a hosted search bills a person for fetches no guard sees,
-    /// so nothing about one is sent until someone asks for it.
-    #[tokio::test]
-    async fn no_search_is_offered_until_it_is_configured() {
-        let body = body_for(WebSearchConfig::default(), WireApi::ChatCompletions).await;
-        assert!(body.get("search_parameters").is_none());
+    /// One search, and the request it sent to run it.
+    async fn search_body(
+        config: WebSearchConfig,
+        wire_api: WireApi,
+        reply: serde_json::Value,
+        query: &str,
+        domains: &[String],
+    ) -> (
+        Result<keke_provider_api::WebSearchResults, ProviderError>,
+        serde_json::Value,
+    ) {
+        let server = MockServer::start().await;
+        let route = match wire_api {
+            WireApi::Responses => "/v1/responses",
+            _ => "/v1/chat/completions",
+        };
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_string(reply.to_string()))
+            .mount(&server)
+            .await;
+        let provider = GrokProvider::new(
+            Arc::new(StubAuth::default()),
+            Endpoint {
+                base_url: format!("{}/v1", server.uri()),
+                default_model: Some("grok-4.6".to_string()),
+                ..endpoint(config, wire_api)
+            },
+            None,
+        )
+        .expect("this configuration is expressible at xAI");
+
+        let backend = provider.web_search().expect("a configured search");
+        let results = backend.search(query, domains).await;
+        let requests = server.received_requests().await.expect("recorded");
+        let body = serde_json::from_slice(&requests[0].body).expect("a JSON request body");
+        (results, body)
     }
 
+    fn responses_reply() -> serde_json::Value {
+        json!({"output": [{
+            "type": "message",
+            "content": [{
+                "type": "output_text",
+                "text": "grok-bot was announced in August 2026.",
+                "annotations": [
+                    {"url": "https://x.ai/news/grok-bot", "title": "Introducing Grok Bot"},
+                    {"url": "https://x.ai/news/grok-bot", "title": "a duplicate"},
+                ],
+            }],
+        }]})
+    }
+
+    /// The default: a search bills a person for fetches, so nothing about one
+    /// is sent and no tool is offered until someone asks for it.
     #[tokio::test]
-    async fn an_enabled_search_travels_beside_the_messages_on_chat_completions() {
-        let body = body_for(
+    async fn no_search_is_offered_until_it_is_configured() {
+        let body = turn_body(WebSearchConfig::default(), WireApi::ChatCompletions).await;
+        assert!(body.get("search_parameters").is_none());
+        assert!(
+            built(WebSearchConfig::default(), WireApi::ChatCompletions)
+                .expect("no search is always expressible")
+                .web_search()
+                .is_none()
+        );
+    }
+
+    /// The failure this whole seam exists to fix: a hosted search reached the
+    /// model as a bare `{"type": "web_search"}` entry with no description, and
+    /// a coding agent in a repository grepped and then shelled out to `curl`
+    /// rather than using it. An enabled search now changes the conversation's
+    /// request in no way at all.
+    #[tokio::test]
+    async fn an_enabled_search_leaves_the_conversations_request_alone() {
+        let chat = turn_body(
             WebSearchConfig::enabled(WebSearchMode::Live),
             WireApi::ChatCompletions,
         )
         .await;
-        let params = &body["search_parameters"];
+        assert!(chat.get("search_parameters").is_none());
+        assert_eq!(chat["model"], json!("grok-4.6"));
+        assert_eq!(chat["stream"], json!(true));
 
-        // `auto`, not `on`: an offered search the model may decline.
-        assert_eq!(params["mode"], json!("auto"));
-        assert_eq!(params["return_citations"], json!(true));
-        assert_eq!(params["max_search_results"], json!(15));
-        // Unconstrained, so xAI keeps its own default sources rather than being
-        // narrowed to web alone by a list naming only web.
-        assert!(params.get("sources").is_none());
-        // The translation adds the vendor's field without disturbing the wire's.
-        assert_eq!(body["model"], json!("grok-4.6"));
-        assert_eq!(body["stream"], json!(true));
-    }
-
-    /// The same configuration, in the place the other wire keeps it.
-    #[tokio::test]
-    async fn an_enabled_search_travels_in_the_tool_list_on_responses() {
-        let body = body_for(
+        let responses = turn_body(
             WebSearchConfig::enabled(WebSearchMode::Live),
             WireApi::Responses,
         )
         .await;
-        assert_eq!(body["tools"], json!([{"type": "web_search"}]));
-        assert!(body.get("search_parameters").is_none());
+        assert!(responses.get("search_parameters").is_none());
+        // The harness's own tools and nothing beside them.
+        assert!(
+            !responses["tools"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|tool| tool["type"] == json!("web_search")),
+            "the conversation's tool list must not carry the hosted entry"
+        );
     }
 
+    /// What the model calls is a described tool, and what answers it is a
+    /// request of its own carrying the search and nothing else.
     #[tokio::test]
-    async fn a_domain_list_confines_the_search_on_both_wires() {
+    async fn a_search_runs_as_a_call_of_its_own_on_responses() {
+        let (results, body) = search_body(
+            WebSearchConfig::enabled(WebSearchMode::Live),
+            WireApi::Responses,
+            responses_reply(),
+            "xAI grok-bot announcement",
+            &[],
+        )
+        .await;
+
+        assert_eq!(body["input"], json!("xAI grok-bot announcement"));
+        assert_eq!(body["tools"], json!([{"type": "web_search"}]));
+        assert_eq!(body["stream"], json!(false));
+        // Never stored at the vendor: the rollout log is the only history.
+        assert_eq!(body["store"], json!(false));
+
+        let results = results.expect("a search");
+        assert!(results.summary.contains("August 2026"));
+        // One source, not two: the same URL cited twice is one place to check.
+        assert_eq!(results.citations.len(), 1);
+        assert_eq!(results.citations[0].url, "https://x.ai/news/grok-bot");
+        assert_eq!(
+            results.citations[0].title.as_deref(),
+            Some("Introducing Grok Bot")
+        );
+    }
+
+    /// The other wire keeps the same capability in another place and reports
+    /// its sources in another shape, so both halves are read per-wire.
+    #[tokio::test]
+    async fn a_search_runs_as_a_call_of_its_own_on_chat_completions() {
+        let (results, body) = search_body(
+            WebSearchConfig::enabled(WebSearchMode::Live),
+            WireApi::ChatCompletions,
+            json!({
+                "choices": [{"message": {"content": "grok-bot, August 2026."}}],
+                "citations": ["https://x.ai/news/grok-bot"],
+            }),
+            "xAI grok-bot announcement",
+            &[],
+        )
+        .await;
+
+        assert_eq!(body["search_parameters"]["mode"], json!("auto"));
+        assert_eq!(body["search_parameters"]["return_citations"], json!(true));
+        assert_eq!(body["search_parameters"]["max_search_results"], json!(15));
+        assert_eq!(body["stream"], json!(false));
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": "xAI grok-bot announcement"}])
+        );
+
+        let results = results.expect("a search");
+        assert!(results.summary.contains("August 2026"));
+        assert_eq!(results.citations[0].url, "https://x.ai/news/grok-bot");
+    }
+
+    /// A deployment's allowlist is authoritative and the model's own list
+    /// narrows it. A model that could widen it by naming a domain the config
+    /// left out would make the setting advisory.
+    #[tokio::test]
+    async fn the_model_may_narrow_the_configured_domains_and_never_widen_them() {
         let config = WebSearchConfig {
             allowed_domains: vec!["docs.rs".to_string(), "rust-lang.org".to_string()],
             ..WebSearchConfig::enabled(WebSearchMode::Live)
         };
 
-        let chat = body_for(config.clone(), WireApi::ChatCompletions).await;
+        // Nothing asked of it: the configured list governs.
+        let (_, body) = search_body(
+            config.clone(),
+            WireApi::Responses,
+            responses_reply(),
+            "lifetimes",
+            &[],
+        )
+        .await;
         assert_eq!(
-            chat["search_parameters"]["sources"],
-            json!([{"type": "web", "allowed_websites": ["docs.rs", "rust-lang.org"]}])
+            body["tools"][0]["filters"]["allowed_domains"],
+            json!(["docs.rs", "rust-lang.org"])
         );
 
-        let responses = body_for(config, WireApi::Responses).await;
+        // A narrower request is honored; a domain outside the policy is not.
+        let (_, body) = search_body(
+            config.clone(),
+            WireApi::Responses,
+            responses_reply(),
+            "lifetimes",
+            &["docs.rs".to_string(), "example.com".to_string()],
+        )
+        .await;
         assert_eq!(
-            responses["tools"],
-            json!([{
-                "type": "web_search",
-                "filters": {"allowed_domains": ["docs.rs", "rust-lang.org"]},
-            }])
+            body["tools"][0]["filters"]["allowed_domains"],
+            json!(["docs.rs"])
+        );
+
+        // The same rule on the other wire, in that wire's own shape.
+        let (_, body) = search_body(
+            config,
+            WireApi::ChatCompletions,
+            json!({"choices": [{"message": {"content": "x"}}], "citations": []}),
+            "lifetimes",
+            &["example.com".to_string()],
+        )
+        .await;
+        assert!(
+            body["search_parameters"].get("sources").is_none()
+                || body["search_parameters"]["sources"][0]["allowed_websites"] == json!([]),
+            "a domain the deployment excluded must not be searched"
         );
     }
 
+    /// A model with no domains of its own still gets the deployment's locale
+    /// and result count, since those are the endpoint's terms rather than the
+    /// call's.
     #[tokio::test]
-    async fn a_stated_country_localizes_the_web_source() {
-        let body = body_for(
+    async fn the_endpoints_terms_travel_with_every_search() {
+        let (_, body) = search_body(
             WebSearchConfig {
+                context_size: WebSearchContextSize::Low,
                 user_location: Some(WebSearchLocation {
                     country: Some("JP".to_string()),
                     city: Some("Kyoto".to_string()),
@@ -828,34 +985,54 @@ mod web_search {
                 ..WebSearchConfig::enabled(WebSearchMode::Live)
             },
             WireApi::ChatCompletions,
+            json!({"choices": [{"message": {"content": "x"}}], "citations": []}),
+            "ramen",
+            &[],
         )
         .await;
+        assert_eq!(body["search_parameters"]["max_search_results"], json!(5));
         assert_eq!(
             body["search_parameters"]["sources"],
             json!([{"type": "web", "country": "JP"}])
         );
     }
 
+    /// A model that names the search model pays for that one rather than for
+    /// the conversation's.
     #[tokio::test]
-    async fn the_context_size_chooses_how_many_results_are_paid_for() {
-        for (size, expected) in [
-            (WebSearchContextSize::Low, 5),
-            (WebSearchContextSize::Medium, 15),
-            (WebSearchContextSize::High, 30),
-        ] {
-            let body = body_for(
-                WebSearchConfig {
-                    context_size: size,
-                    ..WebSearchConfig::enabled(WebSearchMode::Live)
-                },
-                WireApi::ChatCompletions,
-            )
-            .await;
-            assert_eq!(
-                body["search_parameters"]["max_search_results"],
-                json!(expected)
-            );
-        }
+    async fn a_named_search_model_runs_the_search() {
+        let (_, body) = search_body(
+            WebSearchConfig {
+                model: Some("grok-4-fast".to_string()),
+                ..WebSearchConfig::enabled(WebSearchMode::Live)
+            },
+            WireApi::Responses,
+            responses_reply(),
+            "anything",
+            &[],
+        )
+        .await;
+        assert_eq!(body["model"], json!("grok-4-fast"));
+    }
+
+    /// A search that found nothing is reported as a failure rather than as a
+    /// successful search of nothing: a model handed an empty result under the
+    /// heading "here is what the web says" writes as though it had one.
+    #[tokio::test]
+    async fn an_empty_result_is_an_error_rather_than_an_empty_answer() {
+        let (results, _) = search_body(
+            WebSearchConfig::enabled(WebSearchMode::Live),
+            WireApi::Responses,
+            json!({"output": []}),
+            "anything",
+            &[],
+        )
+        .await;
+        let error = results.expect_err("an empty search is an error");
+        assert!(
+            error.to_string().contains("no results"),
+            "{error} should say the search came back empty"
+        );
     }
 
     /// xAI's search is always a live fetch. A deployment that wrote down it may
