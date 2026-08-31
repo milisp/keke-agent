@@ -43,6 +43,54 @@ Dependencies point strictly downward. Rank is enforced by
 crates growing a mutual dependency is exactly the failure a tier-only check would
 miss.
 
+```mermaid
+graph TD
+    subgraph Tier 3 [Tier 3 - Surfaces]
+        keke-cli --> keke-tui
+        keke-cli --> keke-acp
+    end
+
+    subgraph Tier 2 [Tier 2 - Plugins]
+        keke-provider-grok
+        keke-provider-codex
+        keke-plan
+        keke-mcp
+    end
+
+    subgraph Tier 1.5 [Tier 1.5 - Engine-dependent Tools]
+        keke-subagent
+    end
+
+    subgraph Tier 1 [Tier 1 - Engine]
+        keke-core
+        keke-config
+        keke-workspace
+    end
+
+    subgraph Tier 0.5 [Tier 0.5 - Shared Implementation]
+        keke-wire
+        keke-catalog
+        keke-oauth
+    end
+
+    subgraph Tier 0 [Tier 0 - Contract Crates]
+        keke-paths
+        keke-protocol
+        keke-tool
+        keke-provider-api
+        keke-auth-api
+        keke-plugin-api
+    end
+
+    Tier 3 --> Tier 2
+    Tier 3 --> Tier 1
+    Tier 2 --> Tier 0
+    Tier 1.5 --> Tier 1
+    Tier 1 --> Tier 0.5
+    Tier 1 --> Tier 0
+    Tier 0.5 --> Tier 0
+```
+
 ### Tier 0 — contract crates
 
 Types and traits, minimal dependencies. This is the stable surface everything

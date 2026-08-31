@@ -3,7 +3,45 @@
 [中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
 keke is a local terminal coding agent built for zero-vendor lock-in. 
-Works with subscriptions you already have (ChatGPT, Grok), standard API keys, or self-hosted local models.k
+Works with subscriptions you already have (ChatGPT, Grok), standard API keys, or self-hosted local models.
+
+## Architecture at a Glance
+
+keke enforces a strict, automated tier hierarchy (`check-layering.py`). Higher tiers can depend on lower tiers, but **NEVER** vice versa. The core is 100% vendor-free and anti-rot.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Tier 3: Surfaces                         │
+│             (keke-cli, keke-tui, keke-acp)                  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ (Strictly Downward Dependencies)
+┌──────────────────────────────▼──────────────────────────────┐
+│                    Tier 2: Plugins                          │
+│       (keke-provider-grok, keke-mcp, keke-plan, etc.)       │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────┐
+│             Tier 1.5: Engine-Dependent Tools                │
+│                     (keke-subagent)                         │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────┐
+│                    Tier 1: Engine Core                      │
+│        (keke-core: Vendor-Free Session & Turn Loop)         │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────┐
+│              Tier 0.5: Shared Implementation                │
+│            (keke-wire, keke-catalog, keke-oauth)            │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────┐
+│               Tier 0: Seams & Contract Crates               │
+│     (keke-paths, keke-protocol, keke-tool, APIs, etc.)      │
+└─────────────────────────────────────────────────────────────┘
+          ▲
+          └───── [ Enforced by CI: scripts/check-layering.py ]
+```
 
 ## Why keke?
 
