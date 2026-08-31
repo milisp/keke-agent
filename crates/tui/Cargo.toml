@@ -15,6 +15,7 @@ keke-config = { workspace = true }
 keke-config-types = { workspace = true }
 keke-fuzzy-file-search = { workspace = true }
 keke-paths = { workspace = true }
+keke-plugin = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 anyhow = { workspace = true }

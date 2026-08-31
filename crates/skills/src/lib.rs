@@ -27,6 +27,7 @@
 
 use std::sync::Arc;
 
+use keke_config_types::SkillSelection;
 use keke_plugin::PluginSet;
 use keke_plugin::ResolvedSkill;
 use keke_plugin_api::ContextContributor;
@@ -118,9 +119,39 @@ impl ContextContributor for SkillsContributor {
 }
 
 /// Register plugin-contributed skills as model-visible context.
+///
+/// Every skill a person did not turn off; see [`install_with`] when there is a
+/// configured selection to honor.
 pub fn install(registry: &mut ExtensionRegistryBuilder, plugins: &PluginSet) {
-    let skills: Vec<ResolvedSkill> = plugins.skills().cloned().collect();
+    install_with(registry, plugins, &SkillSelection::default());
+}
+
+/// Register the enabled skills as model-visible context.
+///
+/// A disabled skill is filtered out here rather than marked, because the index
+/// fragment is the whole of what the model can see: a skill that is still
+/// listed is one the model will still ask to read.
+pub fn install_with(
+    registry: &mut ExtensionRegistryBuilder,
+    plugins: &PluginSet,
+    selection: &SkillSelection,
+) {
+    let skills: Vec<ResolvedSkill> = enabled(plugins, selection).cloned().collect();
     registry.context_contributor(Arc::new(SkillsContributor { skills }));
+}
+
+/// The skills of `plugins` this deployment kept, in discovery order.
+///
+/// The one place the selection is applied, so what the model is told about,
+/// what a surface offers, and what [`read_skill_body_with`] will open cannot
+/// drift apart.
+pub fn enabled<'a>(
+    plugins: &'a PluginSet,
+    selection: &'a SkillSelection,
+) -> impl Iterator<Item = &'a ResolvedSkill> + 'a {
+    plugins
+        .skills()
+        .filter(move |skill| !selection.is_disabled(&skill.plugin, &skill.name))
 }
 
 /// Load a skill's body by its qualified `plugin:name`, with the YAML
@@ -131,8 +162,20 @@ pub fn install(registry: &mut ExtensionRegistryBuilder, plugins: &PluginSet) {
 /// refused without touching the filesystem, since a qualified name reaching
 /// here may have been chosen by the model.
 pub async fn read_skill_body(plugins: &PluginSet, qualified: &str) -> Result<String, SkillError> {
-    let path = plugins
-        .skills()
+    read_skill_body_with(plugins, &SkillSelection::default(), qualified).await
+}
+
+/// Load an enabled skill's body by its qualified `plugin:name`.
+///
+/// A disabled skill is `Unknown` rather than a distinct refusal: to everything
+/// downstream it is simply not a skill this session has, which is what keeps a
+/// turned-off skill from being reachable by naming it exactly.
+pub async fn read_skill_body_with(
+    plugins: &PluginSet,
+    selection: &SkillSelection,
+    qualified: &str,
+) -> Result<String, SkillError> {
+    let path = enabled(plugins, selection)
         .find(|skill| format!("{}:{}", skill.plugin, skill.name) == qualified)
         .map(|skill| skill.path.clone())
         .ok_or_else(|| SkillError::Unknown {
@@ -146,37 +189,25 @@ pub async fn read_skill_body(plugins: &PluginSet, qualified: &str) -> Result<Str
             source,
         })?;
 
-    Ok(strip_frontmatter(&text).to_string())
-}
-
-/// Strip a leading `---\n ... \n---` YAML block, returning the body that
-/// follows it. Text with no frontmatter is returned unchanged.
-fn strip_frontmatter(text: &str) -> &str {
-    let Some(rest) = text.strip_prefix("---") else {
-        return text;
-    };
-    let Some(end) = rest.find("\n---") else {
-        return text;
-    };
-    // Skip the closing `---` line itself, plus its trailing newline if present.
-    let after = &rest[end + 4..];
-    let after = after.strip_prefix('\n').unwrap_or(after);
-    after.trim_start_matches('\n')
+    Ok(keke_plugin::markdown_body(&text).to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The metadata was summarized into the index line already; sending it
+    /// again is context spent on something the reader has acted on.
     #[test]
     fn frontmatter_is_stripped_leaving_only_the_body() {
         let text = "---\nname: review\ndescription: how we review\n---\n\nBody text.\n";
-        assert_eq!(strip_frontmatter(text), "Body text.\n");
+        assert_eq!(keke_plugin::markdown_body(text), "Body text.\n");
     }
 
     #[test]
-    fn text_without_frontmatter_passes_through() {
-        let text = "Body text.\n";
-        assert_eq!(strip_frontmatter(text), "Body text.\n");
+    fn a_disabled_skill_is_not_offered_to_the_model() {
+        let selection = SkillSelection::new(vec!["acme:review".to_string()]).expect("valid");
+        assert!(selection.is_disabled("acme", "review"));
+        assert!(!selection.is_disabled("other", "review"));
     }
 }

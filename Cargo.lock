@@ -1984,6 +1984,7 @@ dependencies = [
 name = "keke-skills"
 version = "0.1.15"
 dependencies = [
+ "keke-config-types",
  "keke-paths",
  "keke-plugin",
  "keke-plugin-api",
@@ -2075,6 +2076,7 @@ dependencies = [
  "keke-fuzzy-file-search",
  "keke-oauth",
  "keke-paths",
+ "keke-plugin",
  "keke-protocol",
  "keke-provider-api",
  "nucleo",

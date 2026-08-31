@@ -46,6 +46,7 @@ pub use contributions::ResolvedCommand;
 pub use contributions::ResolvedHook;
 pub use contributions::ResolvedMcpServer;
 pub use contributions::ResolvedSkill;
+pub use contributions::markdown_body;
 pub use local::McpDocument;
 pub use manifest::Author;
 pub use manifest::COMMANDS_DIR;

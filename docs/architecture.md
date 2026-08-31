@@ -539,6 +539,25 @@ A plugin the person installed into their own directory is not interrogated:
 asking about something they placed there themselves would train the answer to
 the question that matters into a reflex.
 
+### Skills are for both readers
+
+A skill's one-line description goes into every request and its body stays on
+disk until it is wanted — that is what keeps twenty installed plugins from
+costing twenty bodies a turn. But a skill written only for the model is one a
+person can read about in the slash menu and have no way to run, so every
+enabled skill is also offered as a slash command, in the same namespace as the
+builtins and the plugins' own commands. The collision rule is the one that was
+already there: a bare name goes to a sole claimant, contested names are
+qualified `plugin:name`, and no contribution can take a builtin's name. Which
+kind a row is stays on screen, because running someone else's procedure should
+not be a surprise.
+
+Which skills a deployment wants is `[skills] disabled` in configuration rather
+than something each plugin decides for everyone who installs it. Disabling is
+total — out of the model's index, out of the command list, and unreadable by
+name — because a skill still reachable after being turned off has not been
+turned off. `keke-skills::enabled` is the single filter all three go through.
+
 `keke-plugin` sits below the extension crates that consume it: it depends on
 `keke-paths` and nothing else, so a manifest can be parsed and listed without
 linking the engine. `keke-skills`, `keke-hooks`, and `keke-mcp` each read a

@@ -786,6 +786,76 @@ impl Default for PluginTimeouts {
     }
 }
 
+/// Which of the skills a plugin ships this deployment actually wants.
+///
+/// A skill costs context every turn — its index line is in every request — and
+/// costs a name in the slash namespace. Whether a particular one earns that is
+/// exactly a deployment's call, so it is a validated field here rather than
+/// something a plugin decides for everyone who installs it (`AGENTS.md`
+/// invariant 9).
+///
+/// Disabling is total: a disabled skill is not listed for the model, is not
+/// offered as a command, and cannot be read by name. A skill a person can
+/// still reach after turning it off has not been turned off.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillSelection {
+    /// Skills to leave out, each written as `plugin:name`, as a bare `name`
+    /// matching that skill in every plugin, or as `plugin:*` for all of one
+    /// plugin's.
+    disabled: Vec<String>,
+}
+
+impl SkillSelection {
+    /// Build a selection, refusing a pattern that names nothing.
+    ///
+    /// An empty entry is a typo or a half-written line, never a request to
+    /// disable everything: silently reading it as "match all" would turn a
+    /// stray comma into a session with no skills at all (`AGENTS.md`
+    /// invariant 8).
+    pub fn new(disabled: Vec<String>) -> Result<Self, String> {
+        for pattern in &disabled {
+            if pattern.trim().is_empty() {
+                return Err(
+                    "skills.disabled has an empty entry; write plugin:name, name, or plugin:*"
+                        .to_string(),
+                );
+            }
+            if let Some((plugin, name)) = pattern.split_once(':')
+                && (plugin.trim().is_empty() || name.trim().is_empty())
+            {
+                return Err(format!(
+                    "skills.disabled entry {pattern:?} is missing a side of its `plugin:name`"
+                ));
+            }
+        }
+        Ok(Self { disabled })
+    }
+
+    /// Whether `plugin:name` is one a person asked not to have.
+    #[must_use]
+    pub fn is_disabled(&self, plugin: &str, name: &str) -> bool {
+        self.disabled.iter().any(|pattern| {
+            let pattern = pattern.trim();
+            match pattern.split_once(':') {
+                Some((wanted_plugin, wanted_name)) => {
+                    wanted_plugin.trim() == plugin
+                        && (wanted_name.trim() == "*" || wanted_name.trim() == name)
+                }
+                // A bare name is the form a person types after reading the
+                // slash menu, where the plugin is not on screen.
+                None => pattern == name,
+            }
+        })
+    }
+
+    /// The patterns as configured, for `keke doctor` and for round-tripping a
+    /// config file without inventing entries.
+    #[must_use]
+    pub fn patterns(&self) -> &[String] {
+        &self.disabled
+    }
+}
+
 /// Bounds on the subagents a session may run.
 ///
 /// Both numbers are deployment-varying in the way invariant 9 in `AGENTS.md`

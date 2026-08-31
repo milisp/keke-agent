@@ -5,6 +5,13 @@
 //! share it because a person typing `/` wants one list, not two — but they stay
 //! distinct in the type, because a plugin must never be able to redefine what
 //! `/quit` does.
+//!
+//! A plugin's prompt files arrive as two kinds. A *command* is one a person was
+//! always meant to type. A *skill* is written for the model, and it is here too
+//! because a skill that only the model can reach is one a person cannot try:
+//! they read its one-line description in the menu and have no way to run it. So
+//! a skill is offered under its own name as well, and which kind a row is stays
+//! on screen — running someone else's procedure should not be a surprise.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,7 +26,27 @@ pub enum SlashAction {
     Builtin(Builtin),
     /// A plugin-contributed prompt file; its body is sent as the prompt, with
     /// whatever the person typed after the name appended.
-    Prompt(PathBuf),
+    Prompt { path: PathBuf, kind: PromptKind },
+}
+
+/// Which kind of prompt file a row runs, for the badge beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    /// `commands/<name>.md`: written to be typed.
+    Command,
+    /// `skills/<name>/SKILL.md`: written for the model, offered here too.
+    Skill,
+}
+
+impl PromptKind {
+    /// How the kind is written in the menu, beside the plugin that brought it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Skill => "skill",
+        }
+    }
 }
 
 /// The commands the surface implements itself.
@@ -60,10 +87,12 @@ pub struct SlashCommand {
     pub name: String,
     pub description: String,
     pub action: SlashAction,
+    /// The plugin that brought it, for the badge. `None` for a builtin.
+    pub plugin: Option<String>,
 }
 
 impl SlashCommand {
-    /// A prompt file a plugin ships. `plugin` is kept so the name can be
+    /// A command file a plugin ships. `plugin` is kept so the name can be
     /// qualified if another plugin contributes the same one.
     #[must_use]
     pub fn prompt(
@@ -77,6 +106,22 @@ impl SlashCommand {
             name: name.into(),
             description: description.into(),
             path: path.into(),
+            kind: PromptKind::Command,
+        }
+    }
+
+    /// A skill a plugin ships, offered under its own name so a person can run
+    /// the procedure the model was told about.
+    #[must_use]
+    pub fn skill(
+        plugin: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        path: impl Into<PathBuf>,
+    ) -> PluginCommand {
+        PluginCommand {
+            kind: PromptKind::Skill,
+            ..Self::prompt(plugin, name, description, path)
         }
     }
 }
@@ -88,6 +133,7 @@ pub struct PluginCommand {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    pub kind: PromptKind,
 }
 
 /// The command list a person completes against.
@@ -98,6 +144,10 @@ pub struct SlashCommands {
 
 impl SlashCommands {
     /// Builtins plus whatever the plugins contribute.
+    ///
+    /// Skills and commands share this namespace with the builtins, so a
+    /// skill named `review` and a command named `review` contest the bare name
+    /// the same way two commands would.
     ///
     /// A bare name is given to a plugin command only when it is the sole
     /// claimant; two plugins contributing `review` both become
@@ -125,7 +175,11 @@ impl SlashCommands {
             entries.push(SlashCommand {
                 name,
                 description: command.description.clone(),
-                action: SlashAction::Prompt(command.path.clone()),
+                action: SlashAction::Prompt {
+                    path: command.path.clone(),
+                    kind: command.kind,
+                },
+                plugin: Some(command.plugin.clone()),
             });
         }
         entries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -210,6 +264,7 @@ fn builtins() -> Vec<SlashCommand> {
         name: name.to_string(),
         description: description.to_string(),
         action: SlashAction::Builtin(builtin),
+        plugin: None,
     })
     .collect()
 }
@@ -362,6 +417,53 @@ mod tests {
     #[test]
     fn a_plugin_cannot_take_a_builtin_name() {
         let commands = SlashCommands::new(vec![contributed("sneaky", "quit")]);
+        assert_eq!(
+            commands.find("quit").map(|entry| entry.action.clone()),
+            Some(SlashAction::Builtin(Builtin::Quit))
+        );
+        assert!(commands.find("sneaky:quit").is_some());
+    }
+
+    fn contributed_skill(plugin: &str, name: &str) -> PluginCommand {
+        SlashCommand::skill(
+            plugin,
+            name,
+            "does a thing",
+            format!("/tmp/{plugin}/{name}/SKILL.md"),
+        )
+    }
+
+    /// A skill only the model can reach is one a person cannot try.
+    #[test]
+    fn a_skill_is_offered_under_its_own_name() {
+        let commands = SlashCommands::new(vec![contributed_skill("acme", "review")]);
+        let entry = commands.find("review").expect("the skill is offered");
+        assert_eq!(entry.plugin.as_deref(), Some("acme"));
+        assert!(matches!(
+            entry.action,
+            SlashAction::Prompt {
+                kind: PromptKind::Skill,
+                ..
+            }
+        ));
+    }
+
+    /// Skills share the one namespace, so a skill cannot quietly take a name a
+    /// command already claims — or the other way round.
+    #[test]
+    fn a_skill_and_a_command_claiming_one_name_are_both_qualified() {
+        let commands = SlashCommands::new(vec![
+            contributed("reviewer", "review"),
+            contributed_skill("acme", "review"),
+        ]);
+        assert!(commands.find("review").is_none());
+        assert!(commands.find("reviewer:review").is_some());
+        assert!(commands.find("acme:review").is_some());
+    }
+
+    #[test]
+    fn a_skill_cannot_take_a_builtin_name() {
+        let commands = SlashCommands::new(vec![contributed_skill("sneaky", "quit")]);
         assert_eq!(
             commands.find("quit").map(|entry| entry.action.clone()),
             Some(SlashAction::Builtin(Builtin::Quit))

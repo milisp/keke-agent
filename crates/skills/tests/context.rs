@@ -32,6 +32,22 @@ fn plugin_with_skill(root: &Path, plugin: &str, skill: &str, description: &str, 
     );
 }
 
+async fn contributed_fragments_with(
+    set: &PluginSet,
+    selection: &keke_config_types::SkillSelection,
+) -> Vec<keke_plugin_api::ContextFragment> {
+    let mut builder = ExtensionRegistryBuilder::new();
+    keke_skills::install_with(&mut builder, set, selection);
+    let registry = builder.build();
+    let ctx = ExtensionContext::new(SessionId::new(), ThreadId::new());
+
+    let mut fragments = Vec::new();
+    for contributor in registry.context_contributors() {
+        fragments.extend(contributor.contribute_turn_context(&ctx).await);
+    }
+    fragments
+}
+
 async fn contributed_fragments(set: &PluginSet) -> Vec<keke_plugin_api::ContextFragment> {
     let mut builder = ExtensionRegistryBuilder::new();
     keke_skills::install(&mut builder, set);
@@ -139,4 +155,66 @@ async fn reading_an_unqualified_or_unknown_name_is_refused_without_touching_disk
         .expect_err("not a known skill");
 
     assert!(matches!(error, keke_skills::SkillError::Unknown { .. }));
+}
+
+/// Disabling is total: what the model is told about is the whole of what it
+/// can ask for, so a skill turned off has to leave the index rather than be
+/// marked in it.
+#[tokio::test]
+async fn a_disabled_skill_is_not_listed_for_the_model() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    plugin_with_skill(tmp.path(), "acme", "review", "how we review", "a");
+    plugin_with_skill(tmp.path(), "acme", "deploy", "how we deploy", "b");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let set = PluginSet::compose(vec![plugin]).expect("composes");
+    let selection =
+        keke_config_types::SkillSelection::new(vec!["acme:review".to_string()]).expect("valid");
+
+    let fragments = contributed_fragments_with(&set, &selection).await;
+
+    let text = &fragments[0].text;
+    assert!(!text.contains("acme:review"));
+    assert!(text.contains("acme:deploy"));
+}
+
+/// A skill a person can still reach by naming it exactly has not been turned
+/// off.
+#[tokio::test]
+async fn a_disabled_skill_cannot_be_read_by_name() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    plugin_with_skill(tmp.path(), "acme", "review", "how we review", "body");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let set = PluginSet::compose(vec![plugin]).expect("composes");
+    let selection =
+        keke_config_types::SkillSelection::new(vec!["review".to_string()]).expect("valid");
+
+    let error = keke_skills::read_skill_body_with(&set, &selection, "acme:review")
+        .await
+        .expect_err("disabled");
+
+    assert!(matches!(error, keke_skills::SkillError::Unknown { .. }));
+}
+
+/// Every skill of one plugin, without listing them one by one.
+#[tokio::test]
+async fn a_plugin_wildcard_disables_all_of_its_skills() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    plugin_with_skill(tmp.path(), "acme", "review", "how we review", "a");
+    plugin_with_skill(tmp.path(), "acme", "deploy", "how we deploy", "b");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let set = PluginSet::compose(vec![plugin]).expect("composes");
+    let selection =
+        keke_config_types::SkillSelection::new(vec!["acme:*".to_string()]).expect("valid");
+
+    let fragments = contributed_fragments_with(&set, &selection).await;
+
+    assert!(fragments.is_empty(), "nothing left to list");
+}
+
+/// Invariant 8: a half-written line is a mistake to report, not a request to
+/// disable everything.
+#[test]
+fn an_empty_pattern_is_refused_rather_than_matching_everything() {
+    assert!(keke_config_types::SkillSelection::new(vec![String::new()]).is_err());
+    assert!(keke_config_types::SkillSelection::new(vec!["acme:".to_string()]).is_err());
 }

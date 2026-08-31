@@ -407,6 +407,30 @@ impl PlanSetup {
     }
 }
 
+/// The configured values a composition reads, borrowed from a `Config`.
+///
+/// One struct rather than four parameters: they are all answers to "what did
+/// this deployment ask for", they are always passed together, and a call site
+/// that got their order wrong would compile.
+#[derive(Clone, Copy)]
+pub(crate) struct Settings<'a> {
+    pub timeouts: keke_config_types::PluginTimeouts,
+    pub catalog_ttl: keke_config_types::ModelCatalogTtl,
+    pub subagent_limits: keke_config_types::SubagentLimits,
+    pub skills: &'a keke_config_types::SkillSelection,
+}
+
+impl<'a> From<&'a keke_config::Config> for Settings<'a> {
+    fn from(config: &'a keke_config::Config) -> Self {
+        Self {
+            timeouts: config.plugins,
+            catalog_ttl: config.model_catalog_ttl,
+            subagent_limits: config.subagents,
+            skills: &config.skills,
+        }
+    }
+}
+
 /// Everything the composition root assembled.
 pub(crate) struct Composed {
     /// Kept so a surface can ask whether a key-only endpoint's credential
@@ -422,6 +446,10 @@ pub(crate) struct Composed {
     /// composition is for a session. `session_builder` hands it to the builder
     /// so the engine and the extension read the same cell.
     pub plan_mode: Option<Arc<keke_core::SessionModeSwitch>>,
+    /// The enabled skills, for a surface to offer under their own names. A
+    /// skill only the model can reach is one a person cannot try: they read
+    /// its one line in the menu with no way to run it.
+    pub skills: Vec<keke_plugin::ResolvedSkill>,
     /// The plugins' slash commands. Kept as data rather than as a registry
     /// because a command is a prompt file: only a surface that has someone to
     /// type it means anything by it.
@@ -437,13 +465,17 @@ impl Composed {
     pub(crate) fn build(
         home: &keke_config_types::HomeLayout,
         declared: &[keke_config_types::ProviderDeclaration],
-        timeouts: keke_config_types::PluginTimeouts,
-        catalog_ttl: keke_config_types::ModelCatalogTtl,
-        subagent_limits: keke_config_types::SubagentLimits,
+        settings: &Settings<'_>,
         approvals: Option<Arc<keke_acp::Approvals>>,
         plan: Option<PlanSetup>,
         route: &str,
     ) -> Result<Self> {
+        let &Settings {
+            timeouts,
+            catalog_ttl,
+            subagent_limits,
+            skills,
+        } = settings;
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
         // repository controls, and cloning a repository is not consent to run
@@ -597,7 +629,7 @@ impl Composed {
         // Registered before the plugin packs so a plugin can shadow
         // `spawn_agent` with its own, the same way it can shadow a built-in.
         let subagents = keke_subagent::install(&mut extensions, subagent_limits);
-        keke_skills::install(&mut extensions, &plugins);
+        keke_skills::install_with(&mut extensions, &plugins, skills);
         // The credential home is handed in rather than discovered: where the
         // harness keeps state is the composition root's to know. `AuthHome`
         // files remote MCP servers' tokens under their own `mcp/`
@@ -621,6 +653,9 @@ impl Composed {
         }
 
         let commands = plugins.commands().cloned().collect();
+        // Read through the same filter the model's index went through, so what
+        // a person can type and what the model was told about cannot differ.
+        let enabled_skills = keke_skills::enabled(&plugins, skills).cloned().collect();
         Ok(Self {
             credentials,
             auth,
@@ -628,6 +663,7 @@ impl Composed {
             extensions: extensions.build(),
             subagents,
             plan_mode,
+            skills: enabled_skills,
             commands,
         })
     }
