@@ -121,6 +121,7 @@ pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
             }
         }
     }
+    crate::merge_vendor_params(&mut body, request);
     Value::Object(body)
 }
 

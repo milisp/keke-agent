@@ -71,6 +71,7 @@ pub fn chat_completions_body(request: &ModelRequest, stream: bool) -> Value {
     if let Some(effort) = request.reasoning_effort {
         body.insert("reasoning_effort".to_string(), json!(effort.as_str()));
     }
+    crate::merge_vendor_params(&mut body, request);
     Value::Object(body)
 }
 

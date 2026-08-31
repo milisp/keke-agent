@@ -180,7 +180,7 @@ impl Vendors {
         let auth = self.auth_for(declaration, "grok")?;
         let subscription = is_subscription(auth.as_ref());
         let stated_wire = declaration.wire.map(crate::declared::wire_api);
-        Ok(Arc::new(keke_provider_grok::GrokProvider::new(
+        let provider = keke_provider_grok::GrokProvider::new(
             auth,
             keke_provider_grok::Endpoint {
                 route: declaration.route.clone(),
@@ -205,9 +205,11 @@ impl Vendors {
                 // its wire when it stated one, since only the proxy speaks
                 // `responses` for this vendor.
                 fixed_sampling: stated_wire.map_or(subscription, |wire| wire == WireApi::Responses),
+                web_search: declaration.web_search.clone().unwrap_or_default(),
             },
             Some(self.catalog.clone()),
-        )) as ArcProvider)
+        )?;
+        Ok(Arc::new(provider) as ArcProvider)
     }
 
     /// OpenAI, at either the ChatGPT backend or the public API.

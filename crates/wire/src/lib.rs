@@ -333,6 +333,18 @@ impl From<WireModel> for ModelInfo {
     }
 }
 
+/// Fold a provider's own top-level fields into a translated body.
+///
+/// Applied last by every body builder, because the provider that filled
+/// [`ModelRequest::vendor_params`] knows this endpoint and the shared builder
+/// only knows the wire format: where the two disagree about a field, the one
+/// that named the vendor wins.
+fn merge_vendor_params(body: &mut serde_json::Map<String, Value>, request: &ModelRequest) {
+    for (field, value) in &request.vendor_params {
+        body.insert(field.clone(), value.clone());
+    }
+}
+
 /// Tool call arguments travel as a JSON *string* on the OpenAI wires, so a
 /// structured value has to be re-encoded rather than embedded.
 fn arguments_string(arguments: &Value) -> String {

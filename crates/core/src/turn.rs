@@ -162,6 +162,7 @@ impl Session {
                 // run, and a tool the vendor runs for itself is the vendor's to
                 // add.
                 hosted_tools: Vec::new(),
+                vendor_params: serde_json::Map::new(),
                 max_output_tokens: Some(self.config.max_output_tokens.get()),
                 temperature: None,
                 reasoning_effort: self.effort.get(),
@@ -317,6 +318,7 @@ impl Session {
             messages,
             tools: Vec::new(),
             hosted_tools: Vec::new(),
+            vendor_params: serde_json::Map::new(),
             max_output_tokens: Some(self.config.max_output_tokens.get()),
             temperature: None,
             // Summarizing is keke's own errand, not the user's turn, and it is

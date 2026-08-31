@@ -99,8 +99,8 @@ to be exported would spend the wrong quota under the wrong identity.
 
 ### Web Search
 
-An instance of `kind = "codex"` can offer OpenAI's hosted web search, which the
-vendor runs inside the model call:
+An instance of `kind = "codex"` or `kind = "grok"` can offer the vendor's hosted
+web search, which the vendor runs inside the model call:
 
 ```toml
 [providers.codex.web_search]
@@ -123,6 +123,15 @@ vendor — no tool call reaches keke, so nothing you approve or guard locally
 sees it. `allowed_domains` takes hostnames, not URLs, and a restriction written
 against `mode = "disabled"` is rejected at startup rather than silently doing
 nothing.
+
+Not every vendor can express every level. xAI's search always fetches live, so a
+`grok` instance takes `live` or `disabled`; `cached` and `indexed` are refused at
+startup, because approximating either would hand live web access to the
+deployment that wrote down it may not have it. On that vendor `context_size`
+chooses how many results are paid for, `allowed_domains` confines the search to
+those sites (and, with it, to the web — xAI otherwise searches X as well),
+`user_location.country` localizes results, and `include_images` has no
+counterpart and is ignored.
 
 ### Header Values
 

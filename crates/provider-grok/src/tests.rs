@@ -89,7 +89,8 @@ async fn provider_over(server: &MockServer) -> (GrokProvider, Arc<StubAuth>) {
         // No cache: these assert what the endpoint said, and a cache would
         // make the second test in a run assert the first one's answer.
         None,
-    );
+    )
+    .expect("the default endpoint offers no search");
     (provider, auth)
 }
 
@@ -450,7 +451,8 @@ async fn a_configured_effort_reaches_the_endpoint() {
 
 #[test]
 fn provider_info_names_its_route_and_credentials() {
-    let provider = GrokProvider::new(Arc::new(StubAuth::default()), Endpoint::default(), None);
+    let provider = GrokProvider::new(Arc::new(StubAuth::default()), Endpoint::default(), None)
+        .expect("the default endpoint offers no search");
     let info = provider.info();
 
     assert_eq!(info.route, "grok");
@@ -494,6 +496,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
             input_schema: json!({"type": "object"}),
         }],
         hosted_tools: Vec::new(),
+        vendor_params: serde_json::Map::new(),
         max_output_tokens: Some(256),
         temperature: Some(0.5),
         reasoning_effort: None,
@@ -602,6 +605,7 @@ fn cached_provider(server: &MockServer, home: &tempfile::TempDir) -> GrokProvide
             std::time::Duration::from_secs(3600),
         )),
     )
+    .expect("the default endpoint offers no search")
 }
 
 /// The point of the cache: opening the interface twice costs one request.
@@ -682,4 +686,212 @@ async fn an_endpoint_that_fails_with_nothing_cached_falls_back_to_the_bundled_ca
         .expect("a catalog either way");
     assert!(models.iter().any(|model| model.id == "grok-4.6"));
     assert!(models[0].supports_reasoning());
+}
+
+mod web_search {
+    use super::*;
+    use keke_config_types::WebSearchConfig;
+    use keke_config_types::WebSearchContextSize;
+    use keke_config_types::WebSearchLocation;
+    use keke_config_types::WebSearchMode;
+    use keke_provider_api::WireApi;
+
+    fn endpoint(web_search: WebSearchConfig, wire_api: WireApi) -> Endpoint {
+        Endpoint {
+            web_search,
+            wire_api,
+            ..Endpoint::default()
+        }
+    }
+
+    fn built(config: WebSearchConfig, wire_api: WireApi) -> Result<GrokProvider, ProviderError> {
+        GrokProvider::new(
+            Arc::new(StubAuth::default()),
+            endpoint(config, wire_api),
+            None,
+        )
+    }
+
+    /// The body the endpoint actually receives, which is where a field dropped
+    /// between the provider and the wire would show up.
+    async fn body_for(config: WebSearchConfig, wire_api: WireApi) -> serde_json::Value {
+        let server = MockServer::start().await;
+        let (route, frame) = match wire_api {
+            WireApi::Responses => (
+                "/v1/responses",
+                json!({"type": "response.output_text.delta", "delta": "hi"}),
+            ),
+            _ => (
+                "/v1/chat/completions",
+                json!({"choices":[{"delta":{"content":"hi"}}]}),
+            ),
+        };
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(stream_response(sse(&[&frame.to_string()])))
+            .mount(&server)
+            .await;
+        let provider = GrokProvider::new(
+            Arc::new(StubAuth::default()),
+            Endpoint {
+                base_url: format!("{}/v1", server.uri()),
+                ..endpoint(config, wire_api)
+            },
+            None,
+        )
+        .expect("this configuration is expressible at xAI");
+
+        provider
+            .stream(request())
+            .await
+            .expect("stream starts")
+            .collect::<Vec<_>>()
+            .await;
+
+        let requests = server.received_requests().await.expect("recorded");
+        serde_json::from_slice(&requests[0].body).expect("a JSON request body")
+    }
+
+    /// The default: a hosted search bills a person for fetches no guard sees,
+    /// so nothing about one is sent until someone asks for it.
+    #[tokio::test]
+    async fn no_search_is_offered_until_it_is_configured() {
+        let body = body_for(WebSearchConfig::default(), WireApi::ChatCompletions).await;
+        assert!(body.get("search_parameters").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_enabled_search_travels_beside_the_messages_on_chat_completions() {
+        let body = body_for(
+            WebSearchConfig::enabled(WebSearchMode::Live),
+            WireApi::ChatCompletions,
+        )
+        .await;
+        let params = &body["search_parameters"];
+
+        // `auto`, not `on`: an offered search the model may decline.
+        assert_eq!(params["mode"], json!("auto"));
+        assert_eq!(params["return_citations"], json!(true));
+        assert_eq!(params["max_search_results"], json!(15));
+        // Unconstrained, so xAI keeps its own default sources rather than being
+        // narrowed to web alone by a list naming only web.
+        assert!(params.get("sources").is_none());
+        // The translation adds the vendor's field without disturbing the wire's.
+        assert_eq!(body["model"], json!("grok-4.6"));
+        assert_eq!(body["stream"], json!(true));
+    }
+
+    /// The same configuration, in the place the other wire keeps it.
+    #[tokio::test]
+    async fn an_enabled_search_travels_in_the_tool_list_on_responses() {
+        let body = body_for(
+            WebSearchConfig::enabled(WebSearchMode::Live),
+            WireApi::Responses,
+        )
+        .await;
+        assert_eq!(body["tools"], json!([{"type": "web_search"}]));
+        assert!(body.get("search_parameters").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_domain_list_confines_the_search_on_both_wires() {
+        let config = WebSearchConfig {
+            allowed_domains: vec!["docs.rs".to_string(), "rust-lang.org".to_string()],
+            ..WebSearchConfig::enabled(WebSearchMode::Live)
+        };
+
+        let chat = body_for(config.clone(), WireApi::ChatCompletions).await;
+        assert_eq!(
+            chat["search_parameters"]["sources"],
+            json!([{"type": "web", "allowed_websites": ["docs.rs", "rust-lang.org"]}])
+        );
+
+        let responses = body_for(config, WireApi::Responses).await;
+        assert_eq!(
+            responses["tools"],
+            json!([{
+                "type": "web_search",
+                "filters": {"allowed_domains": ["docs.rs", "rust-lang.org"]},
+            }])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stated_country_localizes_the_web_source() {
+        let body = body_for(
+            WebSearchConfig {
+                user_location: Some(WebSearchLocation {
+                    country: Some("JP".to_string()),
+                    city: Some("Kyoto".to_string()),
+                    ..WebSearchLocation::default()
+                }),
+                ..WebSearchConfig::enabled(WebSearchMode::Live)
+            },
+            WireApi::ChatCompletions,
+        )
+        .await;
+        assert_eq!(
+            body["search_parameters"]["sources"],
+            json!([{"type": "web", "country": "JP"}])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_context_size_chooses_how_many_results_are_paid_for() {
+        for (size, expected) in [
+            (WebSearchContextSize::Low, 5),
+            (WebSearchContextSize::Medium, 15),
+            (WebSearchContextSize::High, 30),
+        ] {
+            let body = body_for(
+                WebSearchConfig {
+                    context_size: size,
+                    ..WebSearchConfig::enabled(WebSearchMode::Live)
+                },
+                WireApi::ChatCompletions,
+            )
+            .await;
+            assert_eq!(
+                body["search_parameters"]["max_search_results"],
+                json!(expected)
+            );
+        }
+    }
+
+    /// xAI's search is always a live fetch. A deployment that wrote down it may
+    /// not make those must not be handed them because this vendor has no
+    /// narrower tier — the construction fails and names why.
+    #[test]
+    fn an_access_level_xai_cannot_enforce_is_refused_rather_than_approximated() {
+        for mode in [WebSearchMode::Cached, WebSearchMode::Indexed] {
+            for wire_api in [WireApi::ChatCompletions, WireApi::Responses] {
+                let error = built(WebSearchConfig::enabled(mode), wire_api)
+                    .err()
+                    .expect("a mode xAI cannot honor is an error");
+                assert!(
+                    matches!(error, ProviderError::InvalidRequest(_)),
+                    "{error} should be an invalid request"
+                );
+                assert!(
+                    error.to_string().contains(mode.as_str()),
+                    "{error} should name the mode that was refused"
+                );
+            }
+        }
+    }
+
+    /// Disabled is disabled whatever else the config carries: a mode that is
+    /// off cannot be talked back on by a domain list beside it.
+    #[test]
+    fn a_disabled_search_stays_off_and_still_builds() {
+        let provider = built(
+            WebSearchConfig {
+                context_size: WebSearchContextSize::High,
+                ..WebSearchConfig::default()
+            },
+            WireApi::ChatCompletions,
+        )
+        .expect("no search is always expressible");
+        assert!(provider.search.is_none());
+    }
 }

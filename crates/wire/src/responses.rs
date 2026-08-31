@@ -81,6 +81,7 @@ pub fn responses_body(request: &ModelRequest, stream: bool, sampling_is_fixed: b
             json!({ "effort": effort.as_str() }),
         );
     }
+    crate::merge_vendor_params(&mut body, request);
     Value::Object(body)
 }
 

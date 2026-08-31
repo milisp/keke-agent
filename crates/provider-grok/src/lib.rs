@@ -16,11 +16,13 @@
 //! from the composition root rather than being guessed here.
 
 mod catalog;
+mod web_search;
 
 use std::sync::Arc;
 
 use keke_auth_api::AuthProvider;
 use keke_catalog::CatalogCache;
+use keke_config_types::WebSearchConfig;
 use keke_provider_api::ModelInfo;
 use keke_provider_api::ModelProvider;
 use keke_provider_api::ModelRequest;
@@ -30,6 +32,7 @@ use keke_provider_api::ProviderInfo;
 use keke_provider_api::StreamEvent;
 use keke_provider_api::WireApi;
 use keke_wire::WireClient;
+use serde_json::Value;
 
 /// The route key this provider registers under, and the auth id it draws its
 /// credentials from.
@@ -57,6 +60,11 @@ pub struct Endpoint {
     /// Whether this address refuses a request that names a reply budget or a
     /// temperature, as the subscription proxy does.
     pub fixed_sampling: bool,
+    /// Whether this instance offers xAI's own web search, and on what terms.
+    /// Defaults to offering none: the search runs at the vendor, inside the
+    /// model call, where neither the approval seam nor a `ToolGuard` can see
+    /// it — so a person turns it on rather than discovering it is on.
+    pub web_search: WebSearchConfig,
 }
 
 impl Default for Endpoint {
@@ -69,6 +77,7 @@ impl Default for Endpoint {
             base_url: DEFAULT_BASE_URL.to_string(),
             wire_api: WireApi::ChatCompletions,
             fixed_sampling: false,
+            web_search: WebSearchConfig::default(),
         }
     }
 }
@@ -80,15 +89,30 @@ pub struct GrokProvider {
     /// `None` disables caching entirely, which is what a surface with no home
     /// directory — a test — gets.
     cache: Option<CatalogCache>,
+    /// The hosted search this instance asks for, built once because it is the
+    /// same on every request, and in the shape this endpoint's wire wants:
+    /// a `search_parameters` field on chat-completions, a tool entry on
+    /// responses. `None` when the deployment offers none.
+    search: Option<Value>,
 }
 
 impl GrokProvider {
-    #[must_use]
+    /// # Errors
+    ///
+    /// [`ProviderError::InvalidRequest`] when `endpoint.web_search` asks for
+    /// access xAI cannot express — see [`web_search`]. Refused at construction
+    /// rather than per turn, so a deployment learns from its first launch and
+    /// not from its bill.
     pub fn new(
         auth: Arc<dyn AuthProvider>,
         endpoint: Endpoint,
         cache: Option<CatalogCache>,
-    ) -> Self {
+    ) -> Result<Self, ProviderError> {
+        let search = match endpoint.wire_api {
+            WireApi::Responses => web_search::tool(&endpoint.web_search),
+            _ => web_search::parameters(&endpoint.web_search),
+        }
+        .map_err(ProviderError::InvalidRequest)?;
         let base_url = if endpoint.base_url.trim().is_empty() {
             DEFAULT_BASE_URL.to_string()
         } else {
@@ -98,7 +122,7 @@ impl GrokProvider {
         if endpoint.fixed_sampling {
             wire = wire.with_fixed_sampling();
         }
-        Self {
+        Ok(Self {
             info: ProviderInfo {
                 route: endpoint.route,
                 display_name: endpoint.display_name,
@@ -109,7 +133,8 @@ impl GrokProvider {
             },
             wire,
             cache,
-        }
+            search,
+        })
     }
 
     async fn fetch(&self) -> Result<Vec<ModelInfo>, ProviderError> {
@@ -124,10 +149,23 @@ impl ModelProvider for GrokProvider {
         &self.info
     }
 
+    /// The hosted search is attached here rather than by the engine, because
+    /// the engine is not allowed to know that this vendor has one — and because
+    /// it is a property of the endpoint, not of the turn.
     fn stream<'a>(
         &'a self,
-        request: ModelRequest,
+        mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
+        if let Some(search) = &self.search {
+            match self.info.wire_api {
+                WireApi::Responses => request.hosted_tools.push(search.clone()),
+                _ => {
+                    request
+                        .vendor_params
+                        .insert("search_parameters".to_string(), search.clone());
+                }
+            }
+        }
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }
 

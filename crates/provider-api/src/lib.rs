@@ -62,6 +62,19 @@ pub struct ModelRequest {
     /// that owns the wire does, from its own configuration, on the way into
     /// [`ModelProvider::stream`]. A wire format with no hosted tools ignores it.
     pub hosted_tools: Vec<Value>,
+    /// Top-level request fields the *vendor* defines, merged into the body as
+    /// written — xAI's `search_parameters` is the first.
+    ///
+    /// The sibling of [`Self::hosted_tools`], for the vendors that put the same
+    /// capability somewhere other than the tool list: xAI's hosted search is a
+    /// field beside `messages` on its chat-completions wire, so a provider with
+    /// only a tool-list seam could not offer it at all. Opaque for the same
+    /// reason and filled by the same hand — the provider that owns the wire, on
+    /// the way into [`ModelProvider::stream`], never the engine.
+    ///
+    /// Merged last, so a provider deliberately overriding a field the shared
+    /// builder set gets what it asked for rather than losing to it silently.
+    pub vendor_params: serde_json::Map<String, Value>,
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
     /// How hard the model should think, when a level was chosen. `None` leaves
