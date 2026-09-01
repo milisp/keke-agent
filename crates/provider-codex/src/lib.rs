@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use keke_auth_api::AuthProvider;
 use keke_catalog::CatalogCache;
+use keke_config_types::ServiceTier;
 use keke_config_types::WebSearchConfig;
 use keke_provider_api::ModelInfo;
 use keke_provider_api::ModelProvider;
@@ -66,6 +67,10 @@ pub struct CodexProvider {
     /// The hosted search tool this instance advertises, built once because it
     /// is the same on every request. `None` when the deployment offers none.
     web_search: Option<serde_json::Value>,
+    /// The queue this instance's requests are routed into, already in the
+    /// vendor's spelling. `None` leaves the routing unstated, which is what
+    /// lets the endpoint apply the model's own default.
+    service_tier: Option<String>,
 }
 
 /// How to reach OpenAI for one session.
@@ -97,6 +102,12 @@ pub struct Endpoint {
     /// the model call, where neither the approval seam nor a `ToolGuard` can
     /// see it — so a person turns it on rather than discovering it is on.
     pub web_search: WebSearchConfig,
+    /// Which speed this instance's turns are bought at — `ServiceTier::Fast`
+    /// is what a surface calls fast mode. Unset sends no tier at all, leaving
+    /// the endpoint to route the model the way it routes it by default; that
+    /// is deliberately not the same as naming the standard tier, which would
+    /// override a default the account may have set elsewhere.
+    pub service_tier: Option<ServiceTier>,
 }
 
 impl Default for Endpoint {
@@ -112,6 +123,7 @@ impl Default for Endpoint {
             fixed_sampling: true,
             client_version: DEFAULT_CLIENT_VERSION.to_string(),
             web_search: WebSearchConfig::default(),
+            service_tier: None,
         }
     }
 }
@@ -129,6 +141,9 @@ impl CodexProvider {
         }
         let client_version = endpoint.client_version;
         let web_search = web_search::tool(&endpoint.web_search);
+        let service_tier = endpoint
+            .service_tier
+            .map(|tier| tier.request_value().to_string());
         Self {
             info: ProviderInfo {
                 route: endpoint.route,
@@ -142,6 +157,7 @@ impl CodexProvider {
             cache,
             client_version,
             web_search,
+            service_tier,
         }
     }
 
@@ -161,15 +177,26 @@ impl ModelProvider for CodexProvider {
         &self.info
     }
 
-    /// The hosted search is attached here rather than by the engine, because
-    /// the engine is not allowed to know that this vendor has one — and because
-    /// it is a property of the endpoint, not of the turn.
+    /// The hosted search and the service tier are attached here rather than by
+    /// the engine, because the engine is not allowed to know that this vendor
+    /// has either — and because both are properties of the endpoint, not of
+    /// the turn.
+    ///
+    /// The tier is sent as written rather than checked against the model: a
+    /// queue this account cannot buy is refused by the endpoint, naming itself,
+    /// where a check here could only guess from a catalog that may be the
+    /// compiled-in fallback.
     fn stream<'a>(
         &'a self,
         mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
         if let Some(tool) = &self.web_search {
             request.hosted_tools.push(tool.clone());
+        }
+        if let Some(tier) = &self.service_tier {
+            request
+                .vendor_params
+                .insert("service_tier".to_string(), serde_json::json!(tier));
         }
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }

@@ -367,6 +367,7 @@ mod tests {
             proxy_password_env_key: None,
             headers,
             web_search: None,
+            service_tier: None,
         }
     }
 

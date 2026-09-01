@@ -506,6 +506,7 @@ fn pick_local(routes: &[Route]) -> Result<Option<Picked>> {
             proxy_password_env_key: None,
             headers: Default::default(),
             web_search: None,
+            service_tier: None,
         }),
     }))
 }
@@ -655,6 +656,7 @@ fn pick_keyed_preset(
             proxy_password_env_key: None,
             headers: Default::default(),
             web_search: None,
+            service_tier: None,
         }),
     }))
 }
@@ -753,6 +755,7 @@ fn declare(taken: &[Route], need: CredentialNeed) -> Result<Option<ProviderDecla
         proxy_password_env_key: None,
         headers: Default::default(),
         web_search: None,
+        service_tier: None,
     }))
 }
 
@@ -904,6 +907,7 @@ mod tests {
             proxy_password_env_key: None,
             headers: Default::default(),
             web_search: None,
+            service_tier: None,
         };
         let table = toml::to_string(&declared).expect("renders");
         let document = format!("provider = \"nvidia\"\n\n[providers.nvidia]\n{table}");

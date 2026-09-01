@@ -97,11 +97,29 @@ to be exported would spend the wrong quota under the wrong identity.
 | `proxy_password_env_key` | No | Environment variable holding the proxy password |
 | `headers` | No | Extra HTTP headers sent with every request |
 | `web_search` | No | The vendor's own web search — see below. Off unless set |
+| `service_tier` | No | `codex` only: which queue turns are routed at — `fast` or `flex`. Unset leaves the endpoint's own routing |
 
 A block named after a built-in route — `grok`, `codex`, `anthropic`, `ollama` —
 configures that built-in rather than replacing it, so `kind` only needs stating
 when you want a different one. Every other route defaults to
 `openai-compatible` and needs a `base_url`.
+
+### Fast Mode
+
+A `codex` instance can buy its turns at a different speed. `fast` asks for
+priority routing — the same model at the same reasoning effort, answered
+sooner, against a larger share of the account's allowance — and `flex` asks for
+the deferred queue, which is cheaper and slower under load.
+
+```toml
+[providers.codex]
+service_tier = "fast"      # fast (priority routing), flex (deferred)
+```
+
+Left unset, keke names no queue at all, which is not the same as asking for the
+standard one: the endpoint applies whatever default the model and the account
+already have. An account that cannot buy the queue it named is refused by the
+vendor, naming the tier, rather than being quietly downgraded here.
 
 ### Web Search
 
