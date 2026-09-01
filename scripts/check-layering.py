@@ -47,6 +47,11 @@ RANK = {
     "keke-config": 10,
     "keke-credentials": 10,
     "keke-workspace": 11,
+    # per-turn working-tree snapshots, so a rewind can put the files back. A
+    # sibling of the workspace rather than part of it: it owns a git directory
+    # of its own under `$KEKE_HOME` and knows nothing about turns, sessions, or
+    # what asked for a snapshot.
+    "keke-checkpoint": 11,
     "keke-core": 12,
     "keke-subagent": 13,
     # test support sits beside the plugins: it may use the contracts, and
@@ -71,6 +76,7 @@ PLUGIN_RANK = 20
 # crate allowed to name a vendor plugin, because it is the composition root.
 VENDOR_PREFIXES = ("keke-provider-", "keke-auth-")
 VENDOR_FREE = {
+    "keke-checkpoint",
     "keke-core",
     "keke-config",
     "keke-subagent",

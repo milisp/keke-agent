@@ -575,6 +575,9 @@ impl App {
             Update::Subagents(rows) => {
                 self.set_subagents(rows);
             }
+            Update::RewindPoints(points) => self.offer_rewind_points(points),
+            Update::RewindPreview { turn, files } => self.preview_rewind(turn, files),
+            Update::Rewound(rewound) => self.report_rewind(&rewound),
             Update::SessionReset => {
                 self.transcript.clear();
                 self.set_subagents(Vec::new());

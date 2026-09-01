@@ -263,6 +263,17 @@ trigger_percent = 80          # Percentage of context window at which compaction
 keep_recent_messages = 4      # Messages at the tail always kept verbatim
 context_window = 128000       # Context window size compaction measures against
 
+# Checkpoints: a snapshot of the working tree per turn, so a rewind (esc esc)
+# can put the files back and not only the conversation.
+#
+# Snapshots live under $KEKE_HOME beside the session log, in a git repository of
+# keke's own — never the project's, which keke does not commit to, stash, or
+# stage. The project's .gitignore is honoured, so build output and node_modules
+# stay out. A turn that only talks costs nothing: the snapshot is taken before
+# the turn first runs a tool that can write.
+[checkpoints]
+enabled = true
+
 # Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
 model_catalog_ttl_seconds = 21600  # 6 hours default
 

@@ -12,6 +12,8 @@ pub use conversation::Opened;
 pub use conversation::PermissionAnswer;
 pub use conversation::PermissionId;
 pub use conversation::PluginCommand;
+pub use conversation::RewindPoint;
+pub use conversation::Rewound;
 pub use conversation::ScriptedConversation;
 pub use conversation::SessionListing;
 pub use conversation::SubagentView;

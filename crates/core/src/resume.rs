@@ -151,6 +151,10 @@ pub struct ResumedSession {
     /// an increment — this is how full the window is on resume. Distinct from
     /// `usage`, whose additive inputs answer "what did it cost", not "how full".
     pub context_input: u64,
+    /// The working-tree snapshot each user turn started from, by turn ordinal.
+    /// Empty for a log written with checkpoints off, which is an ordinary
+    /// resume: the conversation still winds back, the files just cannot.
+    pub snapshots: std::collections::BTreeMap<usize, String>,
     pub cwd: Option<String>,
     /// The model that answered the last logged step, if the log named one.
     /// Falls back to `SessionStart`'s model when no step did — a log written
@@ -359,6 +363,7 @@ pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, Rol
         history: history_from_log(&events),
         usage: meta.usage,
         context_input: meta.context(),
+        snapshots: meta.snapshots.clone(),
         path,
     })
 }
@@ -416,14 +421,18 @@ fn summarize(log: &LogPath) -> Result<SessionSummary, RolloutError> {
 pub fn history_from_log(events: &[SessionEvent]) -> Vec<Message> {
     let baseline = events.iter().rposition(|event| match event {
         SessionEvent::ModelRequest { messages, .. } => !messages.is_empty(),
-        SessionEvent::Rewound { .. } => true,
+        // A files-only rewind left the conversation alone and is no baseline.
+        SessionEvent::Rewound { history, .. } => history.is_some(),
         _ => false,
     });
 
     let (mut history, tail) = match baseline {
         Some(at) => match &events[at] {
             SessionEvent::ModelRequest { messages, .. } => (messages.clone(), &events[at + 1..]),
-            SessionEvent::Rewound { history, .. } => (history.clone(), &events[at + 1..]),
+            SessionEvent::Rewound {
+                history: Some(history),
+                ..
+            } => (history.clone(), &events[at + 1..]),
             _ => unreachable!("rposition matched a snapshot"),
         },
         None => (Vec::new(), events),

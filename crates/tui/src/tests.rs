@@ -15,6 +15,7 @@ use keke_config_types::ApprovalPolicy;
 use keke_config_types::SessionMode;
 use keke_protocol::ContentBlock;
 use keke_protocol::ReasoningEffort;
+use keke_protocol::RewindScope;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolCallId;
@@ -2480,11 +2481,25 @@ fn two_answers() -> Vec<Vec<Update>> {
     ]
 }
 
-/// Let the spawned rewind reach the conversation.
-async fn settle() {
-    for _ in 0..4 {
+/// Let whatever the surface asked the agent come back and be applied.
+///
+/// The overlay is filled in over the seam — what can be gone back to, and what
+/// a restore would touch — so a test that did not pump this would be asserting
+/// on a half-open overlay no person would ever see.
+async fn settle(app: &mut App, local: &mut UnboundedReceiver<Update>) {
+    for _ in 0..8 {
         tokio::task::yield_now().await;
+        while let Ok(update) = local.try_recv() {
+            app.apply(update);
+        }
     }
+}
+
+/// Esc Esc, and let the list of what was said arrive.
+async fn open_rewind(app: &mut App, local: &mut UnboundedReceiver<Update>) {
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
+    settle(app, local).await;
 }
 
 #[tokio::test]
@@ -2502,11 +2517,10 @@ async fn one_escape_does_not_open_the_rewind() {
 
 #[tokio::test]
 async fn two_escapes_offer_everything_that_was_said() {
-    let (mut app, _scripted, mut updates, _local) = app_with(two_answers());
+    let (mut app, _scripted, mut updates, mut local) = app_with(two_answers());
     two_turns(&mut app, &mut updates).await;
 
-    app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::Esc));
+    open_rewind(&mut app, &mut local).await;
 
     let rewind = app.rewind().expect("the overlay opens on the second esc");
     let offered: Vec<&str> = rewind
@@ -2560,15 +2574,73 @@ async fn a_busy_turn_still_takes_escape_as_an_interrupt() {
     assert!(app.rewind().is_none());
 }
 
+/// Choosing a prompt is not choosing what to put back: the second question is
+/// asked out loud, because keke cannot infer which of the two a person means.
 #[tokio::test]
-async fn rewinding_hands_the_prompt_back_and_drops_what_it_led_to() {
-    let (mut app, scripted, mut updates, _local) = app_with(two_answers());
+async fn choosing_a_prompt_asks_what_to_put_back() {
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
     two_turns(&mut app, &mut updates).await;
 
-    app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::Esc));
+    open_rewind(&mut app, &mut local).await;
     app.handle_key(key(KeyCode::Enter));
-    settle().await;
+    settle(&mut app, &mut local).await;
+
+    let rewind = app.rewind().expect("the overlay is still open");
+    let offered: Vec<&str> = rewind.choices().iter().map(|choice| choice.label).collect();
+    assert_eq!(
+        offered,
+        vec!["conversation only", "files only", "conversation and files"],
+        "all three are always shown, so a missing one never reads as a missing feature"
+    );
+    assert!(
+        scripted.rewinds().is_empty(),
+        "choosing a prompt must not wind anything back on its own"
+    );
+}
+
+/// A scripted agent holds no snapshots, so the two file choices say why they
+/// would do nothing rather than being quietly dropped from the list.
+#[tokio::test]
+async fn a_turn_with_no_snapshot_says_so_instead_of_hiding_the_choice() {
+    let (mut app, _scripted, mut updates, mut local) = app_with(two_answers());
+    two_turns(&mut app, &mut updates).await;
+
+    open_rewind(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+
+    let rewind = app.rewind().expect("the overlay is still open");
+    let choices = rewind.choices();
+    assert!(
+        choices[0].unavailable.is_none(),
+        "the words are always there"
+    );
+    assert!(
+        choices[1].unavailable.is_some(),
+        "files only: nothing to put back"
+    );
+    assert!(choices[2].unavailable.is_some());
+    assert_eq!(
+        rewind.selected(),
+        0,
+        "the highlight starts on a choice that would actually do something"
+    );
+    assert!(
+        rewind.decision().is_some(),
+        "enter on an available choice must have something to carry out"
+    );
+}
+
+#[tokio::test]
+async fn rewinding_hands_the_prompt_back_and_drops_what_it_led_to() {
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
+    two_turns(&mut app, &mut updates).await;
+
+    open_rewind(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
 
     assert_eq!(
         app.input.text(),
@@ -2586,7 +2658,7 @@ async fn rewinding_hands_the_prompt_back_and_drops_what_it_led_to() {
     assert!(app.rewind().is_none());
     assert_eq!(
         scripted.rewinds(),
-        vec![1],
+        vec![(1, RewindScope::Conversation)],
         "the agent forgets too, or the next answer is given against a withdrawn message"
     );
     assert_eq!(
@@ -2598,34 +2670,58 @@ async fn rewinding_hands_the_prompt_back_and_drops_what_it_led_to() {
 
 #[tokio::test]
 async fn rewinding_further_back_drops_everything_after_it() {
-    let (mut app, scripted, mut updates, _local) = app_with(two_answers());
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
     two_turns(&mut app, &mut updates).await;
 
-    app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::Esc));
+    open_rewind(&mut app, &mut local).await;
     app.handle_key(key(KeyCode::Down));
     app.handle_key(key(KeyCode::Enter));
-    settle().await;
+    settle(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
 
     assert_eq!(app.input.text(), "first");
     assert!(
         app.transcript.cells().is_empty(),
         "winding back to the first prompt leaves the conversation empty"
     );
-    assert_eq!(scripted.rewinds(), vec![0]);
+    assert_eq!(scripted.rewinds(), vec![(0, RewindScope::Conversation)]);
     assert!(scripted.prompts().is_empty());
+}
+
+/// Esc steps back out of the second question rather than throwing away the
+/// answer to the first.
+#[tokio::test]
+async fn escape_backs_out_of_the_confirm_step_before_closing() {
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
+    two_turns(&mut app, &mut updates).await;
+
+    open_rewind(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Esc));
+
+    assert!(
+        matches!(
+            app.rewind().map(crate::rewind::Rewind::phase),
+            Some(crate::rewind::Phase::Picking { .. })
+        ),
+        "the first esc goes back to the list"
+    );
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.rewind().is_none(), "the second closes the overlay");
+    assert!(scripted.rewinds().is_empty());
 }
 
 #[tokio::test]
 async fn cancelling_the_overlay_leaves_the_conversation_alone() {
-    let (mut app, scripted, mut updates, _local) = app_with(two_answers());
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
     two_turns(&mut app, &mut updates).await;
     let before = app.transcript.cells().to_vec();
 
+    open_rewind(&mut app, &mut local).await;
     app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::Esc));
-    app.handle_key(key(KeyCode::Esc));
-    settle().await;
+    settle(&mut app, &mut local).await;
 
     assert!(app.rewind().is_none());
     assert_eq!(app.transcript.cells(), before.as_slice());

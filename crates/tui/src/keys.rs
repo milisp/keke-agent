@@ -284,7 +284,7 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_rewind_selection(-1),
             KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => self.move_rewind_selection(1),
-            KeyCode::Enter => self.confirm_rewind(),
+            KeyCode::Enter => self.advance_rewind(),
             KeyCode::Esc => self.cancel_rewind(),
             _ => {}
         }

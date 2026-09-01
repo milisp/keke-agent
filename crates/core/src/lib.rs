@@ -63,6 +63,8 @@ pub use rollout::RolloutError;
 pub use rollout::RolloutRecorder;
 pub use rollout::read_log;
 pub use rollout::read_log_from;
+pub use session::RewindPoint;
+pub use session::Rewound;
 pub use session::Session;
 pub use session::SessionBuilder;
 pub use session::SessionConfig;
@@ -80,6 +82,11 @@ pub enum CoreError {
     Rollout(#[from] RolloutError),
     #[error(transparent)]
     Workspace(#[from] keke_workspace::WorkspaceError),
+    /// A working-tree snapshot could not be taken or put back. Only ever
+    /// fatal to a rewind: a turn whose snapshot failed carries on and is
+    /// simply not one the files can be wound back to.
+    #[error(transparent)]
+    Checkpoint(#[from] keke_checkpoint::CheckpointError),
     /// The model kept requesting tools without converging. A safety stop, not a
     /// budget — reaching it means something is wrong, so it is surfaced rather
     /// than silently truncating the turn.

@@ -162,6 +162,20 @@ pub enum SessionEvent {
         /// spent because the parent asked for them.
         usage: Usage,
     },
+    /// A snapshot of the working tree, taken before a turn first changed it.
+    ///
+    /// Not model-visible, and logged anyway: it is the only record of which
+    /// snapshot belongs to which turn, and without it a resumed session could
+    /// offer to wind the conversation back but not the files — the state a
+    /// person would be left reading a transcript against.
+    Checkpoint {
+        turn: TurnId,
+        /// Which user turn it belongs to, counting from zero, so a surface can
+        /// name the same point the conversation does.
+        user_turn: usize,
+        /// Opaque to everything but the store that made it.
+        snapshot: String,
+    },
     /// The conversation was wound back to just before a user turn, and
     /// everything from that turn onwards was dropped.
     ///
@@ -172,15 +186,28 @@ pub enum SessionEvent {
     /// same way [`Self::ModelRequest`]'s `messages` is, and an empty one is
     /// meaningful: it is a rewind to before the first thing anybody said.
     Rewound {
-        /// The conversation as it stands after the rewind.
-        history: Vec<Message>,
-        /// The prompt that started the discarded turn, handed back to the
-        /// person to edit. Logged because a rewind that dropped a turn without
-        /// saying which one could not be read back as an account of the
-        /// session.
+        /// What was asked for: the conversation, the files, or both.
+        scope: RewindScope,
+        /// The conversation as it stands after the rewind. `None` when only
+        /// the files were put back — the conversation was not touched, so
+        /// there is no new baseline and replay carries on from the old one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<Vec<Message>>,
+        /// The prompt that started the turn, handed back to the person to
+        /// edit. Logged because a rewind that dropped a turn without saying
+        /// which one could not be read back as an account of the session.
         prompt: String,
-        /// How many messages the rewind discarded.
+        /// How many messages the rewind discarded. Zero for a files-only one.
+        #[serde(default)]
         removed_messages: usize,
+        /// The files put back, workspace-relative. Empty when the files were
+        /// left alone, or when the turn had not changed any.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        restored_files: Vec<String>,
+        /// A snapshot of how the tree looked before the restore, so keke's own
+        /// undo is undoable. Absent when no files were touched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        undo: Option<String>,
     },
     /// A turn failed. The session stays usable; the next turn resumes from the
     /// last consistent state.
@@ -188,6 +215,39 @@ pub enum SessionEvent {
         turn: Option<TurnId>,
         message: String,
     },
+}
+
+/// What a rewind puts back.
+///
+/// Two independent things can be wound back — what was said and what it did to
+/// the files — and which of them a person means is not something keke can
+/// infer. Someone fixing a typo in a prompt wants the conversation only;
+/// someone whose agent made a mess of the tree wants the files, sometimes
+/// without losing the discussion of how it got there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindScope {
+    /// Drop the turn and everything after it. The files are left as they are.
+    #[default]
+    Conversation,
+    /// Put the working tree back and leave the conversation intact, so what
+    /// went wrong is still on screen to talk about.
+    Files,
+    Both,
+}
+
+impl RewindScope {
+    /// Whether the conversation is wound back.
+    #[must_use]
+    pub fn touches_conversation(self) -> bool {
+        matches!(self, Self::Conversation | Self::Both)
+    }
+
+    /// Whether the working tree is put back.
+    #[must_use]
+    pub fn touches_files(self) -> bool {
+        matches!(self, Self::Files | Self::Both)
+    }
 }
 
 /// A log line: one event plus the metadata every line carries.

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/acp",
+    "crates/checkpoint",
     "crates/auth-api",
     "crates/auth-codex",
     "crates/auth-grok",
@@ -58,6 +59,7 @@ keke-oauth = { path = "crates/oauth" }
 # --- tier 1: engine ---
 keke-acp = { path = "crates/acp" }
 keke-config = { path = "crates/config" }
+keke-checkpoint = { path = "crates/checkpoint" }
 keke-core = { path = "crates/core" }
 keke-credentials = { path = "crates/credentials" }
 keke-workspace = { path = "crates/workspace" }

@@ -18,6 +18,7 @@ use keke_config_types::ApprovalPolicy;
 use keke_config_types::SessionMode;
 use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
+use keke_protocol::RewindScope;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolResult;
@@ -95,6 +96,22 @@ pub enum Update {
     /// [`Conversation::new_session`] finished: history and usage are gone,
     /// and whatever the surface shows for either should go back to nothing.
     SessionReset,
+    /// The answer to [`Conversation::rewind_points`]: where the conversation
+    /// can be wound back to.
+    ///
+    /// An update rather than only the call's return value because the surface
+    /// asks while it is drawing — the list opens first and fills in — and
+    /// everything else it draws arrives on this stream.
+    RewindPoints(Vec<RewindPoint>),
+    /// The answer to [`Conversation::changed_since`]: what restoring to
+    /// `turn` would put back.
+    RewindPreview {
+        turn: usize,
+        files: Vec<String>,
+    },
+    /// A rewind finished. Carries what it actually did, so a surface can say
+    /// how many files went back rather than guessing that any did.
+    Rewound(Rewound),
 }
 
 /// One running subagent, as a client sees it.
@@ -291,15 +308,34 @@ pub trait Conversation: Send + Sync {
     /// rather than left to a surface to fake by discarding what it drew.
     fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>>;
 
-    /// Take back the `nth` thing the person said (counting from zero) and
-    /// everything that followed it, answering with the words themselves so a
-    /// surface can put them back in front of them to edit.
+    /// Where this conversation can be wound back to, oldest first.
+    ///
+    /// Asked rather than assembled from what a surface has drawn: only the
+    /// agent knows whether it still holds a snapshot of the working tree from
+    /// before a turn wrote, and a surface guessing would offer to put files
+    /// back that it cannot.
+    fn rewind_points(&self) -> ConversationFuture<'_, Result<Vec<RewindPoint>, ConversationError>>;
+
+    /// Which files restoring to the `nth` turn would put back.
+    ///
+    /// For the moment a person is choosing: it is a diff against the working
+    /// tree, so it is asked about the one point they are deciding on rather
+    /// than about every row of a list. Empty means restoring the files would
+    /// change nothing, which a surface should say instead of offering it.
+    fn changed_since(
+        &self,
+        nth: usize,
+    ) -> ConversationFuture<'_, Result<Vec<String>, ConversationError>>;
+
+    /// Take back the `nth` thing the person said (counting from zero), putting
+    /// back what `scope` asks for: the conversation, the working tree, or both.
     ///
     /// On the seam rather than left to a surface, for the reason
     /// [`Self::new_session`] is: a surface that only dropped what it had drawn
     /// would show a conversation the agent still remembers, and the next turn
     /// would be answered against the very messages a person asked to take
-    /// back.
+    /// back. The files are on the seam for a stronger version of the same
+    /// reason — only the agent has the snapshots.
     ///
     /// `None` means there is no such turn to go back to — the conversation is
     /// shorter than `nth` — and nothing was changed. Winding back to a turn
@@ -307,7 +343,35 @@ pub trait Conversation: Send + Sync {
     fn rewind(
         &self,
         nth: usize,
-    ) -> ConversationFuture<'_, Result<Option<String>, ConversationError>>;
+        scope: RewindScope,
+    ) -> ConversationFuture<'_, Result<Option<Rewound>, ConversationError>>;
+}
+
+/// One place a conversation can be wound back to, as a surface sees it.
+///
+/// Flat and owned, for the reason [`SubagentView`] is: it crosses the seam to a
+/// surface that may be on the other end of a pipe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewindPoint {
+    /// Which user turn it is, counting from zero.
+    pub turn: usize,
+    /// The prompt as it was sent.
+    pub prompt: String,
+    /// Whether the agent holds a snapshot of the working tree from before this
+    /// turn changed anything. False for a turn that never wrote, and for every
+    /// turn of a session running with checkpoints off.
+    pub has_snapshot: bool,
+}
+
+/// What a rewind did, so a surface can say so.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rewound {
+    /// The prompt that started the turn, to hand back for editing.
+    pub prompt: String,
+    /// How many messages were dropped. Zero for a files-only rewind.
+    pub removed_messages: usize,
+    /// The files put back, workspace-relative.
+    pub restored_files: Vec<String>,
 }
 
 /// A conversation that replays a prepared script.
@@ -327,7 +391,7 @@ pub struct ScriptedConversation {
     models: Arc<Mutex<Vec<String>>>,
     modes: Arc<Mutex<Vec<SessionMode>>>,
     new_sessions: Arc<Mutex<usize>>,
-    rewinds: Arc<Mutex<Vec<usize>>>,
+    rewinds: Arc<Mutex<Vec<(usize, RewindScope)>>>,
 }
 
 impl ScriptedConversation {
@@ -360,9 +424,9 @@ impl ScriptedConversation {
         self.new_sessions.lock().map(|count| *count).unwrap_or(0)
     }
 
-    /// Every turn the surface asked to wind back to, in order.
+    /// Every rewind the surface asked for, as `(turn, scope)`, in order.
     #[must_use]
-    pub fn rewinds(&self) -> Vec<usize> {
+    pub fn rewinds(&self) -> Vec<(usize, RewindScope)> {
         self.rewinds
             .lock()
             .map(|seen| seen.clone())
@@ -506,15 +570,44 @@ impl Conversation for ScriptedConversation {
         })
     }
 
+    /// Every prompt sent so far is a point, and a scripted agent holds no
+    /// files, so none of them carries a snapshot.
+    fn rewind_points(&self) -> ConversationFuture<'_, Result<Vec<RewindPoint>, ConversationError>> {
+        Box::pin(async move {
+            let prompts = self
+                .prompts
+                .lock()
+                .map(|seen| seen.clone())
+                .unwrap_or_default();
+            Ok(prompts
+                .into_iter()
+                .enumerate()
+                .map(|(turn, prompt)| RewindPoint {
+                    turn,
+                    prompt,
+                    has_snapshot: false,
+                })
+                .collect())
+        })
+    }
+
+    fn changed_since(
+        &self,
+        _nth: usize,
+    ) -> ConversationFuture<'_, Result<Vec<String>, ConversationError>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+
     /// Forgets the prompts from `nth` on, so `prompts()` reads the way a real
     /// agent's history would after the same call.
     fn rewind(
         &self,
         nth: usize,
-    ) -> ConversationFuture<'_, Result<Option<String>, ConversationError>> {
+        scope: RewindScope,
+    ) -> ConversationFuture<'_, Result<Option<Rewound>, ConversationError>> {
         Box::pin(async move {
             if let Ok(mut seen) = self.rewinds.lock() {
-                seen.push(nth);
+                seen.push((nth, scope));
             }
             let Ok(mut prompts) = self.prompts.lock() else {
                 return Ok(None);
@@ -522,9 +615,19 @@ impl Conversation for ScriptedConversation {
             if nth >= prompts.len() {
                 return Ok(None);
             }
-            let text = prompts[nth].clone();
-            prompts.truncate(nth);
-            Ok(Some(text))
+            let prompt = prompts[nth].clone();
+            let removed_messages = if scope.touches_conversation() {
+                let removed = prompts.len() - nth;
+                prompts.truncate(nth);
+                removed
+            } else {
+                0
+            };
+            Ok(Some(Rewound {
+                prompt,
+                removed_messages,
+                restored_files: Vec::new(),
+            }))
         })
     }
 }

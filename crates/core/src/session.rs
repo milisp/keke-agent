@@ -79,6 +79,30 @@ pub enum TurnUpdate {
     },
 }
 
+/// One place the conversation can be wound back to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewindPoint {
+    /// Which user turn it is, counting from zero.
+    pub turn: usize,
+    /// The prompt as it was sent.
+    pub prompt: String,
+    /// Whether keke holds a snapshot of the tree from before this turn wrote.
+    /// False for a turn that never wrote, and for every turn of a session that
+    /// ran with checkpoints off.
+    pub has_snapshot: bool,
+}
+
+/// What a rewind actually did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rewound {
+    /// The prompt that started the turn, to hand back for editing.
+    pub prompt: String,
+    /// How many messages were dropped. Zero for a files-only rewind.
+    pub removed_messages: usize,
+    /// The files put back, workspace-relative.
+    pub restored_files: Vec<String>,
+}
+
 /// The session's model configuration.
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
@@ -97,6 +121,9 @@ pub struct SessionConfig {
     pub compaction: CompactionConfig,
     /// When a tool call must be approved before it runs.
     pub approval: ApprovalPolicy,
+    /// Whether the working tree is snapshotted per turn, so a rewind can put
+    /// the files back too.
+    pub checkpoints: keke_config_types::CheckpointConfig,
 }
 
 /// A live conversation.
@@ -110,6 +137,17 @@ pub struct Session {
     pub(crate) workspace: Workspace,
     pub(crate) cwd: PathBuf,
     pub(crate) history: Vec<Message>,
+    /// Working-tree snapshots, when the deployment keeps them. `None` when
+    /// checkpoints are off, or when the store could not be opened — a session
+    /// whose snapshots failed goes on running and simply cannot put files back.
+    pub(crate) checkpoints: Option<keke_checkpoint::Checkpoints>,
+    /// The snapshot each user turn started from, by turn ordinal. Seeded from
+    /// the log on a resume, so a rewind reaches past this process.
+    pub(crate) snapshots: std::collections::BTreeMap<usize, keke_checkpoint::Snapshot>,
+    /// Whether this turn has already taken its snapshot. A turn snapshots once,
+    /// before it first changes anything, so a turn that only talks costs
+    /// nothing and one that writes twice does not record the tree half-changed.
+    pub(crate) snapshot_taken: bool,
     pub(crate) recorder: RolloutRecorder,
     pub(crate) updates: Option<tokio::sync::mpsc::UnboundedSender<TurnUpdate>>,
     pub(crate) cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -258,22 +296,64 @@ impl Session {
         self.mode.get()
     }
 
-    /// Wind the conversation back to just before its `nth` user turn (counting
-    /// from zero) and hand back the prompt that started it.
+    /// Where the conversation can be wound back to, newest last.
     ///
-    /// What a person is doing here is taking back something they said, so the
-    /// turn it started goes with it: the prompt, the model's answer, every
-    /// tool call it made. They get the words back to edit, and the next
-    /// request is assembled as though the turn had never happened.
+    /// The prompt as it was sent, and whether keke holds a snapshot of the
+    /// working tree from before that turn changed anything. A turn with no
+    /// snapshot is one that never wrote — or one from a session that ran with
+    /// checkpoints off — and the surface says so rather than offering a
+    /// restore that would do nothing.
+    #[must_use]
+    pub fn rewind_points(&self) -> Vec<RewindPoint> {
+        self.history
+            .iter()
+            .filter(|message| message.role == keke_protocol::Role::User)
+            .enumerate()
+            .map(|(turn, message)| RewindPoint {
+                turn,
+                prompt: message.text(),
+                has_snapshot: self.snapshots.contains_key(&turn),
+            })
+            .collect()
+    }
+
+    /// Which files a restore to `nth` would put back.
+    ///
+    /// Asked when a person is deciding, not when the list is drawn: it is a
+    /// diff against the working tree, and running one per row would spend the
+    /// cost on every point they are not choosing.
+    pub async fn changed_since_turn(&self, nth: usize) -> Result<Vec<String>, CoreError> {
+        let (Some(store), Some(snapshot)) = (self.checkpoints.as_ref(), self.snapshots.get(&nth))
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(store.changed_since(snapshot).await?)
+    }
+
+    /// Wind the session back to just before its `nth` user turn (counting from
+    /// zero), putting back what `scope` asks for.
+    ///
+    /// Two things can be taken back and they are independent. The conversation
+    /// half drops the turn and everything after it: the prompt, the answer,
+    /// every tool call it made, so the next request is assembled as though it
+    /// had never happened. The files half puts the working tree back to the
+    /// snapshot taken before that turn first wrote. Someone fixing a typo
+    /// wants the first; someone whose agent made a mess of the tree may want
+    /// the second and to keep the discussion of how it happened.
     ///
     /// Counts `Role::User` messages, which are exactly the turn inputs — a
     /// tool result is a `Role::Tool` message and never a turn of its own. A
     /// history with fewer user turns than `nth` is left untouched and answers
     /// `None`, rather than winding back to whatever happens to be last.
     ///
-    /// Logged before it returns, because the truncation changes what the next
-    /// model request will contain and nothing else in the log would say so.
-    pub async fn rewind_to_user_turn(&mut self, nth: usize) -> Result<Option<String>, CoreError> {
+    /// Logged before it returns, because it changes both what the next model
+    /// request will contain and what is on disk, and nothing else in the log
+    /// would say so.
+    pub async fn rewind_to_user_turn(
+        &mut self,
+        nth: usize,
+        scope: keke_protocol::RewindScope,
+    ) -> Result<Option<Rewound>, CoreError> {
         let Some(at) = self
             .history
             .iter()
@@ -285,15 +365,86 @@ impl Session {
             return Ok(None);
         };
         let prompt = self.history[at].text();
-        let removed_messages = self.history.len() - at;
-        self.history.truncate(at);
+
+        // The files first: a failure here must not leave a conversation wound
+        // back past the tree it was talking about, and a restore is the half
+        // that can fail.
+        let restored = match (scope.touches_files(), self.checkpoints.as_ref()) {
+            (true, Some(store)) => match self.snapshots.get(&nth) {
+                Some(snapshot) => store.restore(snapshot).await?,
+                None => keke_checkpoint::Restored::default(),
+            },
+            _ => keke_checkpoint::Restored::default(),
+        };
+
+        let removed_messages = if scope.touches_conversation() {
+            let removed = self.history.len() - at;
+            self.history.truncate(at);
+            // The turns that went take their snapshots with them.
+            self.snapshots.retain(|turn, _| *turn < nth);
+            removed
+        } else {
+            0
+        };
+
         self.log(SessionEvent::Rewound {
-            history: self.history.clone(),
+            scope,
+            history: scope.touches_conversation().then(|| self.history.clone()),
             prompt: prompt.clone(),
             removed_messages,
+            restored_files: restored.files.clone(),
+            undo: restored.undo.as_ref().map(ToString::to_string),
         })
         .await?;
-        Ok(Some(prompt))
+
+        Ok(Some(Rewound {
+            prompt,
+            removed_messages,
+            restored_files: restored.files,
+        }))
+    }
+
+    /// Snapshot the working tree before `call` is the first thing this turn to
+    /// change it.
+    ///
+    /// Before rather than after, and only for a tool that can write: the point
+    /// to go back to is the tree as it was when the person asked, and a turn
+    /// that only reads has nothing to record. A store that fails is reported
+    /// and forgotten — a snapshot keke could not take must not stop the work
+    /// the person actually asked for.
+    pub(crate) async fn checkpoint_before(&mut self, turn: TurnId, read_only: bool) {
+        if read_only || self.snapshot_taken {
+            return;
+        }
+        let Some(store) = self.checkpoints.as_ref() else {
+            return;
+        };
+        self.snapshot_taken = true;
+        let user_turn = self
+            .history
+            .iter()
+            .filter(|message| message.role == keke_protocol::Role::User)
+            .count()
+            .saturating_sub(1);
+        let snapshot = match store.take(&format!("before turn {}", user_turn + 1)).await {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "could not snapshot the working tree");
+                return;
+            }
+        };
+        if let Err(error) = self
+            .log(SessionEvent::Checkpoint {
+                turn,
+                user_turn,
+                snapshot: snapshot.to_string(),
+            })
+            .await
+        {
+            tracing::warn!(%error, "could not log a checkpoint");
+        }
+        self.snapshots.insert(user_turn, snapshot);
     }
 
     /// Clear the abort flag so the session can take another turn.
@@ -337,6 +488,9 @@ pub struct SessionBuilder {
 struct Resumed {
     id: SessionId,
     history: Vec<Message>,
+    /// The snapshots the earlier run took, by user-turn ordinal, so a rewind
+    /// in a resumed session can still put the files back.
+    snapshots: std::collections::BTreeMap<usize, String>,
 }
 
 impl SessionBuilder {
@@ -405,7 +559,25 @@ impl SessionBuilder {
     /// continue, and there is no second place for the two to disagree.
     #[must_use]
     pub fn resume(mut self, id: SessionId, history: Vec<Message>) -> Self {
-        self.resume = Some(Resumed { id, history });
+        self.resume = Some(Resumed {
+            id,
+            history,
+            snapshots: std::collections::BTreeMap::new(),
+        });
+        self
+    }
+
+    /// The working-tree snapshots the earlier run took, by user-turn ordinal,
+    /// as [`crate::load_session`] read them back.
+    ///
+    /// Separate from [`Self::resume`] because a caller may be continuing a log
+    /// written before checkpoints existed, or by a deployment that had them
+    /// off: no snapshots is an ordinary resume, not a broken one.
+    #[must_use]
+    pub fn snapshots(mut self, snapshots: std::collections::BTreeMap<usize, String>) -> Self {
+        if let Some(resumed) = self.resume.as_mut() {
+            resumed.snapshots = snapshots;
+        }
         self
     }
 
@@ -466,6 +638,50 @@ impl SessionBuilder {
             })
             .await?;
 
+        // Beside the log rather than inside the project: the snapshots are
+        // keke's, and a store in the workspace would be one more directory a
+        // person has to know to ignore.
+        // A subagent takes no snapshots of its own. Its work happens inside a
+        // tool call of the parent's turn, which the parent has already
+        // snapshotted before dispatching — a second store under the child's
+        // session would record the same tree again and offer a point no
+        // conversation has a prompt for.
+        let checkpoints = if config.checkpoints.enabled && self.parent.is_none() {
+            let dir = recorder
+                .path()
+                .parent()
+                .map(|dir| dir.join("checkpoints.git"));
+            match dir {
+                Some(dir) => {
+                    match keke_checkpoint::Checkpoints::open(
+                        &dir,
+                        &config.home.workspace_root,
+                        // keke's home, and the session logs inside it: a
+                        // deployment may put either in the project, and a
+                        // restore that rolled back the log being written into
+                        // would take the record of itself with it.
+                        &[
+                            config.home.home.as_path(),
+                            &crate::sessions_dir(&config.home.home),
+                        ],
+                    )
+                    .await
+                    {
+                        Ok(store) => Some(store),
+                        Err(error) => {
+                            // Not fatal: a session whose snapshots failed still
+                            // works, it just cannot offer to put files back.
+                            tracing::warn!(%error, "checkpoints are off for this session");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
         let approval = config.approval;
         let effort = config.reasoning_effort;
         let model = Arc::new(crate::ModelSwitch::new(config.model.model.as_str()));
@@ -484,7 +700,18 @@ impl SessionBuilder {
             registry: self.registry.unwrap_or_default(),
             workspace,
             cwd,
+            snapshots: resumed
+                .as_ref()
+                .map(|it| {
+                    it.snapshots
+                        .iter()
+                        .map(|(turn, id)| (*turn, keke_checkpoint::Snapshot::from(id.clone())))
+                        .collect()
+                })
+                .unwrap_or_default(),
             history: resumed.map(|it| it.history).unwrap_or_default(),
+            checkpoints,
+            snapshot_taken: false,
             recorder,
             updates: self.updates,
             cancelled,
