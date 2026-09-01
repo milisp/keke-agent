@@ -134,9 +134,7 @@ impl EditorSessions {
         let composed = Composed::build(
             &self.config.home,
             &self.config.providers,
-            self.config.plugins,
-            self.config.model_catalog_ttl,
-            self.config.subagents,
+            &(&self.config).into(),
             Some(Arc::clone(&approvals)),
             // One switch per session, made here because this is where a
             // session is: an ACP client opens several, and they plan
@@ -202,9 +200,7 @@ impl keke_acp::SessionFactory for EditorSessions {
         let Ok(composed) = Composed::build(
             &self.config.home,
             &self.config.providers,
-            self.config.plugins,
-            self.config.model_catalog_ttl,
-            self.config.subagents,
+            &(&self.config).into(),
             None,
             // Not a session: nothing to plan in, so nothing to install.
             None,
@@ -297,9 +293,7 @@ impl keke_acp::SessionFactory for EditorSessions {
             let composed = Composed::build(
                 &self.config.home,
                 &self.config.providers,
-                self.config.plugins,
-                self.config.model_catalog_ttl,
-                self.config.subagents,
+                &(&self.config).into(),
                 None,
                 None,
                 "",

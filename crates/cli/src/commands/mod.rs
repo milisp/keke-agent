@@ -82,9 +82,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     let composed = Composed::build(
         &config.home,
         &config.providers,
-        config.plugins,
-        config.model_catalog_ttl,
-        config.subagents,
+        &(&config).into(),
         interactive.then(|| Arc::clone(&approvals)),
         Some(crate::compose::PlanSetup::for_session(
             &config.home.home,
@@ -123,9 +121,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 composed = Composed::build(
                     &config.home,
                     &config.providers,
-                    config.plugins,
-                    config.model_catalog_ttl,
-                    config.subagents,
+                    &(&config).into(),
                     interactive.then(|| Arc::clone(&approvals)),
                     Some(crate::compose::PlanSetup::for_session(
                         &config.home.home,
@@ -232,6 +228,17 @@ fn slash_commands(composed: &Composed) -> keke_tui::SlashCommands {
                 command.path.as_path(),
             )
         })
+        // Skills join the same namespace, so a skill and a command claiming
+        // one name contest it the way two commands would rather than one of
+        // them quietly winning.
+        .chain(composed.skills.iter().map(|skill| {
+            keke_tui::SlashCommand::skill(
+                &skill.plugin,
+                &skill.name,
+                &skill.description,
+                skill.path.as_path(),
+            )
+        }))
         .collect();
     keke_tui::SlashCommands::new(commands)
 }
@@ -247,7 +254,7 @@ fn plugin_commands(commands: &keke_tui::SlashCommands) -> Vec<keke_acp::PluginCo
         .entries()
         .iter()
         .filter_map(|entry| match &entry.action {
-            keke_tui::slash::SlashAction::Prompt(_) => Some(keke_acp::PluginCommand {
+            keke_tui::slash::SlashAction::Prompt { .. } => Some(keke_acp::PluginCommand {
                 name: entry.name.clone(),
                 description: entry.description.clone(),
             }),

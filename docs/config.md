@@ -274,6 +274,17 @@ timeout_millis = 600000   # Wall-clock ceiling per subagent (60000-3600000)
 # There is no depth setting: a subagent is never offered `spawn_agent` at all,
 # so the tree is one level deep by construction rather than by configuration.
 
+# Skills a plugin ships that this deployment does not want
+[skills]
+disabled = ["acme:review", "deploy", "noisy-plugin:*"]
+# Each entry is `plugin:name`, a bare `name` matching that skill in every
+# plugin, or `plugin:*` for all of one plugin's. A disabled skill is not listed
+# for the model, not offered as a slash command, and cannot be read by name.
+# `disabled` accumulates across layers: a project can turn one off without
+# restating the user's list, and no layer can re-enable what a broader one
+# refused. An empty entry is an error rather than a request to disable
+# everything.
+
 # Plugin timeouts in milliseconds
 [plugins]
 hook_millis = 30000       # Hook timeout (100-3600000)
@@ -290,4 +301,4 @@ Configuration is loaded from multiple layers, with later layers overriding earli
 3. **Project config** — `.keke/config.toml` in the workspace root
 4. **Environment variables** — `KEKE_*` prefixed (e.g., `KEKE_APPROVAL_POLICY=never`)
 
-Provider declarations accumulate across layers and are keyed by route, so redeclaring a provider replaces that entry rather than the whole set. `[[dir]]` entries accumulate the same way, and are applied on top of the merged layers — above every file, below anything typed on the command line.
+`[skills] disabled` accumulates across layers too. Provider declarations accumulate across layers and are keyed by route, so redeclaring a provider replaces that entry rather than the whole set. `[[dir]]` entries accumulate the same way, and are applied on top of the merged layers — above every file, below anything typed on the command line.

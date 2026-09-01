@@ -363,3 +363,23 @@ pub(crate) fn frontmatter(text: &str) -> std::collections::BTreeMap<String, Stri
     }
     fields
 }
+
+/// The markdown body of a plugin file, with its YAML frontmatter removed.
+///
+/// A skill's frontmatter is metadata that was already read at resolution time
+/// and summarized for the model; sending it again as part of the prompt spends
+/// context on a `description` the reader has, by then, already acted on. Text
+/// with no frontmatter is returned unchanged.
+#[must_use]
+pub fn markdown_body(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("---") else {
+        return text;
+    };
+    let Some(end) = rest.find("\n---") else {
+        return text;
+    };
+    // Skip the closing `---` line itself, plus its trailing newline if present.
+    let after = &rest[end + 4..];
+    let after = after.strip_prefix('\n').unwrap_or(after);
+    after.trim_start_matches('\n')
+}

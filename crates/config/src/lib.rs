@@ -34,6 +34,7 @@ use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
 use keke_config_types::ReasoningEffort;
 use keke_config_types::SandboxMode;
+use keke_config_types::SkillSelection;
 use keke_config_types::SubagentLimits;
 use keke_paths::AbsPath;
 use serde::Deserialize;
@@ -82,6 +83,8 @@ pub struct Config {
     pub plugins: PluginTimeouts,
     /// Bounds on the subagents a session may run at once.
     pub subagents: SubagentLimits,
+    /// Which plugin-contributed skills this deployment wants.
+    pub skills: SkillSelection,
     /// How long a fetched model catalog stays usable before the vendor is
     /// asked again.
     pub model_catalog_ttl: ModelCatalogTtl,
@@ -116,6 +119,7 @@ pub struct ConfigFile {
     pub compaction: Option<CompactionFile>,
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
+    pub skills: Option<SkillsFile>,
     /// Seconds. `0` asks the vendor every time.
     pub model_catalog_ttl_seconds: Option<u64>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
@@ -146,6 +150,20 @@ pub struct PluginsFile {
     pub hook_timeout_millis: Option<u64>,
     pub mcp_startup_timeout_millis: Option<u64>,
     pub mcp_call_timeout_millis: Option<u64>,
+}
+
+/// The skills section: which of the discovered skills a person wants.
+///
+/// `disabled` accumulates across layers rather than replacing, so a project can
+/// turn one off without restating the user's list — the same rule `providers`
+/// and `dir` follow, and the one that matches what disabling means. A layer
+/// cannot re-enable what a broader one refused, which is denial staying
+/// monotonic.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct SkillsFile {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
 }
 
 /// The subagents section, separated so a layer can override one field of it.
@@ -230,6 +248,10 @@ impl Config {
                     .mcp_call_timeout_millis
                     .or(base.mcp_call_timeout_millis);
             }
+            if let Some(skills) = &layer.file.skills {
+                let base = merged.skills.get_or_insert_with(SkillsFile::default);
+                base.disabled.extend(skills.disabled.iter().cloned());
+            }
             if let Some(subagents) = layer.file.subagents {
                 let base = merged.subagents.get_or_insert_with(SubagentsFile::default);
                 base.max_concurrent = subagents.max_concurrent.or(base.max_concurrent);
@@ -272,6 +294,15 @@ impl Config {
                 ),
             });
         }
+
+        let skills = SkillSelection::new(merged.skills.take().unwrap_or_default().disabled)
+            .map_err(|message| ConfigError::Invalid {
+                path: sources
+                    .last()
+                    .map(LayerSource::describe)
+                    .unwrap_or_else(|| "<defaults>".to_string()),
+                message,
+            })?;
 
         let plugins_file = merged.plugins.unwrap_or_default();
         let defaults = PluginTimeouts::default();
@@ -397,6 +428,7 @@ impl Config {
             compaction,
             plugins,
             subagents,
+            skills,
             model_catalog_ttl,
             providers: merged
                 .providers
@@ -684,6 +716,29 @@ mod tests {
         let layers = vec![layer("user", "[compaction]\ntrigger_percent = 0\n")];
         let error = Config::from_layers(home(), &layers).expect_err("rejected");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    #[test]
+    fn disabled_skills_accumulate_across_layers() {
+        let layers = vec![
+            layer("user", "[skills]\ndisabled = [\"acme:review\"]\n"),
+            layer("project", "[skills]\ndisabled = [\"deploy\"]\n"),
+        ];
+
+        let config = Config::from_layers(home(), &layers).expect("merges");
+
+        assert!(config.skills.is_disabled("acme", "review"));
+        assert!(config.skills.is_disabled("other", "deploy"));
+        assert!(!config.skills.is_disabled("acme", "ship"));
+    }
+
+    /// Invariant 8: an entry that names nothing is a mistake, not a request to
+    /// turn every skill off.
+    #[test]
+    fn an_empty_disabled_entry_is_refused() {
+        let layers = vec![layer("user", "[skills]\ndisabled = [\"\"]\n")];
+
+        assert!(Config::from_layers(home(), &layers).is_err());
     }
 
     #[test]

@@ -50,13 +50,25 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::new()
             };
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     format!(" /{} ", entry.name),
                     style.add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(entry.description.clone(), Style::new().fg(Color::DarkGray)),
-            ])
+            ];
+            // A skill was written for the model and a command for a person;
+            // which one a row is changes what typing it will do, so it is on
+            // screen rather than left to be discovered by running it.
+            if let (crate::slash::SlashAction::Prompt { kind, .. }, Some(plugin)) =
+                (&entry.action, &entry.plugin)
+            {
+                spans.push(Span::styled(
+                    format!(" [{} · {plugin}]", kind.label()),
+                    Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                ));
+            }
+            Line::from(spans)
         })
         .collect();
 

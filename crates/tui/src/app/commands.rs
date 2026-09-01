@@ -60,10 +60,14 @@ impl App {
                     self.set_provider_aloud(&wanted);
                 }
             }
-            SlashAction::Prompt(path) => match std::fs::read_to_string(&path) {
-                Ok(body) => {
+            SlashAction::Prompt { path, .. } => match std::fs::read_to_string(&path) {
+                Ok(file) => {
+                    // The frontmatter is metadata — a skill's `description` is
+                    // already in the menu row the person just read — so what
+                    // goes to the model is the body they meant to send.
+                    let body = keke_plugin::markdown_body(&file);
                     let text = if arguments.is_empty() {
-                        body
+                        body.to_string()
                     } else {
                         format!("{body}\n\n{arguments}")
                     };
@@ -204,6 +208,12 @@ impl App {
         );
         for entry in self.commands.entries() {
             text.push_str(&format!("\n  /{} — {}", entry.name, entry.description));
+            // Where a row came from belongs beside it: a person about to run
+            // someone else's procedure should see whose it is.
+            if let (SlashAction::Prompt { kind, .. }, Some(plugin)) = (&entry.action, &entry.plugin)
+            {
+                text.push_str(&format!(" [{} · {plugin}]", kind.label()));
+            }
         }
         text
     }
