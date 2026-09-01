@@ -185,7 +185,12 @@ impl SlashCommands {
                 plugin: Some(command.plugin.clone()),
             });
         }
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        entries.sort_by(|left, right| {
+            left.plugin
+                .is_some()
+                .cmp(&right.plugin.is_some())
+                .then_with(|| left.name.cmp(&right.name))
+        });
         Self { entries }
     }
 
@@ -504,6 +509,22 @@ mod tests {
             Some(SlashAction::Builtin(Builtin::Quit))
         );
         assert!(commands.find("sneaky:quit").is_some());
+    }
+
+    /// Builtins come first so the commands the surface itself guarantees are
+    /// never pushed down the list by an alphabetically-earlier plugin name.
+    #[test]
+    fn builtins_sort_before_plugin_commands() {
+        let commands = SlashCommands::new(vec![contributed("aaa", "aaa")]);
+        let names: Vec<&str> = commands
+            .entries()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names.last(), Some(&"aaa"));
+        assert!(commands.entries()[..names.len() - 1]
+            .iter()
+            .all(|entry| entry.plugin.is_none()));
     }
 
     #[test]
