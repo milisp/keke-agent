@@ -408,16 +408,23 @@ fn summarize(log: &LogPath) -> Result<SessionSummary, RolloutError> {
 /// `ToolCallEnd`s) is already replayed from the tail. A turn that was logged
 /// but never reached the model (an error, a cancel before the first request)
 /// contributes its input, so the person's words are never lost.
+///
+/// A `Rewound` is a baseline too, and an empty one counts: a rewind to before
+/// the first prompt leaves nothing, and treating that as "no snapshot here"
+/// would replay the whole log the person had just wound back.
 #[must_use]
 pub fn history_from_log(events: &[SessionEvent]) -> Vec<Message> {
-    let baseline = events.iter().rposition(
-        |event| matches!(event, SessionEvent::ModelRequest { messages, .. } if !messages.is_empty()),
-    );
+    let baseline = events.iter().rposition(|event| match event {
+        SessionEvent::ModelRequest { messages, .. } => !messages.is_empty(),
+        SessionEvent::Rewound { .. } => true,
+        _ => false,
+    });
 
     let (mut history, tail) = match baseline {
         Some(at) => match &events[at] {
             SessionEvent::ModelRequest { messages, .. } => (messages.clone(), &events[at + 1..]),
-            _ => unreachable!("rposition matched a model request"),
+            SessionEvent::Rewound { history, .. } => (history.clone(), &events[at + 1..]),
+            _ => unreachable!("rposition matched a snapshot"),
         },
         None => (Vec::new(), events),
     };

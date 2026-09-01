@@ -162,6 +162,26 @@ pub enum SessionEvent {
         /// spent because the parent asked for them.
         usage: Usage,
     },
+    /// The conversation was wound back to just before a user turn, and
+    /// everything from that turn onwards was dropped.
+    ///
+    /// A new baseline rather than a note about one: what the model sees after
+    /// a rewind is not derivable from the events before it — replaying those
+    /// would hand the next request the very messages a person asked to take
+    /// back. `history` is therefore the whole surviving conversation, read the
+    /// same way [`Self::ModelRequest`]'s `messages` is, and an empty one is
+    /// meaningful: it is a rewind to before the first thing anybody said.
+    Rewound {
+        /// The conversation as it stands after the rewind.
+        history: Vec<Message>,
+        /// The prompt that started the discarded turn, handed back to the
+        /// person to edit. Logged because a rewind that dropped a turn without
+        /// saying which one could not be read back as an account of the
+        /// session.
+        prompt: String,
+        /// How many messages the rewind discarded.
+        removed_messages: usize,
+    },
     /// A turn failed. The session stays usable; the next turn resumes from the
     /// last consistent state.
     Error {

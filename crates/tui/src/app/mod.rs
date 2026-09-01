@@ -8,6 +8,7 @@ mod commands;
 mod completion;
 mod picker_overlay;
 pub(crate) mod plan;
+mod rewind;
 mod session;
 mod subagents;
 
@@ -87,6 +88,13 @@ pub struct App {
     /// every keystroke, so typing one more letter does not jump the highlight
     /// back to the top of a list the person was already moving through.
     completion: usize,
+    /// When Esc was last pressed with nothing to interrupt, if it is still
+    /// waiting for its second tap. `None` is the ordinary state: Esc is the
+    /// key for "never mind", so the first press does nothing but arm.
+    esc_armed: Option<Instant>,
+    /// The rewind overlay, while one is open. It holds the keyboard, the way
+    /// the model picker does.
+    rewind: Option<crate::rewind::Rewind>,
     /// The model or provider overlay, while one is open. `None` is the
     /// ordinary state: the composer has the keyboard.
     picker: Option<crate::picker::Picker>,
@@ -220,6 +228,8 @@ impl App {
                 file_search: FileSearchState::new(cwd),
                 history: PromptHistory::default(),
                 completion: 0,
+                esc_armed: None,
+                rewind: None,
                 picker: None,
                 plan: None,
                 show_last_plan: false,

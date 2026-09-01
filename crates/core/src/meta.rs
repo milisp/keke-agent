@@ -244,6 +244,12 @@ impl SessionMeta {
                     self.turn_input = usage.input_tokens;
                 }
             }
+            // A rewind logs the whole surviving conversation, so it is a
+            // baseline for the same reason a turn's first `ModelRequest` is —
+            // including an empty one, which is a rewind to before anything was
+            // said. A reader that seeked past it to an older snapshot would
+            // rebuild the history the person had just wound back.
+            SessionEvent::Rewound { .. } => self.baseline = Some(at),
             // A child's tokens are spent under the parent's turn, so they
             // belong on the parent's bill. Counted here and nowhere else: the
             // child's own `TurnEnd`s are in the child's log, which this fold

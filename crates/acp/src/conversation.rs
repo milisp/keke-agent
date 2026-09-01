@@ -290,6 +290,24 @@ pub trait Conversation: Send + Sync {
     /// This is the agent itself forgetting, which is why it is on the seam
     /// rather than left to a surface to fake by discarding what it drew.
     fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>>;
+
+    /// Take back the `nth` thing the person said (counting from zero) and
+    /// everything that followed it, answering with the words themselves so a
+    /// surface can put them back in front of them to edit.
+    ///
+    /// On the seam rather than left to a surface, for the reason
+    /// [`Self::new_session`] is: a surface that only dropped what it had drawn
+    /// would show a conversation the agent still remembers, and the next turn
+    /// would be answered against the very messages a person asked to take
+    /// back.
+    ///
+    /// `None` means there is no such turn to go back to — the conversation is
+    /// shorter than `nth` — and nothing was changed. Winding back to a turn
+    /// that exists is not refusable: the words are the person's to withdraw.
+    fn rewind(
+        &self,
+        nth: usize,
+    ) -> ConversationFuture<'_, Result<Option<String>, ConversationError>>;
 }
 
 /// A conversation that replays a prepared script.
@@ -309,6 +327,7 @@ pub struct ScriptedConversation {
     models: Arc<Mutex<Vec<String>>>,
     modes: Arc<Mutex<Vec<SessionMode>>>,
     new_sessions: Arc<Mutex<usize>>,
+    rewinds: Arc<Mutex<Vec<usize>>>,
 }
 
 impl ScriptedConversation {
@@ -328,6 +347,7 @@ impl ScriptedConversation {
                 models: Arc::new(Mutex::new(Vec::new())),
                 modes: Arc::new(Mutex::new(Vec::new())),
                 new_sessions: Arc::new(Mutex::new(0)),
+                rewinds: Arc::new(Mutex::new(Vec::new())),
             },
             receiver,
         )
@@ -338,6 +358,15 @@ impl ScriptedConversation {
     #[must_use]
     pub fn new_session_count(&self) -> usize {
         self.new_sessions.lock().map(|count| *count).unwrap_or(0)
+    }
+
+    /// Every turn the surface asked to wind back to, in order.
+    #[must_use]
+    pub fn rewinds(&self) -> Vec<usize> {
+        self.rewinds
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
     }
 
     #[must_use]
@@ -474,6 +503,28 @@ impl Conversation for ScriptedConversation {
             }
             let _ = self.updates.send(Update::SessionReset);
             Ok(())
+        })
+    }
+
+    /// Forgets the prompts from `nth` on, so `prompts()` reads the way a real
+    /// agent's history would after the same call.
+    fn rewind(
+        &self,
+        nth: usize,
+    ) -> ConversationFuture<'_, Result<Option<String>, ConversationError>> {
+        Box::pin(async move {
+            if let Ok(mut seen) = self.rewinds.lock() {
+                seen.push(nth);
+            }
+            let Ok(mut prompts) = self.prompts.lock() else {
+                return Ok(None);
+            };
+            if nth >= prompts.len() {
+                return Ok(None);
+            }
+            let text = prompts[nth].clone();
+            prompts.truncate(nth);
+            Ok(Some(text))
         })
     }
 }

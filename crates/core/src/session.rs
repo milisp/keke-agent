@@ -258,6 +258,44 @@ impl Session {
         self.mode.get()
     }
 
+    /// Wind the conversation back to just before its `nth` user turn (counting
+    /// from zero) and hand back the prompt that started it.
+    ///
+    /// What a person is doing here is taking back something they said, so the
+    /// turn it started goes with it: the prompt, the model's answer, every
+    /// tool call it made. They get the words back to edit, and the next
+    /// request is assembled as though the turn had never happened.
+    ///
+    /// Counts `Role::User` messages, which are exactly the turn inputs — a
+    /// tool result is a `Role::Tool` message and never a turn of its own. A
+    /// history with fewer user turns than `nth` is left untouched and answers
+    /// `None`, rather than winding back to whatever happens to be last.
+    ///
+    /// Logged before it returns, because the truncation changes what the next
+    /// model request will contain and nothing else in the log would say so.
+    pub async fn rewind_to_user_turn(&mut self, nth: usize) -> Result<Option<String>, CoreError> {
+        let Some(at) = self
+            .history
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| message.role == keke_protocol::Role::User)
+            .map(|(index, _)| index)
+            .nth(nth)
+        else {
+            return Ok(None);
+        };
+        let prompt = self.history[at].text();
+        let removed_messages = self.history.len() - at;
+        self.history.truncate(at);
+        self.log(SessionEvent::Rewound {
+            history: self.history.clone(),
+            prompt: prompt.clone(),
+            removed_messages,
+        })
+        .await?;
+        Ok(Some(prompt))
+    }
+
     /// Clear the abort flag so the session can take another turn.
     pub fn reset_cancellation(&self) {
         self.flag.store(false, Ordering::SeqCst);

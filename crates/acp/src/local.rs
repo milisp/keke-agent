@@ -160,6 +160,11 @@ enum Command {
     NewSession {
         done: oneshot::Sender<Result<Switches, String>>,
     },
+    /// Wind the session's history back to just before its `nth` user turn.
+    Rewind {
+        nth: usize,
+        done: oneshot::Sender<Result<Option<String>, String>>,
+    },
 }
 
 /// The live switches a rebuilt session hands back, so [`LocalConversation`]
@@ -267,6 +272,13 @@ pub async fn local_with(
                         }
                     };
                     let _ = done.send(answer);
+                }
+                Command::Rewind { nth, done } => {
+                    let outcome = session
+                        .rewind_to_user_turn(nth)
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = done.send(outcome);
                 }
                 Command::NewSession { done } => match recipe.clone().build().await {
                     Ok(fresh) => {
@@ -446,6 +458,22 @@ impl Conversation for LocalConversation {
         if let Ok(switch) = self.effort.lock() {
             switch.set(effort);
         }
+    }
+
+    fn rewind(
+        &self,
+        nth: usize,
+    ) -> ConversationFuture<'_, Result<Option<String>, ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::Rewind { nth, done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            answer
+                .await
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
+                .map_err(ConversationError::Agent)
+        })
     }
 
     fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>> {

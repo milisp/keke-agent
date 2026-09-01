@@ -1122,3 +1122,113 @@ async fn a_resumed_session_continues_the_log_it_was_rebuilt_from() {
     // from, or the record of the conversation is split in half.
     assert_eq!(session.log_path(), log);
 }
+
+/// Winding back to a turn drops it and everything it led to, hands the words
+/// back, and leaves the next request assembled as though it never happened.
+#[tokio::test]
+async fn a_rewind_takes_back_the_turn_it_names() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        text_reply("one"),
+        text_reply("two"),
+        text_reply("three"),
+    ]);
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+
+    session
+        .run_turn(Message::user("first"))
+        .await
+        .expect("turn");
+    session
+        .run_turn(Message::user("second"))
+        .await
+        .expect("turn");
+
+    let taken = session
+        .rewind_to_user_turn(1)
+        .await
+        .expect("rewinds")
+        .expect("there is a second turn to take back");
+    assert_eq!(taken, "second", "the words come back to be edited");
+    assert_eq!(
+        session
+            .history()
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        vec!["first".to_string(), "one".to_string()],
+        "the answer went with the question"
+    );
+
+    session
+        .run_turn(Message::user("second, but better"))
+        .await
+        .expect("turn");
+    let requests = seen.lock().expect("lock");
+    let last: Vec<String> = requests[requests.len() - 1]
+        .messages
+        .iter()
+        .map(Message::text)
+        .collect();
+    assert!(
+        !last.iter().any(|text| text == "second"),
+        "a withdrawn message must not reach the model again: {last:?}"
+    );
+
+    // Model-visible implies logged: the truncation is on disk, as a snapshot
+    // of what survived it.
+    let log = read_log(session.log_path()).expect("reads");
+    let rewound = log
+        .iter()
+        .find_map(|entry| match &entry.event {
+            SessionEvent::Rewound {
+                history,
+                prompt,
+                removed_messages,
+            } => Some((history.clone(), prompt.clone(), *removed_messages)),
+            _ => None,
+        })
+        .expect("the rewind is logged");
+    assert_eq!(rewound.1, "second");
+    assert_eq!(rewound.2, 2);
+    assert_eq!(
+        keke_core::history_from_log(&log.into_iter().map(|entry| entry.event).collect::<Vec<_>>())
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        session
+            .history()
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        "a resumed session comes back to what the rewind left, not to what it took"
+    );
+}
+
+/// Nothing to go back to is not a truncation to whatever happens to be last.
+#[tokio::test]
+async fn a_rewind_past_the_end_leaves_the_conversation_alone() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(vec![text_reply("one")]);
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    session
+        .run_turn(Message::user("first"))
+        .await
+        .expect("turn");
+    let before = session.history().to_vec();
+
+    assert_eq!(session.rewind_to_user_turn(4).await.expect("answers"), None);
+    assert_eq!(session.history(), before.as_slice());
+}
