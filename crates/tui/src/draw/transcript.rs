@@ -303,52 +303,56 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
                     Span::styled(format!("{verb} "), Style::new().fg(THINKING)),
                     Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
                 ]));
+                push_tool_detail(&mut lines, tool, width);
                 index += 1;
             }
         }
     } else if tools.len() > 1 {
+        // Each call's own output goes right under its own line — not after
+        // the whole run — so a run of several commands never leaves a reader
+        // matching stdout back up to the command it came from.
         for tool in &tools {
             let (glyph, style) = self::marker(tool.state);
             lines.push(Line::from(vec![
                 Span::styled(format!("    {glyph} "), style),
                 Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
             ]));
+            push_tool_detail(&mut lines, tool, width);
         }
-    }
-    for tool in &tools {
-        // An edit/write's raw `old_string=... new_string=...` dump is exactly
-        // what the diff below already shows, one line at a time instead of as
-        // a wall of `key=value` text — showing both says the same thing twice.
-        // A read-only exploration call's headline already names the one
-        // thing that mattered (`path=...`, `pattern=...`); the raw
-        // `key=value` dump underneath it would just repeat that.
-        if tool.arguments != tool.summary
-            && !crate::transcript::is_diff_tool(&tool.name)
-            && !crate::transcript::is_exploration_tool(&tool.name)
-        {
-            push_block(
-                &mut lines,
-                "      ",
-                &tool.arguments,
-                Style::new().fg(THINKING),
-                width,
-            );
-        }
-        if let Some(detail) = &tool.detail {
-            if crate::transcript::is_diff_tool(&tool.name) {
-                push_diff_block(&mut lines, "      ", detail, width);
-            } else {
-                push_block(
-                    &mut lines,
-                    "      ",
-                    detail,
-                    Style::new().fg(THINKING),
-                    width,
-                );
-            }
-        }
+    } else {
+        push_tool_detail(&mut lines, first, width);
     }
     lines
+}
+
+/// A call's expanded arguments and result, indented under its own line.
+///
+/// An edit/write's raw `old_string=... new_string=...` dump is exactly what
+/// the diff below already shows, one line at a time instead of as a wall of
+/// `key=value` text — showing both says the same thing twice. A read-only
+/// exploration call's headline already names the one thing that mattered
+/// (`path=...`, `pattern=...`); the raw `key=value` dump underneath it would
+/// just repeat that.
+fn push_tool_detail(lines: &mut Vec<Line<'static>>, tool: &ToolCell, width: usize) {
+    if !tool.arguments.is_empty()
+        && !crate::transcript::is_diff_tool(&tool.name)
+        && !crate::transcript::is_exploration_tool(&tool.name)
+    {
+        push_block(
+            lines,
+            "      ",
+            &tool.arguments,
+            Style::new().fg(THINKING),
+            width,
+        );
+    }
+    if let Some(detail) = &tool.detail {
+        if crate::transcript::is_diff_tool(&tool.name) {
+            push_diff_block(lines, "      ", detail, width);
+        } else {
+            push_block(lines, "      ", detail, Style::new().fg(THINKING), width);
+        }
+    }
 }
 
 /// The last path segment, so a mixed exploration run reads "Listed demo,

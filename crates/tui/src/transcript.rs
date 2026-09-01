@@ -33,7 +33,7 @@ pub struct ToolCell {
     /// Every argument as `key=value`, for the expanded view.
     pub arguments: String,
     pub state: CallState,
-    /// First line of the result, so success is confirmable without expanding.
+    /// The result's text, shown in the expanded view.
     pub detail: Option<String>,
 }
 
@@ -224,7 +224,7 @@ impl Transcript {
             id: call.id.clone(),
             name: call.name.clone(),
             summary: headline(&call.arguments, &self.cwd_prefix),
-            arguments: summarize_arguments(&call.arguments),
+            arguments: expanded_arguments(&call.arguments, headline_key(&call.arguments)),
             state: CallState::Running,
             detail: None,
         }));
@@ -500,6 +500,22 @@ pub(crate) fn headline(arguments: &serde_json::Value, cwd_prefix: &[String]) -> 
     summarize_arguments(arguments)
 }
 
+/// The field [`headline`] pulled out to stand alone, if any — so the
+/// expanded `key=value` dump can leave it out rather than repeating what the
+/// header already said.
+fn headline_key(arguments: &serde_json::Value) -> Option<&'static str> {
+    if let serde_json::Value::Object(fields) = arguments {
+        for key in SALIENT {
+            if let Some(serde_json::Value::String(text)) = fields.get(key)
+                && !text.trim().is_empty()
+            {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
 /// Re-root a workspace-relative path so it reads against `cwd_prefix` — the
 /// directory the session was launched from — instead of the workspace root.
 ///
@@ -528,34 +544,65 @@ fn relative_to_cwd(path: &str, cwd_prefix: &[String]) -> String {
     }
 }
 
-/// Collapse tool arguments to one line.
+/// Collapse tool arguments to one line, for [`headline`]'s fallback when no
+/// field stood out as salient.
 ///
 /// Objects are shown as `key=value` pairs because the fields a person needs to
 /// judge a call — a path, a command — are almost always top level, and pretty
 /// JSON would push the next cell off the screen.
 pub(crate) fn summarize_arguments(arguments: &serde_json::Value) -> String {
-    let rendered = match arguments {
+    one_line(&render_arguments(arguments, None, one_line_scalar), 160)
+}
+
+/// Every argument as `key=value`, for [`ToolCell::arguments`] — the expanded
+/// view, leaving out `skip` (the field the headline already showed, so this
+/// adds information instead of repeating the collapsed line verbatim:
+/// `command=... timeout=5` next to a header that already reads the command).
+///
+/// Not squashed to one line: `push_block` reflows this like a paragraph, so a
+/// multi-line `command` or script argument reads as itself rather than one
+/// unreadable row of escaped whitespace.
+pub(crate) fn expanded_arguments(arguments: &serde_json::Value, skip: Option<&str>) -> String {
+    render_arguments(arguments, skip, trimmed_scalar)
+}
+
+fn render_arguments(
+    arguments: &serde_json::Value,
+    skip: Option<&str>,
+    scalar: impl Fn(&serde_json::Value) -> String,
+) -> String {
+    match arguments {
         serde_json::Value::Null => String::new(),
         serde_json::Value::Object(fields) => fields
             .iter()
+            .filter(|(key, _)| Some(key.as_str()) != skip)
             .map(|(key, value)| format!("{key}={}", scalar(value)))
             .collect::<Vec<_>>()
             .join(" "),
         other => scalar(other),
-    };
-    one_line(&rendered, 160)
+    }
 }
 
-fn scalar(value: &serde_json::Value) -> String {
+fn one_line_scalar(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => one_line(text, 60),
+        other => trimmed_scalar(other),
+    }
+}
+
+fn trimmed_scalar(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.trim().to_string(),
         serde_json::Value::Array(items) => format!("[{} items]", items.len()),
         serde_json::Value::Object(fields) => format!("{{{} fields}}", fields.len()),
         other => other.to_string(),
     }
 }
 
-fn first_line(result: &ToolResult) -> Option<String> {
+/// The result's text, for the expanded view. Not `one_line`d for the same
+/// reason as [`scalar`]: `push_block` reflows it like a paragraph, so a
+/// multi-line `stdout` reads as itself rather than one truncated row.
+fn full_text(result: &ToolResult) -> Option<String> {
     let text = result
         .content
         .iter()
@@ -564,21 +611,21 @@ fn first_line(result: &ToolResult) -> Option<String> {
             _ => None,
         })?
         .trim();
-    (!text.is_empty()).then(|| one_line(text, 120))
+    (!text.is_empty()).then(|| text.to_string())
 }
 
-/// The collapsed line shown once a call finishes.
+/// The result text shown once a call finishes, in the expanded view.
 ///
 /// The headline already names what a read-only exploration call acted on —
 /// the file, the directory, the pattern — so its output would only repeat
 /// that as noise (a hit's raw `file:line:code` text, a directory listing, an
 /// empty line or a stray `use`). `read_file`, `list_dir`, and `grep` show
-/// nothing here; everything else reads fine as its own first line of output.
+/// nothing here; everything else reads fine as its own result text.
 fn detail_line(name: &str, result: &ToolResult) -> Option<String> {
     match name {
         "read_file" | "list_dir" | "grep" => None,
-        "edit" | "write_file" => diff_hunk(result).or_else(|| first_line(result)),
-        _ => first_line(result),
+        "edit" | "write_file" => diff_hunk(result).or_else(|| full_text(result)),
+        _ => full_text(result),
     }
 }
 
@@ -704,6 +751,15 @@ mod detail_line_tests {
         assert_eq!(
             detail_line("write_file", &result).as_deref(),
             Some("edited file.rs (+1 -1, 1 replacement)")
+        );
+    }
+
+    #[test]
+    fn a_run_commands_multi_line_output_stays_multi_line() {
+        let result = ToolResult::ok(ToolCallId::new("c1"), "line one\nline two\nline three\n");
+        assert_eq!(
+            detail_line("run_command", &result).as_deref(),
+            Some("line one\nline two\nline three")
         );
     }
 }

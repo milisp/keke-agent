@@ -496,6 +496,19 @@ fn tool_arguments_collapse_to_one_line() {
 }
 
 #[test]
+fn expanded_arguments_keep_their_line_breaks() {
+    let expanded = crate::transcript::expanded_arguments(
+        &serde_json::json!({
+            "command": "echo hi\nsleep 1",
+            "timeout": 30,
+        }),
+        Some("command"),
+    );
+    assert!(!expanded.contains("command="));
+    assert_eq!(expanded, "timeout=30");
+}
+
+#[test]
 fn wrapped_text_keeps_its_block_shape() {
     let cells = vec![Cell::User("a b c d e f g h i j".to_string())];
     let lines = crate::draw::transcript::render(&cells, 12, &Default::default()).lines;
