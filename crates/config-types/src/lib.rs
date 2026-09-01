@@ -223,7 +223,16 @@ pub struct ProviderDeclaration {
     /// terms. Unset means it does not — see [`WebSearchConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<WebSearchConfig>,
+    /// Which service tier this instance's requests are routed at. Unset
+    /// leaves the routing to the endpoint's own default for the model, which
+    /// is not the same as asking for the standard tier — see [`ServiceTier`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
 }
+
+/// Re-exported so a config file naming a tier and a request carrying one name
+/// the same type — see [`keke_protocol::ServiceTier`].
+pub use keke_protocol::ServiceTier;
 
 /// How much of the web a vendor-hosted search may reach.
 ///

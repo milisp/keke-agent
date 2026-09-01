@@ -351,6 +351,7 @@ async fn session_builder(
         },
         chosen => chosen.to_string(),
     };
+    let service_tier = declared_service_tier(config, &route);
 
     let mut builder = SessionBuilder::new()
         .config(SessionConfig {
@@ -364,6 +365,7 @@ async fn session_builder(
             },
             max_output_tokens: config.max_output_tokens,
             reasoning_effort: config.reasoning_effort,
+            service_tier,
             compaction: config.compaction,
             checkpoints: config.checkpoints,
             approval,
@@ -395,6 +397,19 @@ async fn session_builder(
 /// `[providers.<route>] default_model` is this deployment's own answer to that
 /// question — first_run asks for it and stores it — so it outranks whatever
 /// happens to head the vendor's model list.
+/// Which queue this route was configured to be answered from, if any.
+///
+/// Read from the declaration rather than from a top-level setting because only
+/// some vendors sell speed, and a route that does not is one where the setting
+/// has nothing to mean.
+fn declared_service_tier(config: &Config, route: &str) -> Option<keke_config_types::ServiceTier> {
+    config
+        .providers
+        .iter()
+        .find(|declared| declared.route == route)
+        .and_then(|declared| declared.service_tier)
+}
+
 fn declared_default_model(config: &Config, route: &str) -> Option<String> {
     config
         .providers

@@ -218,6 +218,7 @@ pub(super) async fn tui(
                 .as_ref()
                 .map_or_else(Default::default, |mode| mode.get()),
             effort: config.reasoning_effort,
+            service_tier: opened.service_tier,
             config_home: config.home.home.clone(),
         },
         keke_tui::Models {

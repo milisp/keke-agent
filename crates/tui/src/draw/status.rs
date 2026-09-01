@@ -102,6 +102,15 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
             Style::new().fg(Color::Blue),
         ));
     }
+    // Only when a queue was actually named: the standard routing is what every
+    // session has and would say nothing, but a session spending its allowance
+    // faster must never do so invisibly.
+    if let Some(tier) = app.service_tier() {
+        spans.push(Span::styled(
+            format!("· {} ", tier.as_str()),
+            Style::new().fg(Color::Magenta),
+        ));
+    }
     // Whatever keke just did on this person's behalf, briefly. Last, because
     // it is the only thing here that is news rather than state.
     if let Some(flash) = app.flash() {

@@ -21,6 +21,9 @@ pub use info::WireApi;
 /// crate: the ladder is `keke-protocol`'s, and a plugin that had to name both
 /// would be one more place the two could disagree.
 pub use keke_protocol::ReasoningEffort;
+/// Re-exported for the same reason [`ReasoningEffort`] is: a provider naming
+/// the queue it routes at needs only this crate.
+pub use keke_protocol::ServiceTier;
 pub use stream::StreamChunk;
 pub use stream::StreamEvent;
 pub use web_search::ArcWebSearch;
@@ -87,6 +90,15 @@ pub struct ModelRequest {
     /// the least thinking on offer — see
     /// [`ReasoningEffort`](keke_protocol::ReasoningEffort).
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Which queue to be answered from, when one was chosen. `None` names no
+    /// tier at all, which leaves the endpoint's own routing in place — not the
+    /// same as asking for the standard queue. See
+    /// [`ServiceTier`](keke_protocol::ServiceTier).
+    ///
+    /// A provider whose vendor sells one speed ignores it; one that sells
+    /// several translates it into its own spelling, which is where the vendor's
+    /// word for the fast queue stays.
+    pub service_tier: Option<ServiceTier>,
 }
 
 /// A vendor backend.

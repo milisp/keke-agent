@@ -391,3 +391,49 @@ async fn a_cached_catalog_is_answered_without_asking_the_vendor_again() {
     assert_eq!(first, second);
     assert_eq!(first[0].id, "gpt-5.6-terra");
 }
+
+/// The engine names the queue in keke's own word; this vendor's word for it is
+/// `priority`, and translating it is the plugin's job alone.
+#[tokio::test]
+async fn a_fast_turn_asks_for_the_priority_queue() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let _ = provider_over(&server, None)
+        .stream(keke_provider_api::ModelRequest {
+            model: "gpt-5.6-luna".to_string(),
+            service_tier: Some(keke_provider_api::ServiceTier::Fast),
+            ..keke_provider_api::ModelRequest::default()
+        })
+        .await;
+
+    let request = &server.received_requests().await.expect("recorded")[0];
+    let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json");
+    assert_eq!(body["service_tier"], "priority");
+}
+
+/// The inverse, and the one that costs allowance if it is wrong: a turn that
+/// named no tier states none, leaving the endpoint's own routing alone rather
+/// than pinning it to a queue.
+#[tokio::test]
+async fn a_turn_with_no_tier_states_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let _ = provider_over(&server, None)
+        .stream(keke_provider_api::ModelRequest {
+            model: "gpt-5.6-luna".to_string(),
+            ..keke_provider_api::ModelRequest::default()
+        })
+        .await;
+
+    let request = &server.received_requests().await.expect("recorded")[0];
+    let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json");
+    assert!(body.get("service_tier").is_none());
+}

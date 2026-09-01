@@ -121,6 +121,9 @@ pub struct App {
     /// How hard the model is asked to think. `None` is the vendor's own
     /// default, which is a state of its own and not the lowest rung.
     effort: Option<ReasoningEffort>,
+    /// Which queue the vendor is being asked to answer from. `None` names
+    /// none, which is a state of its own and not the standard queue.
+    tier: Option<keke_config_types::ServiceTier>,
     /// Which model is answering, and every model this session's provider
     /// serves. The list is empty when the provider could not be asked and had
     /// nothing to fall back on; `/model` then says so rather than showing an
@@ -243,6 +246,7 @@ impl App {
                 approval: ApprovalPolicy::default(),
                 mode: keke_config_types::SessionMode::default(),
                 effort: None,
+                tier: None,
                 model: String::new(),
                 provider: None,
                 routes: Vec::new(),
@@ -351,6 +355,14 @@ impl App {
     #[must_use]
     pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
         self.effort = effort;
+        self
+    }
+
+    /// The queue the session was configured to be answered from, so the bar
+    /// and `/fast` start from what is in force rather than from a guess.
+    #[must_use]
+    pub fn with_service_tier(mut self, tier: Option<keke_config_types::ServiceTier>) -> Self {
+        self.tier = tier;
         self
     }
 

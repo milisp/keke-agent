@@ -25,6 +25,7 @@ use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
 use keke_provider_api::ProviderFuture;
 use keke_provider_api::ProviderInfo;
+use keke_provider_api::ServiceTier;
 use keke_provider_api::StreamEvent;
 use keke_provider_api::WireApi;
 use keke_wire::WireClient;
@@ -164,12 +165,25 @@ impl ModelProvider for CodexProvider {
     /// The hosted search is attached here rather than by the engine, because
     /// the engine is not allowed to know that this vendor has one — and because
     /// it is a property of the endpoint, not of the turn.
+    ///
+    /// The turn's service tier is translated here for the neighbouring reason:
+    /// the engine names a queue in keke's own words, and `priority` is this
+    /// vendor's word for the fast one. It is sent as written rather than
+    /// checked against the model — a queue this account cannot buy is refused
+    /// by the endpoint, naming itself, where a check here could only guess from
+    /// a catalog that may be the compiled-in fallback.
     fn stream<'a>(
         &'a self,
         mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
         if let Some(tool) = &self.web_search {
             request.hosted_tools.push(tool.clone());
+        }
+        if let Some(tier) = request.service_tier {
+            request.vendor_params.insert(
+                "service_tier".to_string(),
+                serde_json::json!(wire_tier(tier)),
+            );
         }
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }
@@ -209,6 +223,15 @@ impl ModelProvider for CodexProvider {
                 }
             }
         })
+    }
+}
+
+/// OpenAI's own name for a queue. `Fast` is `priority` here because that is
+/// what this vendor calls it; the word a person types stays keke's.
+fn wire_tier(tier: ServiceTier) -> &'static str {
+    match tier {
+        ServiceTier::Fast => "priority",
+        ServiceTier::Flex => "flex",
     }
 }
 

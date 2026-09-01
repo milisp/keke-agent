@@ -117,6 +117,9 @@ pub struct SessionDefaults {
     /// comes back with the flag already up.
     pub mode: keke_config_types::SessionMode,
     pub effort: Option<keke_config_types::ReasoningEffort>,
+    /// The queue the session was configured to be answered from, so `/fast`
+    /// and the bar start from what is in force.
+    pub service_tier: Option<keke_config_types::ServiceTier>,
     /// `$KEKE_HOME`, so `/model` and `/effort` persist past this
     /// process.
     pub config_home: keke_paths::AbsPath,
@@ -167,6 +170,7 @@ pub async fn run(
         .with_approval_policy(defaults.approval)
         .with_session_mode(defaults.mode)
         .with_reasoning_effort(defaults.effort)
+        .with_service_tier(defaults.service_tier)
         .with_models(models.provider, models.current, models.available)
         .with_provider_routes(models.routes)
         .with_prompt_history(history)

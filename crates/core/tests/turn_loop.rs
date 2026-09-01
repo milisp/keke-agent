@@ -331,6 +331,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         home: home.clone(),
         max_output_tokens: MaxOutputTokens::default(),
         reasoning_effort: None,
+        service_tier: None,
         compaction: CompactionConfig::default(),
         checkpoints: CheckpointConfig::default(),
         approval,

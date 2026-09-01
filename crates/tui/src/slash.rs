@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::ReasoningEffort;
+use keke_config_types::ServiceTier;
 
 /// What running a command does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +61,8 @@ pub enum Builtin {
     Quit,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
+    /// Turns fast mode on and off, or sets the queue named as an argument.
+    Fast,
     /// Opens the model picker, or switches straight to the model named as an
     /// argument.
     Model,
@@ -221,6 +224,11 @@ fn builtins() -> Vec<SlashCommand> {
             "cycle the reasoning effort, or name one: low, medium, high, xhigh, max, ultra, default",
         ),
         (
+            Builtin::Fast,
+            "fast",
+            "toggle fast mode, or name a queue: fast, flex, off",
+        ),
+        (
             Builtin::Model,
             "model",
             "pick a model from this provider, or name one to switch to it",
@@ -341,6 +349,33 @@ pub fn effort(argument: &str) -> Result<Option<Option<ReasoningEffort>>, String>
         "" => Ok(None),
         "default" | "unset" => Ok(Some(None)),
         other => ReasoningEffort::parse(other).map(|level| Some(Some(level))),
+    }
+}
+
+/// Read the argument to `/fast`. `Ok(None)` means "no argument, toggle".
+///
+/// `off` is spelled out rather than inferred from an empty argument, so a
+/// person who means "stop paying for the fast queue" can say it outright
+/// instead of tapping the toggle and hoping it landed the right way.
+///
+/// A queue nobody recognizes is an error rather than a fallback: a typo that
+/// quietly bought a different speed is invisible until the bill.
+pub fn service_tier(argument: &str) -> Result<Option<Option<ServiceTier>>, String> {
+    match argument.trim() {
+        "" => Ok(None),
+        "off" | "default" | "unset" | "standard" => Ok(Some(None)),
+        other => ServiceTier::parse(other)
+            .map(|tier| Some(Some(tier)))
+            .ok_or_else(|| format!("no such queue: `{other}` — try fast, flex, or off")),
+    }
+}
+
+/// How the queue reads in the bar and in `/help`.
+#[must_use]
+pub fn tier_name(tier: Option<ServiceTier>) -> &'static str {
+    match tier {
+        None => "standard",
+        Some(tier) => tier.as_str(),
     }
 }
 

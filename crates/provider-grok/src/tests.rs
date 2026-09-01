@@ -500,6 +500,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
         max_output_tokens: Some(256),
         temperature: Some(0.5),
         reasoning_effort: None,
+        service_tier: None,
     };
 
     let body = keke_wire::chat_completions_body(&request, true);

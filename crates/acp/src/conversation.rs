@@ -156,6 +156,9 @@ pub struct Opened {
     /// The level this session was configured with, so a client's picker starts
     /// on what is in force rather than on a guess.
     pub effort: Option<ReasoningEffort>,
+    /// The queue this session was configured to be answered from, for the same
+    /// reason. `None` is no queue named, not the standard one.
+    pub service_tier: Option<keke_protocol::ServiceTier>,
     /// The approval policy this session was configured with, so a client's
     /// picker starts on what is in force rather than on a guess.
     pub approval_policy: ApprovalPolicy,
@@ -290,6 +293,19 @@ pub trait Conversation: Send + Sync {
     /// "unset, let the model decide" rather than the lowest rung.
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>);
 
+    /// Change which queue the vendor answers from — what a surface offers as
+    /// fast mode.
+    ///
+    /// On the seam for the same reason the effort level is: a person buying a
+    /// faster answer is talking about the one in front of them. `None` names no
+    /// queue, leaving the endpoint's own routing alone, which is not the same
+    /// as asking for the standard one.
+    ///
+    /// A vendor that sells one speed ignores it rather than failing: a surface
+    /// must be able to offer the switch without knowing which vendor it is
+    /// attached to.
+    fn set_service_tier(&self, tier: Option<keke_protocol::ServiceTier>);
+
     /// Change which model answers, within the provider the session was built
     /// with. On the seam for the same reason the two settings above are: a
     /// person switching models is talking about the next answer.
@@ -388,6 +404,7 @@ pub struct ScriptedConversation {
     cancels: Arc<Mutex<usize>>,
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
     efforts: Arc<Mutex<Vec<Option<ReasoningEffort>>>>,
+    tiers: Arc<Mutex<Vec<Option<keke_protocol::ServiceTier>>>>,
     models: Arc<Mutex<Vec<String>>>,
     modes: Arc<Mutex<Vec<SessionMode>>>,
     new_sessions: Arc<Mutex<usize>>,
@@ -411,6 +428,7 @@ impl ScriptedConversation {
                 cancels: Arc::new(Mutex::new(0)),
                 policies: Arc::new(Mutex::new(Vec::new())),
                 efforts: Arc::new(Mutex::new(Vec::new())),
+                tiers: Arc::new(Mutex::new(Vec::new())),
                 models: Arc::new(Mutex::new(Vec::new())),
                 modes: Arc::new(Mutex::new(Vec::new())),
                 new_sessions: Arc::new(Mutex::new(0)),
@@ -505,6 +523,15 @@ impl ScriptedConversation {
             .unwrap_or_default()
     }
 
+    /// Every queue the surface has asked for, in order.
+    #[must_use]
+    pub fn service_tiers(&self) -> Vec<Option<keke_protocol::ServiceTier>> {
+        self.tiers
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
     #[must_use]
     pub fn cancel_count(&self) -> usize {
         self.cancels.lock().map(|count| *count).unwrap_or_default()
@@ -571,6 +598,12 @@ impl Conversation for ScriptedConversation {
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
         if let Ok(mut seen) = self.efforts.lock() {
             seen.push(effort);
+        }
+    }
+
+    fn set_service_tier(&self, tier: Option<keke_protocol::ServiceTier>) {
+        if let Ok(mut seen) = self.tiers.lock() {
+            seen.push(tier);
         }
     }
 

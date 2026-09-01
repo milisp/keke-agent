@@ -91,6 +91,7 @@ fn builtin(route: &str, kind: &str) -> keke_config_types::ProviderDeclaration {
         proxy_password_env_key: None,
         headers: std::collections::BTreeMap::new(),
         web_search: None,
+        service_tier: None,
     }
 }
 
