@@ -336,6 +336,23 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
+/// Run a fixture once, with nothing on its stdin, and wait for it to exit.
+///
+/// The very first exec of a just-written script pays for resolving the
+/// interpreter, byte-compiling, and faulting the pages in — on a loaded machine
+/// that is seconds, not milliseconds. A test that puts a clock on the fallback
+/// would otherwise be measuring that, so the cost is paid here instead, outside
+/// any budget.
+fn warm(command: &Path) {
+    let status = std::process::Command::new(command)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("run the fake server once");
+    assert!(status.success(), "the fixture would not start: {status}");
+}
+
 fn abs(path: &Path) -> AbsPath {
     AbsPath::new(path.canonicalize().expect("canonicalize")).expect("absolute")
 }
@@ -805,10 +822,11 @@ async fn a_silent_legacy_server_is_reached_by_falling_back() {
     let dir = TempDir::new().expect("tempdir");
     let command = script(dir.path(), "silent.py", SILENT_LEGACY_SERVER);
     // A server that ignores the probe entirely costs a timeout, so this names a
-    // smaller budget than the deployment default. Not smaller still: the first
-    // exec of a just-written script can take about a second, and a probe budget
-    // under that would time out before the server ever read its stdin — proving
-    // nothing about the fallback.
+    // smaller budget than the deployment default. Half of it is the probe, half
+    // the `initialize` that follows; with the interpreter already warm, a warm
+    // start plus one exchange is milliseconds, so 2s a side is headroom rather
+    // than a deadline the machine's load can miss.
+    warm(&command);
     let tools = installed_tools_with(
         vec![plugin_with_server(
             "acme",
@@ -818,7 +836,7 @@ async fn a_silent_legacy_server_is_reached_by_falling_back() {
             Vec::new(),
         )],
         keke_mcp::McpOptions {
-            startup_timeout_millis: 6_000,
+            startup_timeout_millis: 4_000,
             call_timeout_millis: 5_000,
             ..keke_mcp::McpOptions::default()
         },
