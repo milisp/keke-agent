@@ -2728,3 +2728,77 @@ async fn cancelling_the_overlay_leaves_the_conversation_alone() {
     assert!(scripted.rewinds().is_empty());
     assert!(app.input.is_empty());
 }
+
+/// Putting the files back is still a rewind of the words: the prompt comes
+/// back to the composer to be edited, and is not asked again on its own.
+#[tokio::test]
+async fn restoring_both_hands_the_prompt_back_rather_than_asking_it_again() {
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
+    scripted.with_snapshots(vec!["src/lib.rs".to_string()]);
+    two_turns(&mut app, &mut updates).await;
+
+    open_rewind(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::Down));
+    let rewind = app.rewind().expect("the overlay is still open");
+    assert_eq!(
+        rewind.decision().map(|(_, scope)| scope),
+        Some(RewindScope::Both),
+        "two steps down from the first choice is conversation and files"
+    );
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+
+    assert_eq!(
+        app.input.text(),
+        "second",
+        "the words come back to be edited"
+    );
+    assert_eq!(
+        scripted.rewinds(),
+        vec![(1, RewindScope::Both)],
+        "the files go back with the conversation"
+    );
+    assert_eq!(
+        scripted.prompts(),
+        vec!["first".to_string()],
+        "the prompt is handed back, never re-sent"
+    );
+    assert_eq!(
+        app.transcript.cells(),
+        &[
+            Cell::User("first".to_string()),
+            Cell::Assistant("one".to_string()),
+        ],
+    );
+}
+
+/// The Enter that carries out a rewind is not also the Enter that sends what
+/// it handed back — a terminal repeating a held key would otherwise ask the
+/// very question the person was taking back.
+#[tokio::test]
+async fn the_enter_that_rewinds_does_not_send_the_prompt_it_hands_back() {
+    let (mut app, scripted, mut updates, mut local) = app_with(two_answers());
+    two_turns(&mut app, &mut updates).await;
+
+    open_rewind(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+    app.handle_key(key(KeyCode::Enter));
+    settle(&mut app, &mut local).await;
+
+    assert_eq!(
+        app.input.text(),
+        "second",
+        "the words stay in the composer to be edited"
+    );
+    assert_eq!(
+        scripted.prompts(),
+        vec!["first".to_string()],
+        "nothing was asked again"
+    );
+}

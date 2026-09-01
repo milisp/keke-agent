@@ -157,6 +157,7 @@ impl App {
             self.input.set_text(&point.text);
             self.input.move_end();
             self.scroll.follow();
+            self.rewound_at = Some(Instant::now());
         }
         self.set_flash(match scope {
             RewindScope::Conversation => "wound back — edit it and press enter to ask again",
@@ -188,6 +189,18 @@ impl App {
             "put back {files} file{}",
             if files == 1 { "" } else { "s" }
         ));
+    }
+
+    /// Whether Enter is still the key that just carried out a rewind rather
+    /// than the key that sends the composer.
+    pub(crate) fn just_rewound(&mut self) -> bool {
+        let fresh = self
+            .rewound_at
+            .is_some_and(|at| at.elapsed() < crate::rewind::HANDBACK);
+        if !fresh {
+            self.rewound_at = None;
+        }
+        fresh
     }
 
     /// Forget a first Esc, because something else was pressed after it.

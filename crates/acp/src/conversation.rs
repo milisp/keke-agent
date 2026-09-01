@@ -392,6 +392,9 @@ pub struct ScriptedConversation {
     modes: Arc<Mutex<Vec<SessionMode>>>,
     new_sessions: Arc<Mutex<usize>>,
     rewinds: Arc<Mutex<Vec<(usize, RewindScope)>>>,
+    /// What a scripted agent pretends its snapshots hold: every turn carries
+    /// one, and a restore would put these files back.
+    snapshot_files: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedConversation {
@@ -412,9 +415,19 @@ impl ScriptedConversation {
                 modes: Arc::new(Mutex::new(Vec::new())),
                 new_sessions: Arc::new(Mutex::new(0)),
                 rewinds: Arc::new(Mutex::new(Vec::new())),
+                snapshot_files: Arc::new(Mutex::new(Vec::new())),
             },
             receiver,
         )
+    }
+
+    /// Pretend every turn was snapshotted, and that a restore would put these
+    /// files back — the only way a test can reach the file choices, which a
+    /// snapshotless agent draws as unavailable.
+    pub fn with_snapshots(&self, files: Vec<String>) {
+        if let Ok(mut held) = self.snapshot_files.lock() {
+            *held = files;
+        }
     }
 
     /// How many times `new_session` was called, so a test can assert a
@@ -446,6 +459,13 @@ impl ScriptedConversation {
         self.answers
             .lock()
             .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    fn snapshot_files(&self) -> Vec<String> {
+        self.snapshot_files
+            .lock()
+            .map(|files| files.clone())
             .unwrap_or_default()
     }
 
@@ -570,8 +590,8 @@ impl Conversation for ScriptedConversation {
         })
     }
 
-    /// Every prompt sent so far is a point, and a scripted agent holds no
-    /// files, so none of them carries a snapshot.
+    /// Every prompt sent so far is a point; whether it carries a snapshot is
+    /// whatever [`ScriptedConversation::with_snapshots`] was told.
     fn rewind_points(&self) -> ConversationFuture<'_, Result<Vec<RewindPoint>, ConversationError>> {
         Box::pin(async move {
             let prompts = self
@@ -579,13 +599,14 @@ impl Conversation for ScriptedConversation {
                 .lock()
                 .map(|seen| seen.clone())
                 .unwrap_or_default();
+            let snapshot_files = self.snapshot_files();
             Ok(prompts
                 .into_iter()
                 .enumerate()
                 .map(|(turn, prompt)| RewindPoint {
                     turn,
                     prompt,
-                    has_snapshot: false,
+                    has_snapshot: !snapshot_files.is_empty(),
                 })
                 .collect())
         })
@@ -595,7 +616,7 @@ impl Conversation for ScriptedConversation {
         &self,
         _nth: usize,
     ) -> ConversationFuture<'_, Result<Vec<String>, ConversationError>> {
-        Box::pin(async move { Ok(Vec::new()) })
+        Box::pin(async move { Ok(self.snapshot_files()) })
     }
 
     /// Forgets the prompts from `nth` on, so `prompts()` reads the way a real
@@ -623,10 +644,15 @@ impl Conversation for ScriptedConversation {
             } else {
                 0
             };
+            let restored_files = if scope.touches_files() {
+                self.snapshot_files()
+            } else {
+                Vec::new()
+            };
             Ok(Some(Rewound {
                 prompt,
                 removed_messages,
-                restored_files: Vec::new(),
+                restored_files,
             }))
         })
     }

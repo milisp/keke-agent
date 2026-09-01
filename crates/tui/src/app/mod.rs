@@ -92,6 +92,12 @@ pub struct App {
     /// waiting for its second tap. `None` is the ordinary state: Esc is the
     /// key for "never mind", so the first press does nothing but arm.
     esc_armed: Option<Instant>,
+    /// When a rewind last put a prompt back in the composer. Enter is
+    /// swallowed for a moment after that: the same key carries out the rewind
+    /// and sends the composer, and a terminal that repeats a held Enter — or a
+    /// person who taps it twice — would fire the words straight back off
+    /// unedited, which is the one thing a rewind is for avoiding.
+    pub(crate) rewound_at: Option<Instant>,
     /// The rewind overlay, while one is open. It holds the keyboard, the way
     /// the model picker does.
     rewind: Option<crate::rewind::Rewind>,
@@ -229,6 +235,7 @@ impl App {
                 history: PromptHistory::default(),
                 completion: 0,
                 esc_armed: None,
+                rewound_at: None,
                 rewind: None,
                 picker: None,
                 plan: None,

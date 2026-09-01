@@ -22,6 +22,14 @@ use keke_protocol::RewindScope;
 /// intentions rather than one gesture.
 pub const ARM: Duration = Duration::from_millis(1_000);
 
+/// How long after a rewind hands the words back that Enter still belongs to
+/// the rewind rather than to the composer.
+///
+/// Short enough to be invisible to someone who read the prompt before sending
+/// it again, long enough to swallow a repeat of the very keystroke that closed
+/// the overlay.
+pub const HANDBACK: Duration = Duration::from_millis(400);
+
 /// One prompt the conversation can be wound back to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
