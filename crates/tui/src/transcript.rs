@@ -427,11 +427,17 @@ pub(crate) fn is_exploration_tool(name: &str) -> bool {
 /// Exploration tools (`read_file`, `list_dir`, `grep`) group with each other
 /// regardless of order — a person skimming `read, list, read` wants one
 /// "Exploring" run, not three headers for a search that never wrote anything.
-/// Anything else (`bash`, `edit`, `write_file`, ...) only groups with itself,
-/// since those are the calls whose effects need to stay individually visible.
+/// A diff tool (`edit`, `write_file`) never groups, not even with itself: its
+/// diff is the one thing a person needs to see to trust the change, and two
+/// diffs sharing one header with no label between them are indistinguishable.
+/// Anything else (`bash`, ...) groups with itself, since a header naming the
+/// tool once is enough when the calls carry no per-call payload worth telling
+/// apart.
 pub(crate) fn same_run(a: &str, b: &str) -> bool {
     if is_exploration_tool(a) && is_exploration_tool(b) {
         true
+    } else if is_diff_tool(a) || is_diff_tool(b) {
+        false
     } else {
         a == b
     }

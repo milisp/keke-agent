@@ -143,10 +143,15 @@ pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> R
                     .extend(markdown::render(text, width, Style::new(), ""));
             }
             Cell::Tool(first) => {
-                let end = cells[index..]
+                // The anchor always starts its own group of at least one, so
+                // the scan for where the run ends must not re-test it against
+                // itself: `runs_with` is not reflexive for a diff tool (two
+                // edits never share a run), and testing offset 0 here would
+                // make the group empty and `index` would never advance.
+                let end = cells[index + 1..]
                     .iter()
                     .position(|cell| !runs_with(cell, &first.name))
-                    .map_or(cells.len(), |offset| index + offset);
+                    .map_or(cells.len(), |offset| index + 1 + offset);
                 out.toggles.push((out.lines.len(), index));
                 let group = &cells[index..end];
                 let open = default_open(group) ^ expanded.contains(&index);
@@ -515,6 +520,26 @@ mod grouping_tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn consecutive_edits_render_as_separate_groups_and_terminate() {
+        // Regression: `same_run` is not reflexive for a diff tool, so the
+        // scan for a run's end must skip the anchor itself — otherwise the
+        // first edit's group is empty, `index` never advances, and this call
+        // hangs forever instead of returning. That hang is what made resuming
+        // a session with two consecutive edits never reach the TUI.
+        let cells = vec![
+            tool("c1", "edit", "a.rs"),
+            tool("c2", "edit", "b.rs"),
+            tool("c3", "read_file", "c.rs"),
+        ];
+        let rendered = render(&cells, 80, &HashSet::new());
+        assert_eq!(
+            rendered.toggles.len(),
+            3,
+            "each edit is its own group, not folded with the other"
+        );
     }
 
     #[test]
