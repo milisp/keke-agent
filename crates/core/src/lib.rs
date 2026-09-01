@@ -51,6 +51,7 @@ pub use resume::ResumedSession;
 pub use resume::SessionMatch;
 pub use resume::SessionSummary;
 pub use resume::abbreviation;
+pub use resume::delete_session;
 pub use resume::find_session;
 pub use resume::history_from_log;
 pub use resume::latest_session;

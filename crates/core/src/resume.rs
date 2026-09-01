@@ -330,6 +330,25 @@ pub fn latest_session(home: &AbsPath) -> Result<Option<SessionSummary>, RolloutE
         .find(|session| session.turns > 0))
 }
 
+/// Remove a session's directory from disk.
+///
+/// For a session that ends with no turns: opening the interface writes a log
+/// whether or not anybody says anything, and a person who quit without typing
+/// would otherwise leave a resumable-looking entry that `keke resume --list`
+/// has to filter out forever. Deleting it here means there is nothing to
+/// filter — the log for an empty session never outlives the process that
+/// opened it.
+pub fn delete_session(home: &AbsPath, id: SessionId) -> Result<(), RolloutError> {
+    let path = session_path(home, id)?;
+    let Some(dir) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::remove_dir_all(dir).map_err(|source| RolloutError::Io {
+        path: dir.display().to_string(),
+        source,
+    })
+}
+
 /// Read one session's log and rebuild what a session needs to continue it.
 ///
 /// The history a resume starts from is the last `ModelRequest` plus everything

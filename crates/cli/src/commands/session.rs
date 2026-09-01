@@ -243,11 +243,26 @@ pub(super) async fn tui(
         },
     )
     .await;
-    // Printed after the terminal is restored, so a person who quit with
-    // Ctrl-C/Ctrl-D lands back at a shell prompt that already tells them how
-    // to pick the conversation back up.
+    // A session that never held a turn is a log opening the interface wrote
+    // and closing it never used — deleted rather than left behind, so
+    // `keke resume --list` (and the disk) don't carry an entry for a
+    // conversation that never happened.
     if let Some(id) = session_id {
-        println!("keke resume {id}");
+        let turns = keke_core::list_sessions(&config.home.home)
+            .ok()
+            .and_then(|sessions| sessions.into_iter().find(|session| session.id == id))
+            .map(|session| session.turns)
+            .unwrap_or(0);
+        if turns == 0 {
+            if let Err(error) = keke_core::delete_session(&config.home.home, id) {
+                tracing::warn!(%error, "could not delete an empty session");
+            }
+        } else {
+            // Printed after the terminal is restored, so a person who quit
+            // with Ctrl-C/Ctrl-D lands back at a shell prompt that already
+            // tells them how to pick the conversation back up.
+            println!("keke resume {id}");
+        }
     }
     result
 }
