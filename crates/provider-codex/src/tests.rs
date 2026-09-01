@@ -392,29 +392,20 @@ async fn a_cached_catalog_is_answered_without_asking_the_vendor_again() {
     assert_eq!(first[0].id, "gpt-5.6-terra");
 }
 
-/// Fast mode is a property of the endpoint, so it reaches the wire without the
-/// engine ever naming a queue: the body carries the vendor's own spelling
-/// (`priority`), not the word a person configured.
+/// The engine names the queue in keke's own word; this vendor's word for it is
+/// `priority`, and translating it is the plugin's job alone.
 #[tokio::test]
-async fn a_fast_instance_asks_for_the_priority_queue() {
+async fn a_fast_turn_asks_for_the_priority_queue() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
-    let provider = CodexProvider::new(
-        Arc::new(StubAuth),
-        Endpoint {
-            base_url: format!("{}/backend-api/codex", server.uri()),
-            service_tier: Some(keke_config_types::ServiceTier::Fast),
-            ..Endpoint::default()
-        },
-        None,
-    );
 
-    let _ = provider
+    let _ = provider_over(&server, None)
         .stream(keke_provider_api::ModelRequest {
             model: "gpt-5.6-luna".to_string(),
+            service_tier: Some(keke_provider_api::ServiceTier::Fast),
             ..keke_provider_api::ModelRequest::default()
         })
         .await;
@@ -424,11 +415,11 @@ async fn a_fast_instance_asks_for_the_priority_queue() {
     assert_eq!(body["service_tier"], "priority");
 }
 
-/// The inverse, and the one that costs allowance if it is wrong: an instance
-/// that named no tier states none, leaving the endpoint's own routing alone
-/// rather than pinning it to the standard queue.
+/// The inverse, and the one that costs allowance if it is wrong: a turn that
+/// named no tier states none, leaving the endpoint's own routing alone rather
+/// than pinning it to a queue.
 #[tokio::test]
-async fn an_instance_with_no_tier_states_none() {
+async fn a_turn_with_no_tier_states_none() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200))

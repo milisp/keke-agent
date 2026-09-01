@@ -12,6 +12,7 @@ mod ids;
 mod message;
 mod reasoning;
 mod session;
+mod tier;
 mod tool;
 
 pub use ids::SessionId;
@@ -28,6 +29,7 @@ pub use reasoning::ReasoningEffort;
 pub use session::RewindScope;
 pub use session::SessionEvent;
 pub use session::SessionEventEnvelope;
+pub use tier::ServiceTier;
 pub use tool::ToolCall;
 pub use tool::ToolResult;
 pub use tool::ToolStatus;

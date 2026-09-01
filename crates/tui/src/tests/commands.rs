@@ -9,6 +9,7 @@ use keke_acp::Update;
 use keke_config_types::ApprovalPolicy;
 use keke_config_types::SessionMode;
 use keke_protocol::ReasoningEffort;
+use keke_protocol::ServiceTier;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolCallId;
@@ -567,6 +568,58 @@ async fn the_effort_command_names_a_level_and_refuses_a_typo() {
         vec![Some(ReasoningEffort::XHigh), None],
         "the surface's idea of the level is worthless unless the agent has it"
     );
+}
+
+/// A bare `/fast` is a switch, not a cycle: on, then off again, and the agent
+/// hears both — a surface that only changed what it drew would leave the
+/// allowance being spent at a speed nobody could turn off.
+#[tokio::test]
+async fn the_fast_command_toggles_and_reaches_the_agent() {
+    let (mut app, scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/fast");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.service_tier(), Some(ServiceTier::Fast));
+    assert!(app.transcript.is_empty(), "a clean switch says nothing");
+
+    type_text(&mut app, "/fast");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.service_tier(),
+        None,
+        "off is reachable by tapping again"
+    );
+
+    assert_eq!(
+        scripted.service_tiers(),
+        vec![Some(ServiceTier::Fast), None],
+        "the surface's idea of the queue is worthless unless the agent has it"
+    );
+}
+
+/// A queue can be named outright, and a typo must move nothing — the same
+/// standard `/effort` is held to, for the same reason: a misspelling that
+/// quietly bought a different speed is invisible until the bill.
+#[tokio::test]
+async fn the_fast_command_names_a_queue_and_refuses_a_typo() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+
+    type_text(&mut app, "/fast flex");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.service_tier(), Some(ServiceTier::Flex));
+
+    type_text(&mut app, "/fast fsat");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.service_tier(),
+        Some(ServiceTier::Flex),
+        "a typo must not move the queue"
+    );
+    assert!(matches!(app.transcript.last(), Some(Cell::Error(_))));
+
+    type_text(&mut app, "/fast off");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.service_tier(), None);
 }
 
 /// `/new` is the name people reach for; it does what `/clear` does.

@@ -23,6 +23,7 @@ mod prompt_history;
 mod resume;
 mod rollout;
 mod session;
+mod tier;
 mod turn;
 
 pub use approval::ApprovalMemory;
@@ -69,6 +70,7 @@ pub use session::Session;
 pub use session::SessionBuilder;
 pub use session::SessionConfig;
 pub use session::TurnUpdate;
+pub use tier::ServiceTierSwitch;
 pub use turn::TurnOutcome;
 
 use keke_provider_api::ProviderError;

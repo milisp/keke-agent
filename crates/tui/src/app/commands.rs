@@ -44,6 +44,20 @@ impl App {
                 }
                 Err(unknown) => self.transcript.push(Cell::Error(unknown)),
             },
+            SlashAction::Builtin(Builtin::Fast) => match crate::slash::service_tier(arguments) {
+                Ok(Some(tier)) => self.set_service_tier(tier),
+                // A bare `/fast` is a toggle rather than a cycle through every
+                // queue: the flex queue is a deliberate choice to wait, not
+                // somewhere to land on the way back from fast.
+                Ok(None) => {
+                    let next = match self.service_tier() {
+                        Some(keke_config_types::ServiceTier::Fast) => None,
+                        _ => Some(keke_config_types::ServiceTier::Fast),
+                    };
+                    self.set_service_tier(next);
+                }
+                Err(unknown) => self.transcript.push(Cell::Error(unknown)),
+            },
             SlashAction::Builtin(Builtin::Model) => {
                 let wanted = arguments.trim().to_string();
                 if wanted.is_empty() {

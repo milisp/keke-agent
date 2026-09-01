@@ -97,7 +97,7 @@ to be exported would spend the wrong quota under the wrong identity.
 | `proxy_password_env_key` | No | Environment variable holding the proxy password |
 | `headers` | No | Extra HTTP headers sent with every request |
 | `web_search` | No | The vendor's own web search — see below. Off unless set |
-| `service_tier` | No | `codex` only: which queue turns are routed at — `fast` or `flex`. Unset leaves the endpoint's own routing |
+| `service_tier` | No | Which queue turns start out routed at — `fast` or `flex`. Unset leaves the endpoint's own routing |
 
 A block named after a built-in route — `grok`, `codex`, `anthropic`, `ollama` —
 configures that built-in rather than replacing it, so `kind` only needs stating
@@ -116,10 +116,19 @@ the deferred queue, which is cheaper and slower under load.
 service_tier = "fast"      # fast (priority routing), flex (deferred)
 ```
 
+In the TUI, `/fast` turns it on and off for the conversation in front of you,
+and `/fast flex` or `/fast off` names a queue outright. The setting above is
+only where a session *starts*: unlike `/effort`, a typed `/fast` is not written
+back to `config.toml`, because a speed bought for one conversation that quietly
+stayed on for every later one is what a person enables once and then pays for
+forever. The bar says which queue is in force whenever one is named.
+
 Left unset, keke names no queue at all, which is not the same as asking for the
 standard one: the endpoint applies whatever default the model and the account
 already have. An account that cannot buy the queue it named is refused by the
-vendor, naming the tier, rather than being quietly downgraded here.
+vendor, naming the tier, rather than being quietly downgraded here. Only
+providers whose vendor sells more than one speed act on it — today that is
+`codex`; the rest ignore it rather than failing.
 
 ### Web Search
 

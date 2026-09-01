@@ -230,49 +230,9 @@ pub struct ProviderDeclaration {
     pub service_tier: Option<ServiceTier>,
 }
 
-/// How a vendor should route a request, when it sells more than one speed.
-///
-/// A tier is not a model setting and not a reasoning level: the same model at
-/// the same effort answers faster or cheaper depending on the queue it is put
-/// in, and the two knobs compose. Modelled as an enum rather than passed
-/// through as a string because a misspelt tier is a request the endpoint
-/// rejects mid-turn, which is the worst moment to learn of a typo in a config
-/// file read at startup.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceTier {
-    /// Priority routing: the same answer, sooner, against a larger share of
-    /// the account's allowance. This is what a surface calls "fast mode".
-    #[serde(alias = "priority")]
-    Fast,
-    /// Deferred routing: cheaper, and slower under load.
-    Flex,
-}
-
-impl ServiceTier {
-    /// The wire spelling. `Fast` is `priority` because that is the queue's
-    /// name at the vendor; `fast` is what a person calls it.
-    #[must_use]
-    pub fn request_value(self) -> &'static str {
-        match self {
-            Self::Fast => "priority",
-            Self::Flex => "flex",
-        }
-    }
-
-    /// The inverse of [`Self::request_value`], accepting the spoken spelling
-    /// as well. `None` for anything else, including a tier from a future
-    /// build — a routing this build cannot ask for must never be read as one
-    /// it can.
-    #[must_use]
-    pub fn parse(wire: &str) -> Option<Self> {
-        match wire {
-            "fast" | "priority" => Some(Self::Fast),
-            "flex" => Some(Self::Flex),
-            _ => None,
-        }
-    }
-}
+/// Re-exported so a config file naming a tier and a request carrying one name
+/// the same type — see [`keke_protocol::ServiceTier`].
+pub use keke_protocol::ServiceTier;
 
 /// How much of the web a vendor-hosted search may reach.
 ///
@@ -1097,16 +1057,6 @@ mod tests {
     fn a_single_star_does_not_cross_a_path_separator() {
         assert!(entry("/srv/*").matches(Path::new("/srv/api"), None));
         assert!(!entry("/srv/*").matches(Path::new("/srv/api/nested"), None));
-    }
-
-    /// The queue's name at the vendor is not the word a person writes, and a
-    /// config file that used either must mean the same thing.
-    #[test]
-    fn fast_and_priority_name_the_same_queue() {
-        assert_eq!(ServiceTier::parse("fast"), Some(ServiceTier::Fast));
-        assert_eq!(ServiceTier::parse("priority"), Some(ServiceTier::Fast));
-        assert_eq!(ServiceTier::Fast.request_value(), "priority");
-        assert_eq!(ServiceTier::parse("turbo"), None);
     }
 
     #[test]

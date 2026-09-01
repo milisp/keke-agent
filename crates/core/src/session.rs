@@ -116,6 +116,10 @@ pub struct SessionConfig {
     /// in place; the engine does not pick a level of its own, because a level
     /// keke chose would be indistinguishable in the log from one a person did.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Which queue the vendor should answer from, for vendors that sell more
+    /// than one speed. `None` names none, leaving the endpoint's own routing
+    /// alone — see [`ServiceTier`](keke_protocol::ServiceTier).
+    pub service_tier: Option<keke_protocol::ServiceTier>,
     /// When and how far to summarize the history. A session that never compacts
     /// works until the provider rejects the request mid-conversation.
     pub compaction: CompactionConfig,
@@ -157,6 +161,8 @@ pub struct Session {
     pub(crate) approval: Arc<crate::ApprovalSwitch>,
     /// The live effort level, kept beside the config for the same reason.
     pub(crate) effort: Arc<crate::EffortSwitch>,
+    /// The live service tier, kept beside the config for the same reason.
+    pub(crate) tier: Arc<crate::ServiceTierSwitch>,
     /// The live model, kept beside the config for the same reason.
     pub(crate) model: Arc<crate::ModelSwitch>,
     /// The live session mode, kept beside the config for the same reason. Held
@@ -265,6 +271,25 @@ impl Session {
     #[must_use]
     pub fn model_switch(&self) -> Arc<crate::ModelSwitch> {
         Arc::clone(&self.model)
+    }
+
+    /// How the session is being routed, right now.
+    #[must_use]
+    pub fn service_tier(&self) -> Option<keke_protocol::ServiceTier> {
+        self.tier.get()
+    }
+
+    /// Change the queue, taking effect on the next model request for the same
+    /// reason [`Session::set_reasoning_effort`] does: a person asking for a
+    /// faster answer means the step in front of them.
+    pub fn set_service_tier(&self, tier: Option<keke_protocol::ServiceTier>) {
+        self.tier.set(tier);
+    }
+
+    /// A handle that changes this session's queue, detached from its lifetime.
+    #[must_use]
+    pub fn service_tier_switch(&self) -> Arc<crate::ServiceTierSwitch> {
+        Arc::clone(&self.tier)
     }
 
     /// A handle that changes this session's effort level, detached from its
@@ -684,6 +709,7 @@ impl SessionBuilder {
 
         let approval = config.approval;
         let effort = config.reasoning_effort;
+        let tier = config.service_tier;
         let model = Arc::new(crate::ModelSwitch::new(config.model.model.as_str()));
         let flag = Arc::new(AtomicBool::new(false));
         let cancelled = {
@@ -718,6 +744,7 @@ impl SessionBuilder {
             approvals: Arc::new(crate::ApprovalMemory::default()),
             approval: Arc::new(crate::ApprovalSwitch::new(approval)),
             effort: Arc::new(crate::EffortSwitch::new(effort)),
+            tier: Arc::new(crate::ServiceTierSwitch::new(tier)),
             model,
             mode: self.mode.unwrap_or_default(),
             flag,

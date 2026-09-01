@@ -168,6 +168,11 @@ impl Session {
                 max_output_tokens: Some(self.config.max_output_tokens.get()),
                 temperature: None,
                 reasoning_effort: self.effort.get(),
+                // Routing, not content: the tier changes how fast and how
+                // dearly the same answer arrives, so unlike the effort level it
+                // is not part of what the model was shown and does not belong
+                // in the log the history is rebuilt from.
+                service_tier: self.tier.get(),
             };
 
             // Logged before the call, so a crash mid-request still leaves the
@@ -339,6 +344,10 @@ impl Session {
             // extractive work: paying for extended thinking on it would change
             // the bill without changing the summary.
             reasoning_effort: None,
+            // Routed the way the session is: a compaction that ran on the
+            // standard queue while the person was waiting on a fast turn would
+            // stall the turn it exists to keep going.
+            service_tier: self.tier.get(),
         };
 
         let summary = match self.collect_text(request).await {

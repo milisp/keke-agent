@@ -267,7 +267,6 @@ impl Vendors {
                 fixed_sampling: if stated { false } else { subscription },
                 client_version: keke_provider_codex::DEFAULT_CLIENT_VERSION.to_string(),
                 web_search: declaration.web_search.clone().unwrap_or_default(),
-                service_tier: declaration.service_tier,
             },
             Some(self.catalog.clone()),
         )) as ArcProvider)

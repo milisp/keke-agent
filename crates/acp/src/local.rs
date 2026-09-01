@@ -17,6 +17,7 @@ use keke_core::ApprovalSwitch;
 use keke_core::CoreError;
 use keke_core::EffortSwitch;
 use keke_core::ModelSwitch;
+use keke_core::ServiceTierSwitch;
 use keke_core::SessionBuilder;
 use keke_core::SessionModeSwitch;
 use keke_core::TurnUpdate;
@@ -189,6 +190,7 @@ struct Switches {
     approval: Arc<ApprovalSwitch>,
     mode: Arc<SessionModeSwitch>,
     effort: Arc<EffortSwitch>,
+    tier: Arc<ServiceTierSwitch>,
     model: Arc<ModelSwitch>,
 }
 
@@ -208,6 +210,9 @@ pub struct LocalConversation {
     /// Held for the same reason as `approval`: a queued effort change would
     /// arrive after the steps it was meant to govern.
     effort: Mutex<Arc<EffortSwitch>>,
+    /// Held for the same reason as `effort`: a queue change queued behind a
+    /// running turn would buy the speed one answer too late.
+    tier: Mutex<Arc<ServiceTierSwitch>>,
     /// Held for the same reason again: a model change queued behind a running
     /// turn would take effect an answer too late.
     model: Mutex<Arc<ModelSwitch>>,
@@ -259,6 +264,8 @@ pub async fn local_with(
     let configured_approval = approval.get();
     let effort = session.effort_switch();
     let configured_effort = effort.get();
+    let tier = session.service_tier_switch();
+    let configured_tier = tier.get();
     let model_switch = session.model_switch();
     let mode_switch = session.mode_switch();
     let configured_mode = mode_switch.get();
@@ -325,6 +332,7 @@ pub async fn local_with(
                             cancel: Box::new(fresh.canceller()),
                             approval: fresh.approval_switch(),
                             effort: fresh.effort_switch(),
+                            tier: fresh.service_tier_switch(),
                             model: fresh.model_switch(),
                             mode: fresh.mode_switch(),
                         };
@@ -357,6 +365,7 @@ pub async fn local_with(
         // starts the session.
         models: Vec::new(),
         effort: configured_effort,
+        service_tier: configured_tier,
         approval_policy: configured_approval,
         mode: configured_mode,
         conversation: Arc::new(LocalConversation {
@@ -365,6 +374,7 @@ pub async fn local_with(
             approvals,
             approval: Mutex::new(approval),
             effort: Mutex::new(effort),
+            tier: Mutex::new(tier),
             model: Mutex::new(model_switch),
             mode: Mutex::new(mode_switch),
             updates: echo,
@@ -499,6 +509,12 @@ impl Conversation for LocalConversation {
         }
     }
 
+    fn set_service_tier(&self, tier: Option<keke_protocol::ServiceTier>) {
+        if let Ok(switch) = self.tier.lock() {
+            switch.set(tier);
+        }
+    }
+
     fn rewind_points(&self) -> ConversationFuture<'_, Result<Vec<RewindPoint>, ConversationError>> {
         Box::pin(async move {
             let (done, answer) = oneshot::channel();
@@ -567,6 +583,9 @@ impl Conversation for LocalConversation {
             }
             if let Ok(mut effort) = self.effort.lock() {
                 *effort = switches.effort;
+            }
+            if let Ok(mut tier) = self.tier.lock() {
+                *tier = switches.tier;
             }
             if let Ok(mut model) = self.model.lock() {
                 *model = switches.model;

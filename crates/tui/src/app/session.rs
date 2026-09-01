@@ -102,6 +102,25 @@ impl App {
         });
     }
 
+    /// Which queue the session is being answered from, for the status bar.
+    #[must_use]
+    pub fn service_tier(&self) -> Option<keke_config_types::ServiceTier> {
+        self.tier
+    }
+
+    /// Set the queue, which is what a typed `/fast` does. Silent in the
+    /// transcript for the same reason `/effort` is: the input box already
+    /// shows what was typed, and the bar shows what it did.
+    ///
+    /// Not persisted to `config.toml`, unlike the effort level: fast mode
+    /// spends a larger share of the account's allowance, and a speed bought
+    /// for one conversation that quietly stayed on for every later one is the
+    /// setting a person enables once and then pays for forever.
+    pub(super) fn set_service_tier(&mut self, tier: Option<keke_config_types::ServiceTier>) {
+        self.tier = tier;
+        self.conversation.set_service_tier(tier);
+    }
+
     /// Which model is answering, for the status bar.
     #[must_use]
     pub fn model(&self) -> &str {

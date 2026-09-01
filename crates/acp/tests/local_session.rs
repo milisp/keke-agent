@@ -199,6 +199,7 @@ async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Start
             },
             max_output_tokens: MaxOutputTokens::default(),
             reasoning_effort: None,
+            service_tier: None,
             compaction: CompactionConfig::default(),
             checkpoints: keke_config_types::CheckpointConfig::default(),
             approval,
