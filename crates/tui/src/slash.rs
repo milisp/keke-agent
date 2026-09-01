@@ -522,9 +522,11 @@ mod tests {
             .map(|entry| entry.name.as_str())
             .collect();
         assert_eq!(names.last(), Some(&"aaa"));
-        assert!(commands.entries()[..names.len() - 1]
-            .iter()
-            .all(|entry| entry.plugin.is_none()));
+        assert!(
+            commands.entries()[..names.len() - 1]
+                .iter()
+                .all(|entry| entry.plugin.is_none())
+        );
     }
 
     #[test]
