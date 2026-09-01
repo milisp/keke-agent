@@ -160,6 +160,29 @@ impl Transcript {
         self.cells.iter().any(|cell| matches!(cell, Cell::User(_)))
     }
 
+    /// Every prompt a person sent, as `(cell index, text)` in the order they
+    /// were sent. What the rewind overlay offers to go back to.
+    pub fn user_prompts(&self) -> Vec<(usize, String)> {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(|(at, cell)| match cell {
+                Cell::User(text) => Some((at, text.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Drop everything from cell `at` onwards, for a rewind.
+    ///
+    /// Unlike [`Self::clear`] this is not a person tidying the view: the agent
+    /// is being told to forget the same messages, so what is left on screen is
+    /// again exactly what the next request will carry.
+    pub fn truncate(&mut self, at: usize) {
+        self.cells.truncate(at);
+        self.sealed = true;
+    }
+
     pub fn push(&mut self, cell: Cell) {
         self.cells.push(cell);
         self.sealed = true;

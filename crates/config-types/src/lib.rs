@@ -681,6 +681,30 @@ impl Default for CompactionConfig {
     }
 }
 
+/// Whether keke keeps a snapshot of the working tree per turn, so a rewind can
+/// put the files back and not only the conversation.
+///
+/// A validated field rather than a constant in the engine because a deployment
+/// really does decide this: the snapshots live under `$KEKE_HOME` and cost a
+/// staged git index per turn that writes, which is nothing on a normal project
+/// and is not nothing on a very large one. Somebody working in a tree they
+/// already have their own discipline around must be able to say no.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointConfig {
+    /// Off means no snapshot is ever taken, and a rewind then offers to wind
+    /// the conversation back and says plainly that the files cannot follow.
+    pub enabled: bool,
+}
+
+impl Default for CheckpointConfig {
+    /// On: a person who winds a conversation back and finds the files still
+    /// changed has been given half an undo, and the half that is missing is
+    /// the one that touched their disk.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// How long a fetched model catalog stays usable without asking the vendor
 /// again.
 ///

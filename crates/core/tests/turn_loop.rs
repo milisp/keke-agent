@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use futures::StreamExt;
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::CheckpointConfig;
 use keke_config_types::CompactionConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
@@ -29,6 +30,7 @@ use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_plugin_api::ToolContributor;
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
+use keke_protocol::RewindScope;
 use keke_protocol::SessionEvent;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCallId;
@@ -215,7 +217,47 @@ struct EchoPack;
 
 impl ToolContributor for EchoPack {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        vec![Arc::new(Echo), Arc::new(Overrunning), Arc::new(Dangerous)]
+        vec![
+            Arc::new(Echo),
+            Arc::new(Overrunning),
+            Arc::new(Dangerous),
+            Arc::new(WriteFile),
+        ]
+    }
+}
+
+/// Writes a file, so a turn has something to be undone.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct WriteArgs {
+    path: String,
+    text: String,
+}
+
+struct WriteFile;
+
+impl Tool for WriteFile {
+    type Args = WriteArgs;
+    type Output = EchoOut;
+
+    fn id(&self) -> ToolId {
+        ToolId::new("write_file")
+    }
+
+    fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
+        ToolDescription::new("Write a file.")
+    }
+
+    /// `Edit`, which is what tells the engine to snapshot the tree before this
+    /// runs.
+    fn capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::of_kind(ToolKind::Edit)
+    }
+
+    async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
+        let path = ctx.workspace_root.as_path().join(&args.path);
+        std::fs::write(&path, &args.text)
+            .map_err(|error| ToolError::custom("write_failed", error.to_string()))?;
+        Ok(EchoOut { echoed: args.path })
     }
 }
 
@@ -290,6 +332,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         max_output_tokens: MaxOutputTokens::default(),
         reasoning_effort: None,
         compaction: CompactionConfig::default(),
+        checkpoints: CheckpointConfig::default(),
         approval,
     }
 }
@@ -1121,4 +1164,302 @@ async fn a_resumed_session_continues_the_log_it_was_rebuilt_from() {
     // And one log, not two: the resumed session appends to the file it came
     // from, or the record of the conversation is split in half.
     assert_eq!(session.log_path(), log);
+}
+
+/// Winding back to a turn drops it and everything it led to, hands the words
+/// back, and leaves the next request assembled as though it never happened.
+#[tokio::test]
+async fn a_rewind_takes_back_the_turn_it_names() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        text_reply("one"),
+        text_reply("two"),
+        text_reply("three"),
+    ]);
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+
+    session
+        .run_turn(Message::user("first"))
+        .await
+        .expect("turn");
+    session
+        .run_turn(Message::user("second"))
+        .await
+        .expect("turn");
+
+    let taken = session
+        .rewind_to_user_turn(1, RewindScope::Conversation)
+        .await
+        .expect("rewinds")
+        .expect("there is a second turn to take back");
+    assert_eq!(taken.prompt, "second", "the words come back to be edited");
+    assert_eq!(taken.removed_messages, 2);
+    assert_eq!(
+        session
+            .history()
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        vec!["first".to_string(), "one".to_string()],
+        "the answer went with the question"
+    );
+
+    session
+        .run_turn(Message::user("second, but better"))
+        .await
+        .expect("turn");
+    let requests = seen.lock().expect("lock");
+    let last: Vec<String> = requests[requests.len() - 1]
+        .messages
+        .iter()
+        .map(Message::text)
+        .collect();
+    assert!(
+        !last.iter().any(|text| text == "second"),
+        "a withdrawn message must not reach the model again: {last:?}"
+    );
+
+    // Model-visible implies logged: the truncation is on disk, as a snapshot
+    // of what survived it.
+    let log = read_log(session.log_path()).expect("reads");
+    let rewound = log
+        .iter()
+        .find_map(|entry| match &entry.event {
+            SessionEvent::Rewound {
+                history,
+                prompt,
+                removed_messages,
+                ..
+            } => Some((history.clone(), prompt.clone(), *removed_messages)),
+            _ => None,
+        })
+        .expect("the rewind is logged");
+    assert_eq!(rewound.1, "second");
+    assert_eq!(rewound.2, 2);
+    assert!(
+        rewound.0.is_some(),
+        "a conversation rewind logs the history that survived it"
+    );
+    assert_eq!(
+        keke_core::history_from_log(&log.into_iter().map(|entry| entry.event).collect::<Vec<_>>())
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        session
+            .history()
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        "a resumed session comes back to what the rewind left, not to what it took"
+    );
+}
+
+/// Nothing to go back to is not a truncation to whatever happens to be last.
+#[tokio::test]
+async fn a_rewind_past_the_end_leaves_the_conversation_alone() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(vec![text_reply("one")]);
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    session
+        .run_turn(Message::user("first"))
+        .await
+        .expect("turn");
+    let before = session.history().to_vec();
+
+    assert_eq!(
+        session
+            .rewind_to_user_turn(4, RewindScope::Conversation)
+            .await
+            .expect("answers"),
+        None
+    );
+    assert_eq!(session.history(), before.as_slice());
+}
+
+/// A turn that writes is snapshotted before it does, and the snapshot is what
+/// a files rewind puts back.
+fn writes(id: &str, path: &str, text: &str) -> Vec<StreamChunk> {
+    let call = ToolCallId::new(id);
+    vec![
+        StreamChunk::ToolCallStart {
+            id: call.clone(),
+            name: "write_file".to_string(),
+        },
+        StreamChunk::ToolCallArgsDelta {
+            id: call.clone(),
+            delta: serde_json::json!({ "path": path, "text": text }).to_string(),
+        },
+        StreamChunk::ToolCallEnd { id: call },
+        StreamChunk::Done(StopReason::ToolUse),
+    ]
+}
+
+/// The other half of a rewind: what the turn did to the files goes back too,
+/// and the conversation can be left alone while it happens.
+#[tokio::test]
+async fn a_files_rewind_puts_the_working_tree_back_without_touching_the_talk() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(vec![
+        writes("call-1", "file.txt", "first"),
+        text_reply("wrote it"),
+        writes("call-2", "file.txt", "second"),
+        text_reply("wrote it again"),
+    ]);
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+
+    let file = harness.home.workspace_root.as_path().join("file.txt");
+    session
+        .run_turn(Message::user("write first"))
+        .await
+        .expect("turn");
+    assert_eq!(std::fs::read_to_string(&file).expect("written"), "first");
+    session
+        .run_turn(Message::user("write second"))
+        .await
+        .expect("turn");
+    assert_eq!(std::fs::read_to_string(&file).expect("written"), "second");
+
+    // Every turn that wrote is a point the files can go back to.
+    let points = session.rewind_points();
+    assert!(
+        points.iter().all(|point| point.has_snapshot),
+        "both turns wrote, so both were snapshotted first: {points:?}"
+    );
+
+    let rewound = session
+        .rewind_to_user_turn(1, RewindScope::Files)
+        .await
+        .expect("rewinds")
+        .expect("there is a second turn");
+
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("still there"),
+        "first",
+        "the second turn's edit is undone"
+    );
+    assert_eq!(rewound.restored_files, vec!["file.txt".to_string()]);
+    assert_eq!(
+        rewound.removed_messages, 0,
+        "files only: what was said is left alone"
+    );
+    assert_eq!(
+        session
+            .history()
+            .iter()
+            .filter(|message| message.role == keke_protocol::Role::User)
+            .count(),
+        2,
+        "both prompts are still in the conversation"
+    );
+}
+
+/// Winding both back is the third choice, and it is the two halves together.
+#[tokio::test]
+async fn rewinding_both_takes_back_the_words_and_the_edit() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(vec![
+        writes("call-1", "file.txt", "first"),
+        text_reply("wrote it"),
+        writes("call-2", "file.txt", "second"),
+        text_reply("wrote it again"),
+    ]);
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+
+    let file = harness.home.workspace_root.as_path().join("file.txt");
+    session
+        .run_turn(Message::user("write first"))
+        .await
+        .expect("turn");
+    session
+        .run_turn(Message::user("write second"))
+        .await
+        .expect("turn");
+
+    let rewound = session
+        .rewind_to_user_turn(1, RewindScope::Both)
+        .await
+        .expect("rewinds")
+        .expect("there is a second turn");
+
+    assert_eq!(rewound.prompt, "write second");
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("still there"),
+        "first"
+    );
+    assert_eq!(
+        session
+            .history()
+            .iter()
+            .filter(|message| message.role == keke_protocol::Role::User)
+            .count(),
+        1,
+        "the second prompt went with its edit"
+    );
+    assert!(
+        !session.rewind_points().iter().any(|point| point.turn == 1),
+        "a turn that was wound back is no longer somewhere to go back to"
+    );
+}
+
+/// A turn that only talked has nothing on disk to put back, and says so rather
+/// than offering a restore that would do nothing.
+#[tokio::test]
+async fn a_turn_that_wrote_nothing_carries_no_snapshot() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(vec![text_reply("just talking")]);
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    session
+        .run_turn(Message::user("hello"))
+        .await
+        .expect("turn");
+
+    let points = session.rewind_points();
+    assert_eq!(points.len(), 1);
+    assert!(
+        !points[0].has_snapshot,
+        "nothing was written, so there is no point snapshotting the tree"
+    );
+    assert!(
+        session
+            .changed_since_turn(0)
+            .await
+            .expect("answers")
+            .is_empty()
+    );
 }

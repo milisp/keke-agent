@@ -186,6 +186,7 @@ fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
         max_output_tokens: MaxOutputTokens::default(),
         reasoning_effort: None,
         compaction: CompactionConfig::default(),
+        checkpoints: keke_config_types::CheckpointConfig::default(),
         approval: ApprovalPolicy::Never,
     }
 }

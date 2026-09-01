@@ -145,9 +145,21 @@ pub(super) async fn resume(
         approvals,
         requests,
         seed,
-        Some((id, resumed.history)),
+        Some(Continued {
+            id,
+            history: resumed.history,
+            snapshots: resumed.snapshots,
+        }),
     )
     .await
+}
+
+/// The session being continued: what was said, and the working-tree snapshots
+/// its turns took, so a rewind in the resumed session can still put files back.
+pub(super) struct Continued {
+    pub(super) id: keke_protocol::SessionId,
+    pub(super) history: Vec<keke_protocol::Message>,
+    pub(super) snapshots: std::collections::BTreeMap<usize, String>,
 }
 
 /// Open the interactive interface.
@@ -158,14 +170,16 @@ pub(super) async fn tui(
     approvals: Arc<keke_acp::Approvals>,
     requests: keke_acp::ApprovalRequests,
     seed: keke_tui::Resumed,
-    resume: Option<(keke_protocol::SessionId, Vec<keke_protocol::Message>)>,
+    resume: Option<Continued>,
 ) -> Result<()> {
     // The directory the typing history belongs to: for a resumed session, the
     // one it was started in rather than wherever keke was invoked.
     let history_cwd = cwd.clone();
     let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
-    if let Some((id, history)) = resume {
-        builder = builder.resume(id, history);
+    if let Some(continued) = resume {
+        builder = builder
+            .resume(continued.id, continued.history)
+            .snapshots(continued.snapshots);
     }
     let commands = slash_commands(&composed);
     // Asked before the interface opens so `/model` can answer without a round

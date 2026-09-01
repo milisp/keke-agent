@@ -589,6 +589,10 @@ async fn pump(
             // gives it a session with nothing in it; this is only a signal an
             // in-process surface uses to reset what it has drawn.
             Update::SessionReset => {}
+            // The rewind overlay is keke's own surface: an ACP client asks
+            // for these through its own session methods, and there is no
+            // notification in the protocol that carries them.
+            Update::RewindPoints(_) | Update::RewindPreview { .. } | Update::Rewound(_) => {}
             // No ACP notification carries this yet, and inventing one would put
             // a keke-shaped field in front of clients that cannot draw it. The
             // work is still reported the ordinary way: the tool call that

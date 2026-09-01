@@ -122,7 +122,16 @@ from which config struct it read.
 
 `keke-core` (session lifecycle, turn loop, context assembly, tool dispatch,
 compaction, rollout log), `keke-config` (layered load), `keke-credentials`
-(keyring/file store), `keke-workspace` (filesystem, VCS, process execution).
+(keyring/file store), `keke-workspace` (filesystem, VCS, process execution),
+`keke-checkpoint` (per-turn snapshots of the working tree).
+
+`keke-checkpoint` is a sibling of `keke-workspace` rather than part of it: the
+workspace is the project keke acts on, and the checkpoint store is a git
+repository of keke's *own*, under `$KEKE_HOME`, that happens to point at the
+project as its work tree. keke never writes to the project's repository — no
+commit, no stash, no index of the person's that a snapshot could disturb — and
+that separation is what makes a rewind able to put files back without ever
+being something a person has to trust with their own history.
 
 `keke-core` depends only on tier 0 and contains nothing vendor-specific.
 

@@ -1682,6 +1682,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-checkpoint"
+version = "0.1.15"
+dependencies = [
+ "keke-paths",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "keke-cli"
 version = "0.1.15"
 dependencies = [
@@ -1758,6 +1770,7 @@ dependencies = [
  "chrono",
  "futures",
  "keke-auth-api",
+ "keke-checkpoint",
  "keke-config-types",
  "keke-paths",
  "keke-plugin-api",

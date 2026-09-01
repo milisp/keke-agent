@@ -19,6 +19,7 @@ mod login;
 pub mod mcp;
 mod picker;
 mod ported;
+pub mod rewind;
 mod scroll;
 mod selection;
 pub mod slash;
@@ -54,6 +55,7 @@ pub use history::PromptRecorder;
 pub use input::InputBox;
 pub use login::Notice;
 pub use picker::ProviderChoice;
+pub use rewind::Rewind;
 
 pub use login::TuiLoginUi;
 pub use mcp::McpManage;

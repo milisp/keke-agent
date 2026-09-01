@@ -365,6 +365,7 @@ async fn session_builder(
             max_output_tokens: config.max_output_tokens,
             reasoning_effort: config.reasoning_effort,
             compaction: config.compaction,
+            checkpoints: config.checkpoints,
             approval,
         })
         .provider(provider)

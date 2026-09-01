@@ -124,6 +124,8 @@ impl Session {
         ext_ctx: &ExtensionContext,
     ) -> Result<TurnOutcome, CoreError> {
         self.history.push(input);
+        // Each turn snapshots at most once, before it first writes.
+        self.snapshot_taken = false;
 
         // Before the turn, not during it: compacting mid-turn would drop the
         // tool results the model is in the middle of reasoning about.
@@ -235,6 +237,18 @@ impl Session {
                 })
                 .await?;
                 self.emit(TurnUpdate::ToolCallStarted { call: call.clone() });
+
+                // Before the call, and only for one that can write: the point
+                // to go back to is the tree as the person left it, and asking
+                // afterwards would snapshot the change instead of what it
+                // replaced.
+                self.checkpoint_before(
+                    turn,
+                    tools
+                        .get(&call.name)
+                        .is_none_or(|tool| tool.capabilities().kind.is_read_only()),
+                )
+                .await;
 
                 let dispatched = dispatch(
                     call,

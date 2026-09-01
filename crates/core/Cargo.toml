@@ -15,6 +15,7 @@ keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-tool = { workspace = true }
+keke-checkpoint = { workspace = true }
 keke-workspace = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }

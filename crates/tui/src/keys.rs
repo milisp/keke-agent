@@ -63,6 +63,15 @@ impl App {
             self.handle_picker_key(key);
             return;
         }
+        if self.rewind().is_some() && !control {
+            self.handle_rewind_key(key);
+            return;
+        }
+        // Any other key ends the double-tap: two Escs mean one gesture only
+        // when nothing was said in between.
+        if key.code != KeyCode::Esc {
+            self.disarm_escape();
+        }
 
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
@@ -115,8 +124,14 @@ impl App {
             _ if self.file_search.is_open() && menu_key(key.code) => {
                 self.handle_file_search_key(key);
             }
+            // Not the Enter that just carried out a rewind: see
+            // `App::just_rewound`.
+            KeyCode::Enter if self.just_rewound() => {}
             KeyCode::Enter => self.submit(),
             _ if self.open_permission_id().is_some() => self.handle_permission_key(key),
+            // Last of the Esc arms: the menus above answer it themselves, and
+            // what is left is an Esc with nothing on screen to dismiss.
+            KeyCode::Esc => self.tap_escape(),
             KeyCode::Char(ch) if !control => self.input.insert_char(ch),
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
@@ -262,6 +277,23 @@ impl App {
             KeyCode::Esc => self.close_picker(),
             KeyCode::Backspace => self.backspace_in_picker(),
             KeyCode::Char(ch) => self.type_into_picker(ch),
+            _ => {}
+        }
+    }
+
+    /// While the rewind overlay is up, these keys drive it. `j`/`k` alongside
+    /// the arrows, because the list is read the way a transcript is.
+    fn handle_rewind_key(&mut self, key: KeyEvent) {
+        // A held Enter must not walk both steps of the overlay and hand the
+        // prompt back before the person has read the second question.
+        if key.kind == KeyEventKind::Repeat {
+            return;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_rewind_selection(-1),
+            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => self.move_rewind_selection(1),
+            KeyCode::Enter => self.advance_rewind(),
+            KeyCode::Esc => self.cancel_rewind(),
             _ => {}
         }
     }

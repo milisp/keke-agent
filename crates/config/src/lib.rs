@@ -24,6 +24,7 @@ pub use resolve::resolve_workspace_root;
 use std::path::Path;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::CheckpointConfig;
 use keke_config_types::CompactionConfig;
 use keke_config_types::DirectoryOverride;
 use keke_config_types::HomeLayout;
@@ -79,6 +80,7 @@ pub struct Config {
     /// thinking on offer.
     pub reasoning_effort: Option<ReasoningEffort>,
     pub compaction: CompactionConfig,
+    pub checkpoints: CheckpointConfig,
     /// Budgets for plugin-supplied programs.
     pub plugins: PluginTimeouts,
     /// Bounds on the subagents a session may run at once.
@@ -117,6 +119,7 @@ pub struct ConfigFile {
     /// for a field the reader may not recognize.
     pub reasoning_effort: Option<String>,
     pub compaction: Option<CompactionFile>,
+    pub checkpoints: Option<CheckpointFile>,
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
     pub skills: Option<SkillsFile>,
@@ -132,6 +135,14 @@ pub struct ConfigFile {
     /// [`Config::from_layers`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dir: Vec<DirectoryOverride>,
+}
+
+/// The checkpoint section, separated for the same reason the compaction one is.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct CheckpointFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 /// The compaction section, separated so a layer can override one field of it.
@@ -238,6 +249,12 @@ impl Config {
                     .or(base.keep_recent_messages);
                 base.context_window = compaction.context_window.or(base.context_window);
             }
+            if let Some(checkpoints) = layer.file.checkpoints {
+                let base = merged
+                    .checkpoints
+                    .get_or_insert_with(CheckpointFile::default);
+                base.enabled = checkpoints.enabled.or(base.enabled);
+            }
             if let Some(plugins) = layer.file.plugins {
                 let base = merged.plugins.get_or_insert_with(PluginsFile::default);
                 base.hook_timeout_millis = plugins.hook_timeout_millis.or(base.hook_timeout_millis);
@@ -280,6 +297,14 @@ impl Config {
             context_window: compaction_file
                 .context_window
                 .unwrap_or(CompactionConfig::default().context_window),
+        };
+
+        let checkpoints = CheckpointConfig {
+            enabled: merged
+                .checkpoints
+                .unwrap_or_default()
+                .enabled
+                .unwrap_or(CheckpointConfig::default().enabled),
         };
 
         if !(1..=99).contains(&compaction.trigger_percent) {
@@ -426,6 +451,7 @@ impl Config {
             max_output_tokens,
             reasoning_effort,
             compaction,
+            checkpoints,
             plugins,
             subagents,
             skills,

@@ -7,6 +7,7 @@ pub(crate) mod menu;
 pub(crate) mod permission;
 pub(crate) mod picker;
 pub(crate) mod plan;
+pub(crate) mod rewind;
 pub(crate) mod status;
 pub(crate) mod subagents;
 pub(crate) mod transcript;
@@ -95,14 +96,27 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             }),
             Constraint::Length(permission::rows(app)),
             Constraint::Length(picker::rows(app, frame.area().height)),
+            Constraint::Length(rewind::rows(app, frame.area().height)),
             Constraint::Length(plan::rows(app)),
             Constraint::Length(u16::from(!planning && !managing_mcp && !blocked)),
         ])
         .split(frame.area());
 
-    let (header, body, menu, turn, agents, composer, approval, picker_area, policies, footer) = (
+    let (
+        header,
+        body,
+        menu,
+        turn,
+        agents,
+        composer,
+        approval,
+        picker_area,
+        rewind_area,
+        policies,
+        footer,
+    ) = (
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
-        areas[9],
+        areas[9], areas[10],
     );
 
     let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
@@ -160,6 +174,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     subagents::draw(frame, agents, app);
     header::draw(frame, header, app);
     picker::draw(frame, picker_area, app);
+    rewind::draw(frame, rewind_area, app);
     plan::draw(frame, policies, app);
     status::draw(frame, footer, app);
     // Last: the remaining overlay holds the keyboard, so nothing may be drawn over it.

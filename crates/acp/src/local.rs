@@ -28,6 +28,7 @@ use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
+use keke_protocol::RewindScope;
 use keke_protocol::ToolCall;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
@@ -39,6 +40,8 @@ use crate::ConversationFuture;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::PermissionId;
+use crate::RewindPoint;
+use crate::Rewound;
 use crate::Update;
 use crate::conversation::SubagentView;
 
@@ -160,6 +163,21 @@ enum Command {
     NewSession {
         done: oneshot::Sender<Result<Switches, String>>,
     },
+    /// Wind the session back to just before its `nth` user turn.
+    Rewind {
+        nth: usize,
+        scope: RewindScope,
+        done: oneshot::Sender<Result<Option<Rewound>, String>>,
+    },
+    /// What the session says can be wound back to, and what a restore to one
+    /// of those points would touch.
+    RewindPoints {
+        done: oneshot::Sender<Vec<RewindPoint>>,
+    },
+    ChangedSince {
+        nth: usize,
+        done: oneshot::Sender<Result<Vec<String>, String>>,
+    },
 }
 
 /// The live switches a rebuilt session hands back, so [`LocalConversation`]
@@ -267,6 +285,39 @@ pub async fn local_with(
                         }
                     };
                     let _ = done.send(answer);
+                }
+                Command::Rewind { nth, scope, done } => {
+                    let outcome = session
+                        .rewind_to_user_turn(nth, scope)
+                        .await
+                        .map(|rewound| {
+                            rewound.map(|rewound| Rewound {
+                                prompt: rewound.prompt,
+                                removed_messages: rewound.removed_messages,
+                                restored_files: rewound.restored_files,
+                            })
+                        })
+                        .map_err(|error| error.to_string());
+                    let _ = done.send(outcome);
+                }
+                Command::RewindPoints { done } => {
+                    let points = session
+                        .rewind_points()
+                        .into_iter()
+                        .map(|point| RewindPoint {
+                            turn: point.turn,
+                            prompt: point.prompt,
+                            has_snapshot: point.has_snapshot,
+                        })
+                        .collect();
+                    let _ = done.send(points);
+                }
+                Command::ChangedSince { nth, done } => {
+                    let outcome = session
+                        .changed_since_turn(nth)
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = done.send(outcome);
                 }
                 Command::NewSession { done } => match recipe.clone().build().await {
                     Ok(fresh) => {
@@ -446,6 +497,51 @@ impl Conversation for LocalConversation {
         if let Ok(switch) = self.effort.lock() {
             switch.set(effort);
         }
+    }
+
+    fn rewind_points(&self) -> ConversationFuture<'_, Result<Vec<RewindPoint>, ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::RewindPoints { done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            answer
+                .await
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))
+        })
+    }
+
+    fn changed_since(
+        &self,
+        nth: usize,
+    ) -> ConversationFuture<'_, Result<Vec<String>, ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::ChangedSince { nth, done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            answer
+                .await
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
+                .map_err(ConversationError::Agent)
+        })
+    }
+
+    fn rewind(
+        &self,
+        nth: usize,
+        scope: RewindScope,
+    ) -> ConversationFuture<'_, Result<Option<Rewound>, ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::Rewind { nth, scope, done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            answer
+                .await
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
+                .map_err(ConversationError::Agent)
+        })
     }
 
     fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>> {

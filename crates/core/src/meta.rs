@@ -67,6 +67,13 @@ pub struct SessionMeta {
     pub reasoning_effort: Option<keke_protocol::ReasoningEffort>,
     /// The approval policy of the last logged turn, as the wire spelled it.
     pub approval_policy: Option<String>,
+    /// The working-tree snapshot each user turn started from, by turn ordinal.
+    ///
+    /// Folded here rather than read from the log on demand because a resume
+    /// seeks to `baseline` and never sees the lines before it — a session's
+    /// early checkpoints would be invisible to the one thing that needs them.
+    #[serde(default)]
+    pub snapshots: std::collections::BTreeMap<usize, String>,
     /// Byte offset of the last `ModelRequest` line, when the log has one.
     pub baseline: Option<u64>,
     /// How much of the log the fields above account for.
@@ -243,6 +250,34 @@ impl SessionMeta {
                 if usage.input_tokens > 0 {
                     self.turn_input = usage.input_tokens;
                 }
+            }
+            SessionEvent::Checkpoint {
+                user_turn,
+                snapshot,
+                ..
+            } => {
+                self.snapshots.insert(*user_turn, snapshot.clone());
+            }
+            // A rewind logs the whole surviving conversation, so it is a
+            // baseline for the same reason a turn's first `ModelRequest` is —
+            // including an empty one, which is a rewind to before anything was
+            // said. A reader that seeked past it to an older snapshot would
+            // rebuild the history the person had just wound back.
+            SessionEvent::Rewound { history, .. } => {
+                let Some(history) = history else {
+                    // Files only: the conversation was not touched, so neither
+                    // the baseline nor the turns it names have moved.
+                    return;
+                };
+                self.baseline = Some(at);
+                // The turns the rewind discarded took their snapshots with
+                // them: keeping the entries would offer a person a restore to
+                // a moment in a conversation that no longer happened.
+                let survived = history
+                    .iter()
+                    .filter(|message| message.role == keke_protocol::Role::User)
+                    .count();
+                self.snapshots.retain(|turn, _| *turn < survived);
             }
             // A child's tokens are spent under the parent's turn, so they
             // belong on the parent's bill. Counted here and nowhere else: the
