@@ -175,7 +175,14 @@ impl App {
             return;
         }
         self.model = wanted.to_string();
-        self.conversation.set_model(wanted.to_string());
+        // Only when `/provider` has not moved ahead of the conversation that
+        // is actually running: a name typed after a pending provider switch
+        // belongs to the route config.toml will use *next* launch, and
+        // handing it to the live conversation would ask the old provider for
+        // a model id that is not necessarily one it serves.
+        if self.provider.as_deref() == self.launched_provider.as_deref() {
+            self.conversation.set_model(wanted.to_string());
+        }
         // The pair or nothing: a model written under the previous launch's
         // provider is a combination no run ever used, and it fails on the next
         // bare `keke`.

@@ -351,3 +351,31 @@ async fn switching_to_a_model_without_the_current_level_drops_it() {
         "the agent must be told the level was dropped, not just the surface"
     );
 }
+
+/// After `/provider` moves ahead of the running conversation, `/model` must
+/// still land in config.toml paired with the new route — but must not hand
+/// the old, still-live conversation a model id that belongs to a provider it
+/// was never built for.
+#[tokio::test]
+async fn model_after_a_pending_provider_switch_is_written_but_not_sent_live() {
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
+    let (app, scripted, _updates, _local) = app_with_providers();
+    let mut app = app.with_config_home(home.clone());
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+
+    type_text(&mut app, "/model grok-4.6");
+    app.handle_key(key(KeyCode::Enter));
+
+    let written = std::fs::read_to_string(home.as_path().join("config.toml"))
+        .expect("the switch was written");
+    assert!(written.contains("provider = \"xai\""), "{written}");
+    assert!(written.contains("model = \"grok-4.6\""), "{written}");
+    assert_eq!(app.model(), "grok-4.6");
+    assert!(
+        scripted.models().is_empty(),
+        "the still-live conversation is on the old provider and must not be told about a model that belongs to the new one"
+    );
+}

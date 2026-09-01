@@ -132,6 +132,13 @@ pub struct App {
     /// The route serving `model`. Persisted with it so config.toml always
     /// holds a pair that existed.
     provider: Option<String>,
+    /// The route `conversation` was actually built with. Unlike `provider`,
+    /// `/provider` never touches this: the running conversation keeps
+    /// answering through the route it was handed, so this is what tells
+    /// `/model` whether a name it is about to switch to would land on the
+    /// provider actually serving this turn, or on one only config.toml knows
+    /// about yet.
+    launched_provider: Option<String>,
     /// Every route this build has registered, so `/provider` can list them and
     /// refuse a name none of them answers to. Empty when the host did not say,
     /// and then nothing is refused — keke has no grounds to.
@@ -249,6 +256,7 @@ impl App {
                 tier: None,
                 model: String::new(),
                 provider: None,
+                launched_provider: None,
                 routes: Vec::new(),
                 models: Vec::new(),
                 turn: Turn::Idle,
@@ -379,7 +387,9 @@ impl App {
         model: impl Into<String>,
         models: Vec<keke_provider_api::ModelInfo>,
     ) -> Self {
-        self.provider = Some(provider.into());
+        let provider = provider.into();
+        self.launched_provider = Some(provider.clone());
+        self.provider = Some(provider);
         self.model = model.into();
         self.models = models;
         self
