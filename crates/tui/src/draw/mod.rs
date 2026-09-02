@@ -10,6 +10,7 @@ pub(crate) mod plan;
 pub(crate) mod rewind;
 pub(crate) mod status;
 pub(crate) mod subagents;
+pub(crate) mod tasks;
 pub(crate) mod transcript;
 pub(crate) mod turn_status;
 
@@ -89,6 +90,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // turn runs, and collapses to nothing when idle.
             Constraint::Length(turn_status::rows(app)),
             Constraint::Length(subagents::rows(app)),
+            Constraint::Length(tasks::rows(app)),
             Constraint::Length(if (planning && !composing) || managing_mcp || blocked {
                 0
             } else {
@@ -108,6 +110,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         menu,
         turn,
         agents,
+        background,
         composer,
         approval,
         picker_area,
@@ -116,7 +119,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         footer,
     ) = (
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
-        areas[9], areas[10],
+        areas[9], areas[10], areas[11],
     );
 
     let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
@@ -172,6 +175,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     permission::draw(frame, approval, app);
     turn_status::draw(frame, turn, app);
     subagents::draw(frame, agents, app);
+    tasks::draw(frame, background, app);
     header::draw(frame, header, app);
     picker::draw(frame, picker_area, app);
     rewind::draw(frame, rewind_area, app);

@@ -53,7 +53,12 @@ RANK = {
     # what asked for a snapshot.
     "keke-checkpoint": 11,
     "keke-core": 12,
-    "keke-subagent": 13,
+    # background shell commands and the task verbs every kind of outstanding
+    # work shares. Below `keke-subagent` because the subagent host implements
+    # its `TaskSource`, and above nothing else: it needs a process and a
+    # buffer, not the engine.
+    "keke-tasks": 13,
+    "keke-subagent": 14,
     # test support sits beside the plugins: it may use the contracts, and
     # anything may depend on it as a dev-dependency
     "keke-test-support": 15,
@@ -80,6 +85,7 @@ VENDOR_FREE = {
     "keke-core",
     "keke-config",
     "keke-subagent",
+    "keke-tasks",
     "keke-workspace",
     "keke-acp",
     "keke-tui",

@@ -24,6 +24,7 @@ pub use resolve::resolve_workspace_root;
 use std::path::Path;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::BackgroundLimits;
 use keke_config_types::CheckpointConfig;
 use keke_config_types::CompactionConfig;
 use keke_config_types::DirectoryOverride;
@@ -85,6 +86,8 @@ pub struct Config {
     pub plugins: PluginTimeouts,
     /// Bounds on the subagents a session may run at once.
     pub subagents: SubagentLimits,
+    /// Bounds on the shell commands a session may leave running.
+    pub background: BackgroundLimits,
     /// Which plugin-contributed skills this deployment wants.
     pub skills: SkillSelection,
     /// How long a fetched model catalog stays usable before the vendor is
@@ -122,6 +125,7 @@ pub struct ConfigFile {
     pub checkpoints: Option<CheckpointFile>,
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
+    pub background: Option<BackgroundFile>,
     pub skills: Option<SkillsFile>,
     /// Seconds. `0` asks the vendor every time.
     pub model_catalog_ttl_seconds: Option<u64>,
@@ -183,6 +187,15 @@ pub struct SkillsFile {
 pub struct SubagentsFile {
     pub max_concurrent: Option<u8>,
     pub timeout_millis: Option<u64>,
+}
+
+/// The background-command section, separated for the same reason.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct BackgroundFile {
+    pub max_concurrent: Option<u8>,
+    pub output_bytes: Option<u64>,
+    pub kill_grace_millis: Option<u64>,
 }
 
 /// Values applied when no layer states them.
@@ -268,6 +281,14 @@ impl Config {
             if let Some(skills) = &layer.file.skills {
                 let base = merged.skills.get_or_insert_with(SkillsFile::default);
                 base.disabled.extend(skills.disabled.iter().cloned());
+            }
+            if let Some(background) = layer.file.background {
+                let base = merged
+                    .background
+                    .get_or_insert_with(BackgroundFile::default);
+                base.max_concurrent = background.max_concurrent.or(base.max_concurrent);
+                base.output_bytes = background.output_bytes.or(base.output_bytes);
+                base.kill_grace_millis = background.kill_grace_millis.or(base.kill_grace_millis);
             }
             if let Some(subagents) = layer.file.subagents {
                 let base = merged.subagents.get_or_insert_with(SubagentsFile::default);
@@ -372,6 +393,23 @@ impl Config {
             },
         };
 
+        let background_defaults = BackgroundLimits::default();
+        let background_file = merged.background.unwrap_or_default();
+        let background = BackgroundLimits {
+            max_concurrent: match background_file.max_concurrent {
+                Some(value) => BackgroundLimits::check_concurrent(value).map_err(invalid)?,
+                None => background_defaults.max_concurrent,
+            },
+            output_bytes: match background_file.output_bytes {
+                Some(value) => BackgroundLimits::check_output_bytes(value).map_err(invalid)?,
+                None => background_defaults.output_bytes,
+            },
+            kill_grace_millis: match background_file.kill_grace_millis {
+                Some(value) => BackgroundLimits::check_kill_grace(value).map_err(invalid)?,
+                None => background_defaults.kill_grace_millis,
+            },
+        };
+
         let max_output_tokens = match merged.max_output_tokens {
             Some(value) => MaxOutputTokens::new(value).map_err(|message| ConfigError::Invalid {
                 path: sources
@@ -454,6 +492,7 @@ impl Config {
             checkpoints,
             plugins,
             subagents,
+            background,
             skills,
             model_catalog_ttl,
             providers: merged

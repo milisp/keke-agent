@@ -17,6 +17,7 @@ pub use conversation::Rewound;
 pub use conversation::ScriptedConversation;
 pub use conversation::SessionListing;
 pub use conversation::SubagentView;
+pub use conversation::TaskView;
 pub use conversation::Update;
 pub use local::ApprovalRequests;
 pub use local::Approvals;

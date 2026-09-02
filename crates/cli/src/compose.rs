@@ -418,6 +418,7 @@ pub(crate) struct Settings<'a> {
     pub timeouts: keke_config_types::PluginTimeouts,
     pub catalog_ttl: keke_config_types::ModelCatalogTtl,
     pub subagent_limits: keke_config_types::SubagentLimits,
+    pub background_limits: keke_config_types::BackgroundLimits,
     pub skills: &'a keke_config_types::SkillSelection,
 }
 
@@ -427,6 +428,7 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             timeouts: config.plugins,
             catalog_ttl: config.model_catalog_ttl,
             subagent_limits: config.subagents,
+            background_limits: config.background,
             skills: &config.skills,
         }
     }
@@ -443,6 +445,10 @@ pub(crate) struct Composed {
     /// The coordinator behind `spawn_agent`. Handed the session recipe in
     /// `session_builder`, once there is a finished builder to hand it.
     pub subagents: Arc<keke_subagent::SubagentHost>,
+    /// The background commands this session started. Held by the composition
+    /// rather than by a turn, because a command outlives the turn that
+    /// started it.
+    pub background: Arc<keke_tasks::BackgroundTasks>,
     /// The session-mode switch plan mode was installed against, when this
     /// composition is for a session. `session_builder` hands it to the builder
     /// so the engine and the extension read the same cell.
@@ -475,6 +481,7 @@ impl Composed {
             timeouts,
             catalog_ttl,
             subagent_limits,
+            background_limits,
             skills,
         } = settings;
         // Resolution finds every plugin; this holds back the programs of the
@@ -586,7 +593,11 @@ impl Composed {
 
         // --- extensions ----------------------------------------------------
         let mut extensions = ExtensionRegistryBuilder::new();
-        keke_tools::install(&mut extensions);
+        // The registry outlives every turn that starts a task, which is the
+        // whole point: a command started in one turn is still running in the
+        // next, and the thing holding it must not be per-turn.
+        let background = Arc::new(keke_tasks::BackgroundTasks::new(background_limits));
+        keke_tools::install(&mut extensions, Some(Arc::clone(&background)));
 
         // `web_search` is offered only when the route this session will talk
         // to has a search to run, and the route is settled here because a
@@ -630,6 +641,16 @@ impl Composed {
         // Registered before the plugin packs so a plugin can shadow
         // `spawn_agent` with its own, the same way it can shadow a built-in.
         let subagents = keke_subagent::install(&mut extensions, subagent_limits);
+        // One id namespace over both kinds, composed here because this is the
+        // only place that knows both exist. Order is the order ids are
+        // claimed in, and the two prefixes do not overlap.
+        keke_tasks::install(
+            &mut extensions,
+            vec![
+                Arc::clone(&background) as Arc<dyn keke_tasks::TaskSource>,
+                Arc::clone(&subagents) as Arc<dyn keke_tasks::TaskSource>,
+            ],
+        );
         keke_skills::install_with(&mut extensions, &plugins, skills);
         // The credential home is handed in rather than discovered: where the
         // harness keeps state is the composition root's to know. `AuthHome`
@@ -663,6 +684,7 @@ impl Composed {
             providers,
             extensions: extensions.build(),
             subagents,
+            background,
             plan_mode,
             skills: enabled_skills,
             commands,

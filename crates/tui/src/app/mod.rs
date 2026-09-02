@@ -189,6 +189,9 @@ pub struct App {
     /// Replaced wholesale rather than merged: the agent sends whole snapshots
     /// precisely so this cannot drift.
     subagents: Vec<keke_acp::SubagentView>,
+    /// Background commands, as the session last reported them. A whole
+    /// snapshot each time, so nothing here has to be reconciled.
+    tasks: Vec<keke_acp::TaskView>,
     /// When each subagent id was first seen here. The duration on a row is
     /// measured against this rather than against a timestamp the agent sends,
     /// because a surface across a pipe has no shared clock to compare with —
@@ -276,6 +279,7 @@ impl App {
                 expanded: std::collections::HashSet::new(),
                 toggles: Vec::new(),
                 subagents: Vec::new(),
+                tasks: Vec::new(),
                 subagent_since: std::collections::HashMap::new(),
                 subagent_rows: Vec::new(),
                 subagent_detail: None,
@@ -656,6 +660,7 @@ impl App {
             Update::Subagents(rows) => {
                 self.set_subagents(rows);
             }
+            Update::Tasks(rows) => self.tasks = rows,
             Update::RewindPoints(points) => self.offer_rewind_points(points),
             Update::RewindPreview { turn, files } => self.preview_rewind(turn, files),
             Update::Rewound(rewound) => self.report_rewind(&rewound),
@@ -748,6 +753,12 @@ impl App {
                 let _ = local.send(Update::Failed(error.to_string()));
             }
         });
+    }
+
+    /// The background commands this session has started, oldest first.
+    #[must_use]
+    pub fn tasks(&self) -> &[keke_acp::TaskView] {
+        &self.tasks
     }
 
     /// Ctrl-C: stop the turn, or leave if there is nothing to stop.

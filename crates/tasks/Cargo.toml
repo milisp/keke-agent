@@ -1,6 +1,6 @@
 [package]
-name = "keke-tools"
-description = "The built-in tool pack: filesystem reads, search, and shell execution."
+name = "keke-tasks"
+description = "Background shell commands, and the verbs shared by everything a session leaves running."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,19 +12,15 @@ keke-config-types = { workspace = true }
 keke-paths = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
-keke-provider-api = { workspace = true }
-keke-tasks = { workspace = true }
 keke-tool = { workspace = true }
-regex = { workspace = true }
-ignore = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-similar = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
 [lints]
 workspace = true

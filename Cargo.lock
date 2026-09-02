@@ -1725,6 +1725,7 @@ dependencies = [
  "keke-provider-ollama",
  "keke-skills",
  "keke-subagent",
+ "keke-tasks",
  "keke-test-support",
  "keke-tools",
  "keke-tui",
@@ -2019,6 +2020,7 @@ dependencies = [
  "keke-plugin-api",
  "keke-protocol",
  "keke-provider-api",
+ "keke-tasks",
  "keke-tool",
  "schemars 0.8.22",
  "serde",
@@ -2026,6 +2028,22 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "keke-tasks"
+version = "0.1.16"
+dependencies = [
+ "keke-config-types",
+ "keke-paths",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-tool",
+ "schemars 0.8.22",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -2059,10 +2077,12 @@ name = "keke-tools"
 version = "0.1.16"
 dependencies = [
  "ignore",
+ "keke-config-types",
  "keke-paths",
  "keke-plugin-api",
  "keke-protocol",
  "keke-provider-api",
+ "keke-tasks",
  "keke-tool",
  "regex",
  "schemars 0.8.22",

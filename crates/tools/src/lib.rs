@@ -44,29 +44,40 @@ use keke_plugin_api::ToolContributor;
 use keke_tool::ArcTool;
 
 /// Every tool in this pack, in the order they are advertised.
+///
+/// `background` is where a backgrounded shell command goes. `None` builds a
+/// pack whose `bash` can only run in the foreground.
 #[must_use]
-pub fn builtin_tools() -> Vec<ArcTool> {
+pub fn builtin_tools(background: Option<Arc<keke_tasks::BackgroundTasks>>) -> Vec<ArcTool> {
     vec![
         Arc::new(ReadFile),
         Arc::new(ListDir),
         Arc::new(Grep),
-        Arc::new(Bash),
+        Arc::new(Bash { background }),
         Arc::new(WriteFile),
         Arc::new(Edit),
     ]
 }
 
-struct BuiltinTools;
+struct BuiltinTools {
+    background: Option<Arc<keke_tasks::BackgroundTasks>>,
+}
 
 impl ToolContributor for BuiltinTools {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        builtin_tools()
+        builtin_tools(self.background.clone())
     }
 }
 
 /// Register the built-in tool pack.
-pub fn install(registry: &mut ExtensionRegistryBuilder) {
-    registry.tool_contributor(Arc::new(BuiltinTools));
+///
+/// Pass the background registry to let `bash` start commands that outlive the
+/// turn; pass `None` for a composition that has none.
+pub fn install(
+    registry: &mut ExtensionRegistryBuilder,
+    background: Option<Arc<keke_tasks::BackgroundTasks>>,
+) {
+    registry.tool_contributor(Arc::new(BuiltinTools { background }));
 }
 
 #[cfg(test)]
@@ -322,20 +333,27 @@ mod tests {
     async fn bash_captures_output_and_a_failing_exit_code() {
         let (_dir, ctx) = workspace();
 
-        let out = Bash
+        let out = Bash { background: None }
             .run(
                 ctx,
                 BashArgs {
                     command: "echo out; echo err >&2; exit 3".into(),
+                    background: false,
                     timeout_ms: None,
                 },
             )
             .await
             .expect("ran");
 
-        assert_eq!(out.exit_code, 3);
-        assert!(out.output.contains("out"));
-        assert!(out.output.contains("err"));
+        let BashOutput::Finished {
+            exit_code, output, ..
+        } = &out
+        else {
+            panic!("a foreground command must return its output, not a task id");
+        };
+        assert_eq!(*exit_code, 3);
+        assert!(output.contains("out"));
+        assert!(output.contains("err"));
         assert!(rendered(&out).contains("[exit 3]"));
     }
 
@@ -344,11 +362,12 @@ mod tests {
     async fn bash_reports_a_timeout_as_a_timeout() {
         let (_dir, ctx) = workspace();
 
-        let error = Bash
+        let error = Bash { background: None }
             .run(
                 ctx,
                 BashArgs {
                     command: "sleep 5".into(),
+                    background: false,
                     timeout_ms: Some(100),
                 },
             )
@@ -375,11 +394,12 @@ mod tests {
             abort.store(true, Ordering::SeqCst);
         });
 
-        let error = Bash
+        let error = Bash { background: None }
             .run(
                 ctx,
                 BashArgs {
                     command: "sleep 5".into(),
+                    background: false,
                     timeout_ms: Some(30_000),
                 },
             )
@@ -476,10 +496,65 @@ mod tests {
         assert!(matches!(error, ToolError::InvalidArgs { ref tool, .. } if tool == "read_file"));
     }
 
+    /// The whole point of the flag: the call returns while the command is
+    /// still running, and hands back the id everything later uses to name it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(unix)]
+    async fn a_backgrounded_command_returns_an_id_instead_of_waiting() {
+        let (_dir, ctx) = workspace();
+        let tasks = Arc::new(keke_tasks::BackgroundTasks::new(
+            keke_config_types::BackgroundLimits::default(),
+        ));
+
+        let out = Bash {
+            background: Some(Arc::clone(&tasks)),
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "sleep 30".into(),
+                background: true,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("started");
+
+        let BashOutput::Started { task_id } = &out else {
+            panic!("a background command must return an id, not output");
+        };
+        assert!(keke_tasks::TaskSource::owns(tasks.as_ref(), task_id));
+        keke_tasks::TaskSource::kill(tasks.as_ref(), task_id);
+    }
+
+    /// A composition with no registry says so rather than quietly running the
+    /// command in the foreground, which is a different answer to a different
+    /// question.
+    #[tokio::test]
+    async fn backgrounding_without_a_registry_is_an_error_not_a_silent_wait() {
+        let (_dir, ctx) = workspace();
+        let error = Bash { background: None }
+            .run(
+                ctx,
+                BashArgs {
+                    command: "true".into(),
+                    background: true,
+                    timeout_ms: None,
+                },
+            )
+            .await
+            .expect_err("no registry");
+
+        assert!(
+            matches!(error, ToolError::Execution { ref code, .. } if code == "background_unavailable"),
+            "{error:?}"
+        );
+    }
+
     #[test]
     fn the_pack_installs_all_six_tools() {
         let mut builder = ExtensionRegistryBuilder::new();
-        install(&mut builder);
+        install(&mut builder, None);
         let registry = builder.build();
 
         let ctx = ExtensionContext::new(
