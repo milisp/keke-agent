@@ -81,6 +81,10 @@ pub struct App {
     notices: Option<UnboundedSender<Notice>>,
     /// `@`-completion: fuzzy file/folder search over the current line.
     pub file_search: FileSearchState,
+    /// Standing prompts from `/loop`. Held by the surface, not the session:
+    /// a loop is a person's instruction to keep asking, and it ends with the
+    /// window it was typed into.
+    pub(crate) schedule: crate::schedule::Scheduler,
     /// What was typed in this project before, and where the arrow keys are
     /// within it.
     pub history: PromptHistory,
@@ -242,6 +246,7 @@ impl App {
                 sign_in: None,
                 notices: None,
                 file_search: FileSearchState::new(cwd),
+                schedule: crate::schedule::Scheduler::default(),
                 history: PromptHistory::default(),
                 completion: 0,
                 esc_armed: None,
@@ -474,6 +479,53 @@ impl App {
         self.started.is_some() || self.flash().is_some() || self.file_search.is_open()
     }
 
+    /// How long the event loop may block before it must look at the app again.
+    ///
+    /// `None` means nothing is moving and it may block indefinitely — an idle
+    /// session with no loops must not wake the terminal on a timer, which is
+    /// what a person notices on a laptop.
+    #[must_use]
+    pub fn next_wakeup(&self, tick: Duration) -> Option<Duration> {
+        let timing = self.is_timing().then_some(tick);
+        // A due loop that cannot fire yet must not be woken for: while a turn
+        // holds it up, waking on its deadline is a spin at zero delay. The
+        // turn's own tick is what brings us back to look again.
+        let due = self.schedule.until_due(Instant::now()).map(|due| {
+            if self.turn.is_busy() {
+                due.max(tick)
+            } else {
+                due
+            }
+        });
+        match (timing, due) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (only, None) | (None, only) => only,
+        }
+    }
+
+    /// Fire the loop that is due, if the agent is free to answer it.
+    ///
+    /// Called from the event loop on every wakeup. A due loop waits while a
+    /// turn is running rather than interrupting it: two prompts in flight
+    /// means one of them is answered with the other's context.
+    pub fn fire_due_schedules(&mut self) {
+        for id in self.schedule.expire(Instant::now()) {
+            self.transcript.push(Cell::Notice(format!(
+                "loop {id} expired after a week and has stopped"
+            )));
+        }
+        if self.turn.is_busy() {
+            return;
+        }
+        let Some((id, prompt)) = self.schedule.take_due(Instant::now()) else {
+            return;
+        };
+        self.transcript
+            .push(Cell::Notice(format!("loop {id} firing")));
+        self.transcript.push(Cell::User(prompt.clone()));
+        self.send_text(prompt);
+    }
+
     /// How long a flash stays up. Long enough to read, short enough that it is
     /// gone before it can be mistaken for state.
     const FLASH: Duration = Duration::from_secs(5);
@@ -681,6 +733,14 @@ impl App {
     /// same reason `submit` is — rebuilding a session can mean a network
     /// round trip, and that must not stop the interface from redrawing.
     fn start_new_session(&mut self) {
+        // A loop was written against the conversation it was typed into;
+        // carrying it over would keep asking a question about work the fresh
+        // session has no record of.
+        if !self.schedule.is_empty() {
+            self.transcript
+                .push(Cell::Notice("loops stopped with the session".to_string()));
+            self.schedule.clear();
+        }
         let conversation = Arc::clone(&self.conversation);
         let local = self.local.clone();
         tokio::spawn(async move {

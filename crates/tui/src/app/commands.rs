@@ -36,6 +36,7 @@ impl App {
             SlashAction::Builtin(Builtin::Mcp) => self.mcp_command(arguments),
             SlashAction::Builtin(Builtin::Plan) => self.plan_command(arguments),
             SlashAction::Builtin(Builtin::ViewPlan) => self.view_plan_command(),
+            SlashAction::Builtin(Builtin::Loop) => self.loop_command(arguments),
             SlashAction::Builtin(Builtin::Effort) => match crate::slash::effort(arguments) {
                 Ok(Some(effort)) => self.set_reasoning_effort_aloud(effort),
                 Ok(None) => {
@@ -111,6 +112,89 @@ impl App {
         }
         self.transcript.push(Cell::User(task.to_string()));
         self.send_text(task.to_string());
+    }
+
+    /// `/loop <interval> <prompt>`, `/loop list`, `/loop stop <id>`.
+    ///
+    /// One command rather than three, because a person who typed `/loop` once
+    /// looks for the way to stop it under the same name.
+    fn loop_command(&mut self, arguments: &str) {
+        let arguments = arguments.trim();
+        let (head, rest) = match arguments.split_once(char::is_whitespace) {
+            Some((head, rest)) => (head, rest.trim()),
+            None => (arguments, ""),
+        };
+        match head {
+            "" | "list" => self.list_loops(),
+            "stop" => self.stop_loop(rest),
+            _ => self.start_loop(head, rest),
+        }
+    }
+
+    fn list_loops(&mut self) {
+        if self.schedule.is_empty() {
+            self.transcript.push(Cell::Notice(
+                "no loops running — `/loop 5m <prompt>` starts one".to_string(),
+            ));
+            return;
+        }
+        let now = std::time::Instant::now();
+        let mut text = String::from("loops");
+        for task in self.schedule.tasks() {
+            let due = task.next_fire().saturating_duration_since(now).as_secs();
+            text.push_str(&format!(
+                "\n  {} · every {} · next in {due}s · {}",
+                task.id,
+                crate::schedule::format_interval(task.interval),
+                task.prompt
+            ));
+        }
+        text.push_str("\n  /loop stop <id> stops one");
+        self.transcript.push(Cell::Notice(text));
+    }
+
+    fn stop_loop(&mut self, rest: &str) {
+        let Ok(id) = rest.trim().parse::<u32>() else {
+            self.transcript.push(Cell::Error(
+                "which loop? — `/loop stop <id>`, and `/loop list` has the ids".to_string(),
+            ));
+            return;
+        };
+        if self.schedule.remove(id) {
+            self.transcript
+                .push(Cell::Notice(format!("loop {id} stopped")));
+        } else {
+            self.transcript.push(Cell::Error(format!(
+                "no loop {id} — /loop list has the ids"
+            )));
+        }
+    }
+
+    fn start_loop(&mut self, interval: &str, prompt: &str) {
+        let Some(interval) = crate::schedule::parse_interval(interval) else {
+            self.transcript.push(Cell::Error(format!(
+                "`{interval}` is not an interval — use 60s, 5m, 2h, or 1d"
+            )));
+            return;
+        };
+        // Fires on creation as well as on the interval: a person asking to
+        // check something every five minutes means starting now, not in five
+        // minutes' time.
+        match self.schedule.add(
+            interval,
+            prompt.to_string(),
+            true,
+            std::time::Instant::now(),
+        ) {
+            Ok(id) => {
+                self.transcript.push(Cell::Notice(format!(
+                    "loop {id} · every {} · /loop stop {id} ends it",
+                    crate::schedule::format_interval(interval)
+                )));
+                self.fire_due_schedules();
+            }
+            Err(error) => self.transcript.push(Cell::Error(error)),
+        }
     }
 
     /// `/export <path>` — the messages so far, as Markdown.
