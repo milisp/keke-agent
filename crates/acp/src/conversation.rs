@@ -85,6 +85,10 @@ pub enum Update {
     /// Empty means nothing is outstanding, which is a surface's cue to take the
     /// section away entirely.
     Subagents(Vec<SubagentView>),
+    /// Every background task worth showing, oldest first, on the same terms as
+    /// [`Update::Subagents`]: a whole snapshot, and empty means the section
+    /// goes away.
+    Tasks(Vec<TaskView>),
     /// The turn failed. The conversation stays usable.
     Failed(String),
     /// The session mode changed without the surface asking — the agent
@@ -134,6 +138,30 @@ pub struct SubagentView {
     /// How full the child's context window is, in input tokens of its last
     /// model step.
     pub input_tokens: u64,
+}
+
+/// One background task, as a surface draws it.
+///
+/// Deliberately not a `TaskSnapshot`: this crate does not depend on whatever
+/// runs the tasks, for the same reason it does not depend on whatever runs the
+/// subagents — the shape of a row is the whole contract, so an ACP surface
+/// across a pipe gets the same one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskView {
+    pub id: String,
+    /// `command` or `subagent`.
+    pub kind: String,
+    /// What it is running, in full; a surface truncates for its own row.
+    pub description: String,
+    /// `running`, `exited`, `exited(1)`, `killed`.
+    pub status: String,
+}
+
+impl TaskView {
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.status == "running"
+    }
 }
 
 /// A conversation that is open and ready to be prompted.

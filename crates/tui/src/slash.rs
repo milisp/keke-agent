@@ -81,6 +81,9 @@ pub enum Builtin {
     /// Reopens the last plan this session saw, as a record of what was
     /// decided rather than a question to answer again.
     ViewPlan,
+    /// Sends a prompt again on an interval — `/loop 5m <prompt>` — and lists
+    /// or stops the ones already running.
+    Loop,
 }
 
 /// One entry in the command list.
@@ -262,6 +265,11 @@ fn builtins() -> Vec<SlashCommand> {
             Builtin::Plan,
             "plan",
             "plan before building — `/plan <what to do>` starts the turn too",
+        ),
+        (
+            Builtin::Loop,
+            "loop",
+            "repeat a prompt on a timer — `/loop 5m <prompt>`, `/loop list`, `/loop stop <id>`",
         ),
         (
             Builtin::ViewPlan,

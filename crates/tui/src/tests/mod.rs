@@ -6,6 +6,7 @@ mod helpers;
 mod cells;
 mod commands;
 mod history;
+mod loops;
 mod mcp_overlay;
 mod models;
 mod rewind;

@@ -597,7 +597,8 @@ async fn pump(
             // a keke-shaped field in front of clients that cannot draw it. The
             // work is still reported the ordinary way: the tool call that
             // started the subagent, and its result.
-            Update::Subagents(_) => {}
+            // See the v1 handler: keke's live rows have no ACP message.
+            Update::Subagents(_) | Update::Tasks(_) => {}
         }
     }
     Ok(())

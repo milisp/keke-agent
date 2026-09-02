@@ -565,7 +565,10 @@ async fn pump(
             // notification in the protocol that carries them.
             Update::RewindPoints(_) | Update::RewindPreview { .. } | Update::Rewound(_) => {}
             // See the note in `v2`: no ACP notification carries a subagent row.
-            Update::Subagents(_) => {}
+            // Neither has a place in ACP today: both are keke's own live rows,
+            // and inventing a message for them would be keke's dialect rather
+            // than the protocol.
+            Update::Subagents(_) | Update::Tasks(_) => {}
         }
     }
     Ok(())

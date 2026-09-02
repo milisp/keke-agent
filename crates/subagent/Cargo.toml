@@ -12,6 +12,7 @@ keke-config-types = { workspace = true }
 keke-core = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
+keke-tasks = { workspace = true }
 keke-tool = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

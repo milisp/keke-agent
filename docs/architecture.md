@@ -58,7 +58,7 @@ graph TD
     end
 
     subgraph Tier1_5["Tier 1.5 - Engine-dependent Tools"]
-        keke-subagent
+        keke-subagent --> keke-tasks
     end
 
     subgraph Tier1["Tier 1 - Engine"]
@@ -159,6 +159,21 @@ both ends, maps them to `keke_acp::SubagentView` and hands the receiver to
 `keke-acp` therefore does not depend on `keke-subagent`, and `keke-tui` stays
 written against `Conversation` alone — a surface across a pipe is served by the
 same code path as the in-process one.
+
+`keke-tasks` is the other half of "work that outlives the turn that started
+it". It owns background shell commands — `bash` with `background: true` returns
+a task id instead of blocking — and it defines the `TaskSource` trait that the
+shared verbs (`list_tasks`, `task_output`, `wait_tasks`, `kill_task`) dispatch
+over. `SubagentHost` implements that trait, so one id namespace covers both
+kinds and a model does not have to remember which verb goes with which. It
+ranks *below* `keke-subagent` for that reason, and it needs no part of the
+engine: a process and a capped buffer is the whole of it.
+
+Nothing in it originates a turn. A background task's output reaches the model
+as an ordinary `task_output` tool result, which is already logged like any
+other, so invariant 6 needs no new `SessionEvent` to hold it. Waking an idle
+agent when a task finishes would be model-visible input arriving outside a
+turn, and that is a seam this deliberately does not open.
 
 ### Tier 2 — plugins
 

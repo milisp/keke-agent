@@ -191,6 +191,7 @@ pub(super) async fn tui(
         approvals,
         requests,
         Some(subagent_views(&composed.subagents)),
+        Some(task_views(&composed.background)),
     )
     .await?;
     // Read only once the session has an id: a fresh session's id is minted
@@ -289,6 +290,35 @@ fn subagent_views(
                     task: row.task,
                     status: row.status.map(|status| status.as_str().to_string()),
                     input_tokens: row.input_tokens,
+                })
+                .collect();
+            if tx.send(views).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// The same relay for background commands.
+///
+/// A translation rather than a re-export: `keke-acp` describes a row and does
+/// not depend on whatever produced it, which is what lets an ACP surface across
+/// a pipe be told the same thing.
+fn task_views(
+    host: &std::sync::Arc<keke_tasks::BackgroundTasks>,
+) -> tokio::sync::mpsc::UnboundedReceiver<Vec<keke_acp::TaskView>> {
+    let mut rows = host.subscribe();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(rows) = rows.recv().await {
+            let views = rows
+                .into_iter()
+                .map(|row| keke_acp::TaskView {
+                    id: row.id,
+                    kind: row.kind.to_string(),
+                    description: row.description,
+                    status: row.state.label(),
                 })
                 .collect();
             if tx.send(views).is_err() {

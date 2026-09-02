@@ -1,4 +1,5 @@
 use keke_protocol::ContentBlock;
+use keke_tasks::BackgroundTasks;
 use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
 use keke_tool::Tool;
@@ -13,6 +14,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::process::Command;
@@ -33,34 +35,68 @@ pub struct BashArgs {
     /// Shell command line, run from the workspace root.
     pub command: String,
     /// Wall-clock budget in milliseconds. Defaults to two minutes, capped at
-    /// ten.
+    /// ten. Ignored when `background` is set — a background command has no
+    /// budget, because nothing is waiting on it.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Start it and return at once, with a task id instead of output. Use for
+    /// anything long-lived: a dev server, a watch, a build you want to check
+    /// back on.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct BashOutput {
-    pub exit_code: i32,
-    /// Interleaved stdout then stderr, already capped.
-    pub output: String,
-    pub truncated: bool,
+#[serde(untagged)]
+pub enum BashOutput {
+    /// Ran to completion, which is what the model gets unless it asked
+    /// otherwise.
+    Finished {
+        exit_code: i32,
+        /// Interleaved stdout then stderr, already capped.
+        output: String,
+        truncated: bool,
+    },
+    /// Started and left running. The id is how every later call names it.
+    Started { task_id: String },
 }
 
 impl ToolOutput for BashOutput {
     fn render(&self) -> Vec<ContentBlock> {
-        let mut text = self.output.clone();
+        let (exit_code, output) = match self {
+            Self::Started { task_id } => {
+                return vec![ContentBlock::text(format!(
+                    "started {task_id} in the background — read it with `task_output`, stop it \
+                     with `kill_task`"
+                ))];
+            }
+            Self::Finished {
+                exit_code, output, ..
+            } => (*exit_code, output),
+        };
+        let mut text = output.clone();
         if text.is_empty() {
             text.push_str("(no output)");
         }
-        if self.exit_code != 0 {
-            text.push_str(&format!("\n[exit {}]", self.exit_code));
+        if exit_code != 0 {
+            text.push_str(&format!("\n[exit {exit_code}]"));
         }
         vec![ContentBlock::text(text)]
     }
 }
 
 /// Runs a shell command in the workspace root.
-pub struct Bash;
+///
+/// The background half is delegated rather than implemented here: a task that
+/// outlives the turn cannot be owned by the call that started it, and
+/// `keke-tasks` is the one place that records what a task is doing.
+pub struct Bash {
+    /// Where a backgrounded command goes. `None` in a composition with no task
+    /// registry, which makes `background: true` an error rather than a silent
+    /// foreground run — the model asked not to wait, and quietly waiting is a
+    /// different answer to a different question (`AGENTS.md` invariant 8).
+    pub background: Option<Arc<BackgroundTasks>>,
+}
 
 impl Tool for Bash {
     type Args = BashArgs;
@@ -74,7 +110,9 @@ impl Tool for Bash {
         ToolDescription::new(
             "Run a shell command from the workspace root. Returns stdout and stderr combined, \
              plus the exit code when it is non-zero. Long output is truncated, so pipe through \
-             `head` when you expect a lot.",
+             `head` when you expect a lot. Set `background` for anything long-lived — a dev \
+             server, a watch, a long build — to get a task id back immediately instead of \
+             blocking the turn.",
         )
     }
 
@@ -90,6 +128,19 @@ impl Tool for Bash {
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
+        if args.background {
+            let Some(tasks) = self.background.as_ref() else {
+                return Err(ToolError::custom(
+                    "background_unavailable",
+                    "this session has no background task registry",
+                ));
+            };
+            let id = tasks
+                .spawn(args.command, &ctx.workspace_root)
+                .map_err(|error| ToolError::custom("background_refused", error.to_string()))?;
+            return Ok(BashOutput::Started { task_id: id });
+        }
+
         // Clamp to the budget the engine is enforcing rather than to a local
         // copy of it: overrunning gets the call killed from outside, losing
         // whatever output the command had produced.
@@ -146,7 +197,7 @@ impl Tool for Bash {
         }
         let (text, truncated) = support::cap(combined, "output truncated");
 
-        Ok(BashOutput {
+        Ok(BashOutput::Finished {
             exit_code: output.status.code().unwrap_or(-1),
             output: text,
             truncated,

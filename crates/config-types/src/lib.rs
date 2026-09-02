@@ -971,6 +971,107 @@ impl Default for SubagentLimits {
     }
 }
 
+/// Bounds on the shell commands a session may leave running in the background.
+///
+/// Deployment-varying in the way invariant 9 in `AGENTS.md` means: how many
+/// long-lived children a machine tolerates, and how much of a chatty dev
+/// server's output is worth keeping in memory, are answered differently by a
+/// laptop and by a CI runner.
+///
+/// There is no "unbounded output" setting. A background task's buffer is the
+/// one thing in a session that grows without anyone asking it to, so the cap
+/// is a number rather than an option — a dev server left running overnight
+/// must not be able to end the session by filling it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundLimits {
+    /// How many background commands may run at once. Unlike a subagent spawn,
+    /// one past the limit is refused rather than queued: the model asked to
+    /// start something and carry on, and a start that silently waits is the
+    /// opposite of what it asked for.
+    pub max_concurrent: u8,
+    /// How much of one task's output is kept. Oldest bytes are dropped first —
+    /// what a person or a model wants from a long-running command is the tail.
+    pub output_bytes: u64,
+    /// How long a kill waits after SIGTERM before sending SIGKILL. A child
+    /// with cleanup to do gets this long to do it.
+    pub kill_grace_millis: u64,
+}
+
+impl BackgroundLimits {
+    /// One at a time is a real setting: a dev server and nothing else is a
+    /// perfectly ordinary way to work.
+    pub const MIN_CONCURRENT: u8 = 1;
+    /// Past this the limit stops being about the machine and starts being
+    /// about how many process trees a person can still reason about.
+    pub const MAX_CONCURRENT: u8 = 32;
+    /// Under 4 KiB the tail is too short to hold a stack trace, which is the
+    /// thing most often being fished out of a background task.
+    pub const MIN_OUTPUT_BYTES: u64 = 4 * 1024;
+    /// 8 MiB per task. Above this the buffer is no longer a tail, and the
+    /// model could not be shown it in one piece anyway.
+    pub const MAX_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
+    /// Immediate is allowed: a grace period is a courtesy to the child, and a
+    /// deployment that knows its children have no cleanup may skip it.
+    pub const MAX_KILL_GRACE_MILLIS: u64 = 30_000;
+
+    /// Validate a concurrency bound.
+    pub fn check_concurrent(value: u8) -> Result<u8, String> {
+        if (Self::MIN_CONCURRENT..=Self::MAX_CONCURRENT).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "background.max_concurrent must be between {} and {}, got {value}",
+                Self::MIN_CONCURRENT,
+                Self::MAX_CONCURRENT
+            ))
+        }
+    }
+
+    /// Validate a per-task output cap, in bytes.
+    pub fn check_output_bytes(value: u64) -> Result<u64, String> {
+        if (Self::MIN_OUTPUT_BYTES..=Self::MAX_OUTPUT_BYTES).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "background.output_bytes must be between {} and {}, got {value}",
+                Self::MIN_OUTPUT_BYTES,
+                Self::MAX_OUTPUT_BYTES
+            ))
+        }
+    }
+
+    /// Validate the grace period between SIGTERM and SIGKILL.
+    pub fn check_kill_grace(value: u64) -> Result<u64, String> {
+        if value <= Self::MAX_KILL_GRACE_MILLIS {
+            Ok(value)
+        } else {
+            Err(format!(
+                "background.kill_grace_millis must be at most {}, got {value}",
+                Self::MAX_KILL_GRACE_MILLIS
+            ))
+        }
+    }
+
+    #[must_use]
+    pub fn kill_grace(self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.kill_grace_millis)
+    }
+}
+
+impl Default for BackgroundLimits {
+    /// Eight at once, 256 KiB of tail each, two seconds to shut down. Eight is
+    /// more servers and watchers than a single workspace usually has; 256 KiB
+    /// holds a long test run's tail without being something a session notices
+    /// carrying.
+    fn default() -> Self {
+        Self {
+            max_concurrent: 8,
+            output_bytes: 256 * 1024,
+            kill_grace_millis: 2_000,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

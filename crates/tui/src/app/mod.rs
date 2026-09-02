@@ -81,6 +81,10 @@ pub struct App {
     notices: Option<UnboundedSender<Notice>>,
     /// `@`-completion: fuzzy file/folder search over the current line.
     pub file_search: FileSearchState,
+    /// Standing prompts from `/loop`. Held by the surface, not the session:
+    /// a loop is a person's instruction to keep asking, and it ends with the
+    /// window it was typed into.
+    pub(crate) schedule: crate::schedule::Scheduler,
     /// What was typed in this project before, and where the arrow keys are
     /// within it.
     pub history: PromptHistory,
@@ -185,6 +189,9 @@ pub struct App {
     /// Replaced wholesale rather than merged: the agent sends whole snapshots
     /// precisely so this cannot drift.
     subagents: Vec<keke_acp::SubagentView>,
+    /// Background commands, as the session last reported them. A whole
+    /// snapshot each time, so nothing here has to be reconciled.
+    tasks: Vec<keke_acp::TaskView>,
     /// When each subagent id was first seen here. The duration on a row is
     /// measured against this rather than against a timestamp the agent sends,
     /// because a surface across a pipe has no shared clock to compare with —
@@ -242,6 +249,7 @@ impl App {
                 sign_in: None,
                 notices: None,
                 file_search: FileSearchState::new(cwd),
+                schedule: crate::schedule::Scheduler::default(),
                 history: PromptHistory::default(),
                 completion: 0,
                 esc_armed: None,
@@ -271,6 +279,7 @@ impl App {
                 expanded: std::collections::HashSet::new(),
                 toggles: Vec::new(),
                 subagents: Vec::new(),
+                tasks: Vec::new(),
                 subagent_since: std::collections::HashMap::new(),
                 subagent_rows: Vec::new(),
                 subagent_detail: None,
@@ -474,6 +483,53 @@ impl App {
         self.started.is_some() || self.flash().is_some() || self.file_search.is_open()
     }
 
+    /// How long the event loop may block before it must look at the app again.
+    ///
+    /// `None` means nothing is moving and it may block indefinitely — an idle
+    /// session with no loops must not wake the terminal on a timer, which is
+    /// what a person notices on a laptop.
+    #[must_use]
+    pub fn next_wakeup(&self, tick: Duration) -> Option<Duration> {
+        let timing = self.is_timing().then_some(tick);
+        // A due loop that cannot fire yet must not be woken for: while a turn
+        // holds it up, waking on its deadline is a spin at zero delay. The
+        // turn's own tick is what brings us back to look again.
+        let due = self.schedule.until_due(Instant::now()).map(|due| {
+            if self.turn.is_busy() {
+                due.max(tick)
+            } else {
+                due
+            }
+        });
+        match (timing, due) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (only, None) | (None, only) => only,
+        }
+    }
+
+    /// Fire the loop that is due, if the agent is free to answer it.
+    ///
+    /// Called from the event loop on every wakeup. A due loop waits while a
+    /// turn is running rather than interrupting it: two prompts in flight
+    /// means one of them is answered with the other's context.
+    pub fn fire_due_schedules(&mut self) {
+        for id in self.schedule.expire(Instant::now()) {
+            self.transcript.push(Cell::Notice(format!(
+                "loop {id} expired after a week and has stopped"
+            )));
+        }
+        if self.turn.is_busy() {
+            return;
+        }
+        let Some((id, prompt)) = self.schedule.take_due(Instant::now()) else {
+            return;
+        };
+        self.transcript
+            .push(Cell::Notice(format!("loop {id} firing")));
+        self.transcript.push(Cell::User(prompt.clone()));
+        self.send_text(prompt);
+    }
+
     /// How long a flash stays up. Long enough to read, short enough that it is
     /// gone before it can be mistaken for state.
     const FLASH: Duration = Duration::from_secs(5);
@@ -604,6 +660,7 @@ impl App {
             Update::Subagents(rows) => {
                 self.set_subagents(rows);
             }
+            Update::Tasks(rows) => self.tasks = rows,
             Update::RewindPoints(points) => self.offer_rewind_points(points),
             Update::RewindPreview { turn, files } => self.preview_rewind(turn, files),
             Update::Rewound(rewound) => self.report_rewind(&rewound),
@@ -681,6 +738,14 @@ impl App {
     /// same reason `submit` is — rebuilding a session can mean a network
     /// round trip, and that must not stop the interface from redrawing.
     fn start_new_session(&mut self) {
+        // A loop was written against the conversation it was typed into;
+        // carrying it over would keep asking a question about work the fresh
+        // session has no record of.
+        if !self.schedule.is_empty() {
+            self.transcript
+                .push(Cell::Notice("loops stopped with the session".to_string()));
+            self.schedule.clear();
+        }
         let conversation = Arc::clone(&self.conversation);
         let local = self.local.clone();
         tokio::spawn(async move {
@@ -688,6 +753,12 @@ impl App {
                 let _ = local.send(Update::Failed(error.to_string()));
             }
         });
+    }
+
+    /// The background commands this session has started, oldest first.
+    #[must_use]
+    pub fn tasks(&self) -> &[keke_acp::TaskView] {
+        &self.tasks
     }
 
     /// Ctrl-C: stop the turn, or leave if there is nothing to stop.

@@ -26,6 +26,7 @@ members = [
     "crates/provider-ollama",
     "crates/skills",
     "crates/subagent",
+    "crates/tasks",
     "crates/test-support",
     "crates/tool",
     "crates/tools",
@@ -76,6 +77,7 @@ keke-provider-codex = { path = "crates/provider-codex" }
 keke-provider-grok = { path = "crates/provider-grok" }
 keke-provider-ollama = { path = "crates/provider-ollama" }
 keke-subagent = { path = "crates/subagent" }
+keke-tasks = { path = "crates/tasks" }
 keke-test-support = { path = "crates/test-support" }
 keke-tools = { path = "crates/tools" }
 keke-tui = { path = "crates/tui" }

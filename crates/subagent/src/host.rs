@@ -509,3 +509,72 @@ async fn run_one(
         session: Some(session.id()),
     }
 }
+
+/// The shared task verbs, over the subagents this host is holding.
+///
+/// Read-and-stop only, which is the whole of [`TaskSource`]. Collecting a
+/// subagent's *report* stays on `collect_agent`: a report is a structured
+/// result with a summary and a token count, and flattening it into the same
+/// text channel a shell command uses would lose the parts the parent's model
+/// is delegating for.
+impl keke_tasks::TaskSource for SubagentHost {
+    fn owns(&self, id: &str) -> bool {
+        id.starts_with("agent_")
+    }
+
+    fn snapshots(&self) -> Vec<keke_tasks::TaskSnapshot> {
+        self.progress().into_iter().map(row_to_task).collect()
+    }
+
+    fn snapshot(&self, id: &str) -> Option<keke_tasks::TaskSnapshot> {
+        self.progress()
+            .into_iter()
+            .find(|row| row.id == id)
+            .map(row_to_task)
+    }
+
+    /// A subagent says nothing until it is done, and what it says then is its
+    /// report. So this points at the tool that has it rather than inventing a
+    /// second, lossier way to deliver the same thing.
+    fn take_output(&self, id: &str) -> Option<keke_tasks::TaskOutput> {
+        let row = self.progress().into_iter().find(|row| row.id == id)?;
+        Some(keke_tasks::TaskOutput {
+            text: match row.status {
+                Some(status) => format!(
+                    "subagent {id} {} — `collect_agent` has its report",
+                    status.as_str()
+                ),
+                None => format!("subagent {id} is still working"),
+            },
+            dropped: 0,
+        })
+    }
+
+    fn kill(&self, id: &str) -> bool {
+        let Ok(mut slots) = self.slots.lock() else {
+            return false;
+        };
+        let Some(slot) = slots.remove(id) else {
+            return false;
+        };
+        slot.handle.abort();
+        drop(slots);
+        self.update_progress(|rows| rows.retain(|row| row.id != id));
+        true
+    }
+}
+
+fn row_to_task(row: AgentProgress) -> keke_tasks::TaskSnapshot {
+    keke_tasks::TaskSnapshot {
+        id: row.id,
+        kind: "subagent",
+        description: row.task,
+        // A subagent that failed still *finished*; how it ended is in its
+        // report, and flattening that into an exit code would invent one.
+        state: match row.status {
+            None => keke_tasks::TaskState::Running,
+            Some(AgentStatus::Cancelled) => keke_tasks::TaskState::Killed,
+            Some(_) => keke_tasks::TaskState::Exited(Some(0)),
+        },
+    }
+}

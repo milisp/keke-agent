@@ -45,6 +45,7 @@ use crate::RewindPoint;
 use crate::Rewound;
 use crate::Update;
 use crate::conversation::SubagentView;
+use crate::conversation::TaskView;
 
 /// One request awaiting a person.
 struct Pending {
@@ -236,7 +237,7 @@ pub async fn local(
     approvals: Arc<Approvals>,
     requests: ApprovalRequests,
 ) -> Result<Opened, CoreError> {
-    local_with(builder, approvals, requests, None).await
+    local_with(builder, approvals, requests, None, None).await
 }
 
 /// [`local`], plus a stream of subagent snapshots to relay to the surface.
@@ -250,6 +251,7 @@ pub async fn local_with(
     approvals: Arc<Approvals>,
     requests: ApprovalRequests,
     subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
+    tasks: Option<UnboundedReceiver<Vec<TaskView>>>,
 ) -> Result<Opened, CoreError> {
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
     let with_updates = builder.updates(turn_tx);
@@ -272,7 +274,13 @@ pub async fn local_with(
     let model = session.model().to_string();
 
     let (updates, update_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(publish(turn_rx, requests, subagents, updates.clone()));
+    tokio::spawn(publish(
+        turn_rx,
+        requests,
+        subagents,
+        tasks,
+        updates.clone(),
+    ));
 
     let (commands, mut inbox) = tokio::sync::mpsc::unbounded_channel();
     let echo = updates.clone();
@@ -398,6 +406,7 @@ async fn publish(
     mut turns: UnboundedReceiver<TurnUpdate>,
     ApprovalRequests(mut requests): ApprovalRequests,
     subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
+    tasks: Option<UnboundedReceiver<Vec<TaskView>>>,
     updates: UnboundedSender<Update>,
 ) {
     // A composition with no subagent host gets a channel whose sender is held
@@ -405,6 +414,13 @@ async fn publish(
     // is what the select arm needs. A dropped sender would resolve immediately
     // and spin.
     let (_never, mut subagents) = match subagents {
+        Some(rx) => (None, rx),
+        None => {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), rx)
+        }
+    };
+    let (_never_tasks, mut tasks) = match tasks {
         Some(rx) => (None, rx),
         None => {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -426,6 +442,10 @@ async fn publish(
             },
             rows = subagents.recv() => match rows {
                 Some(rows) => Update::Subagents(rows),
+                None => continue,
+            },
+            rows = tasks.recv() => match rows {
+                Some(rows) => Update::Tasks(rows),
                 None => continue,
             },
         };

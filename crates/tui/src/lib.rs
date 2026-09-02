@@ -20,6 +20,7 @@ pub mod mcp;
 mod picker;
 mod ported;
 pub mod rewind;
+mod schedule;
 mod scroll;
 mod selection;
 pub mod slash;
@@ -291,16 +292,18 @@ async fn event_loop(
     while !app.should_quit() {
         // `pending` rather than a long sleep when nothing is timing: the arm is
         // then never ready, so an idle interface blocks until something happens.
-        let timing = app.is_timing();
+        let wakeup = app.next_wakeup(TICK);
         let tick = async move {
-            if timing {
-                tokio::time::sleep(TICK).await;
-            } else {
-                std::future::pending::<()>().await;
+            match wakeup {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => std::future::pending::<()>().await,
             }
         };
         tokio::select! {
-            () = tick => { app.tick_file_search(); }
+            () = tick => {
+                app.tick_file_search();
+                app.fire_due_schedules();
+            }
             Some(update) = updates.recv() => app.apply(update),
             Some(update) = local.recv() => app.apply(update),
             Some(notice) = notices.recv() => app.apply_notice(notice),
