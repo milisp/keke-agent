@@ -35,6 +35,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     };
     let workspace_root = keke_config::resolve_workspace_root(&cwd)?;
     let mut config = Config::load(workspace_root.as_path())?;
+    crate::startup_trace::mark("config loaded");
 
     // CLI flags win over every config layer, which is what makes a one-off
     // override possible without editing a file. Resuming needs to tell a flag
@@ -92,6 +93,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         )),
         &config.model.provider,
     )?;
+    crate::startup_trace::mark("composed (first build)");
 
     // A directory override that names a route nobody registered is not a
     // preference that can be ignored: silently falling back would run the turn
@@ -116,7 +118,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     // it in rather than after a restart.
     let mut composed = composed;
     if matches!(command, Command::Tui) && is_interactive() {
-        match crate::first_run::maybe_run(&mut config, &composed).await? {
+        crate::startup_trace::mark("first_run: start");
+        let outcome = crate::first_run::maybe_run(&mut config, &composed).await?;
+        crate::startup_trace::mark("first_run: done");
+        match outcome {
             crate::first_run::Outcome::ProvidersChanged => {
                 composed = Composed::build(
                     &config.home,

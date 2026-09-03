@@ -259,7 +259,15 @@ pub async fn local_with(
     // rebuilds from this recipe, and a session started fresh must not silently
     // resume the log the first one did.
     let recipe = with_updates.clone().fresh();
+    let trace = std::env::var_os("KEKE_STARTUP_TRACE").is_some();
+    let build_start = std::time::Instant::now();
     let mut session = with_updates.build().await?;
+    if trace {
+        eprintln!(
+            "[startup] {:>7?} local: session.build()",
+            build_start.elapsed()
+        );
+    }
     let id = session.id().to_string();
     let cancel = session.canceller();
     let approval = session.approval_switch();
