@@ -134,6 +134,14 @@ commit, no stash, no index of the person's that a snapshot could disturb — and
 that separation is what makes a rewind able to put files back without ever
 being something a person has to trust with their own history.
 
+It is not a `git worktree` either, and the distinction is worth stating because
+the two look interchangeable and are not. A worktree answers *isolation* — give
+the agent a checkout of its own — while a checkpoint answers *undo*. Isolation
+cannot represent the uncommitted tree a person already had, needs the project to
+be a git repository at all, and moves the edits out of the directory the person
+is watching. keke has both, and they compose rather than compete: run a session
+in a worktree and the checkpoint store simply points at that checkout instead.
+
 `keke-core` depends only on tier 0 and contains nothing vendor-specific.
 
 ### Tier 1.5 — engine-dependent tools

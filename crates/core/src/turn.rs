@@ -233,6 +233,19 @@ impl Session {
                 });
             }
 
+            // The model has asked for a tool, so this turn is working on the
+            // project and will probably want a snapshot before it is over.
+            // Reading the tree into the index is the expensive part and it can
+            // start now, while these calls run, instead of when the first
+            // writing one is already waiting on it.
+            //
+            // Here rather than at the top of the turn because a turn that only
+            // answers a question must still cost nothing at all — and here
+            // rather than at the first *writing* call, which is the moment the
+            // work would have to be waited for. Read-only calls almost always
+            // come first, and each one is a head start.
+            self.warm_checkpoints();
+
             let mut results = Vec::with_capacity(calls.len());
             let mut aborted = false;
             for call in &calls {
