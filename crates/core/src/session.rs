@@ -213,6 +213,7 @@ impl Session {
                     self.config.home.home.as_path(),
                     &crate::sessions_dir(&self.config.home.home),
                 ],
+                &self.id.to_string(),
             )
             .await;
             self.checkpoints = match opened {

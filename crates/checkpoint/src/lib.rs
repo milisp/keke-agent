@@ -81,11 +81,24 @@ pub struct Restored {
     pub undo: Option<Snapshot>,
 }
 
-/// The snapshot store for one session.
+/// The snapshot store for one project, staging through an index of one
+/// session's own.
+///
+/// The object database (`git_dir`) is shared by every session open on the
+/// same project — that is what lets the first-ever session pay `git init`
+/// once and every later `open` hit the early return. The index is not
+/// shared: two sessions staging at once would otherwise serialize on the
+/// same `index.lock`, and a session mid-`git add` would see the other's
+/// half-staged tree. `--index-file` gives each session a private index over
+/// the same objects and refs, so `git add`/`write-tree`/`commit-tree` never
+/// contend across sessions; only concurrent snapshot-taking *and restoring*
+/// files in the same project at the same time still race, at the working
+/// tree itself rather than in git, and no index scheme changes that.
 #[derive(Clone, Debug)]
 pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
+    index_file: PathBuf,
 }
 
 /// The identity snapshots are committed under.
@@ -108,14 +121,20 @@ impl Checkpoints {
     /// nothing stops a deployment from putting `$KEKE_HOME` inside the project,
     /// and a store that snapshotted it would offer to restore the session log
     /// it is in the middle of writing.
+    ///
+    /// `session` names the caller's own index within this store — see the
+    /// type's doc comment. Any string unique to the caller works; a session
+    /// id is what every caller of this happens to already have.
     pub async fn open(
         dir: &Path,
         work_tree: &AbsPath,
         keep_out: &[&Path],
+        session: &str,
     ) -> Result<Self, CheckpointError> {
         let store = Self {
             git_dir: dir.to_path_buf(),
             work_tree: work_tree.as_path().to_path_buf(),
+            index_file: dir.join(format!("index.{session}")),
         };
         if store.git_dir.join("HEAD").exists() {
             return Ok(store);
@@ -287,6 +306,9 @@ impl Checkpoints {
             .arg(&self.git_dir)
             .arg("--work-tree")
             .arg(&self.work_tree)
+            // A private index per session, over the shared object store — see
+            // the `Checkpoints` doc comment.
+            .env("GIT_INDEX_FILE", &self.index_file)
             .current_dir(&self.work_tree)
             .args(args)
             .stdin(Stdio::null())
@@ -348,7 +370,7 @@ mod tests {
                 .expect("canonicalize")
                 .join("checkpoints.git"),
         };
-        let store = Checkpoints::open(&git_dir, &root, &[])
+        let store = Checkpoints::open(&git_dir, &root, &[], "test")
             .await
             .expect("opens");
         Project {
@@ -524,9 +546,14 @@ mod tests {
         let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
         let root = AbsPath::new(root).expect("absolute");
         let home = root.as_path().join(".keke");
-        let store = Checkpoints::open(&home.join("checkpoints.git"), &root, &[home.as_path()])
-            .await
-            .expect("opens");
+        let store = Checkpoints::open(
+            &home.join("checkpoints.git"),
+            &root,
+            &[home.as_path()],
+            "test",
+        )
+        .await
+        .expect("opens");
 
         write(&root, "file.txt", "before");
         write(&root, ".keke/sessions/log.jsonl", "turn one");
@@ -580,5 +607,30 @@ mod tests {
             "M file.txt",
             "their working tree must read exactly as it would without keke running"
         );
+    }
+
+    /// Two sessions of the same project share one object store, but must not
+    /// share one index: a shared index would serialize concurrent `git add`
+    /// on the same `index.lock`, and could interleave one session's staged
+    /// tree with the other's.
+    #[tokio::test]
+    async fn two_sessions_snapshot_the_same_project_without_contending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let root = AbsPath::new(root).expect("absolute");
+        let git_dir = root.as_path().join("checkpoints.git");
+
+        let first = Checkpoints::open(&git_dir, &root, &[], "session-a")
+            .await
+            .expect("first session opens");
+        let second = Checkpoints::open(&git_dir, &root, &[], "session-b")
+            .await
+            .expect("second session hits the HEAD-exists early return");
+
+        write(&root, "a.txt", "from session a");
+        write(&root, "b.txt", "from session b");
+        let (a, b) = tokio::join!(first.take("turn from a"), second.take("turn from b"));
+        assert!(a.expect("session a snapshots").is_some());
+        assert!(b.expect("session b snapshots").is_some());
     }
 }
