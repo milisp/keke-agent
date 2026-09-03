@@ -140,29 +140,37 @@ impl App {
         }
         let now = std::time::Instant::now();
         let mut text = String::from("loops");
-        for task in self.schedule.tasks() {
-            let due = task.next_fire().saturating_duration_since(now).as_secs();
-            text.push_str(&format!(
-                "\n  {} · every {} · next in {due}s · {}",
-                task.id,
-                crate::schedule::format_interval(task.interval),
-                task.prompt
-            ));
-        }
+        self.schedule.with(|schedule| {
+            for task in schedule.tasks() {
+                let due = task.next_fire().saturating_duration_since(now).as_secs();
+                // Who started it, because a loop the model gave itself is one
+                // the person at the keyboard never typed and would otherwise
+                // first learn about when its prompt arrives.
+                text.push_str(&format!(
+                    "\n  {} · every {} · next in {due}s · started by {} · {}",
+                    task.task_id(),
+                    keke_schedule::format_interval(task.interval),
+                    task.origin.label(),
+                    task.prompt
+                ));
+            }
+        });
         text.push_str("\n  /loop stop <id> stops one");
         self.transcript.push(Cell::Notice(text));
     }
 
     fn stop_loop(&mut self, rest: &str) {
-        let Ok(id) = rest.trim().parse::<u32>() else {
+        let Some(id) = keke_schedule::parse_id(rest) else {
             self.transcript.push(Cell::Error(
                 "which loop? — `/loop stop <id>`, and `/loop list` has the ids".to_string(),
             ));
             return;
         };
-        if self.schedule.remove(id) {
-            self.transcript
-                .push(Cell::Notice(format!("loop {id} stopped")));
+        if self.schedule.with(|schedule| schedule.remove(id)) {
+            self.transcript.push(Cell::Notice(format!(
+                "{}_{id} stopped",
+                keke_schedule::KIND
+            )));
         } else {
             self.transcript.push(Cell::Error(format!(
                 "no loop {id} — /loop list has the ids"
@@ -171,7 +179,7 @@ impl App {
     }
 
     fn start_loop(&mut self, interval: &str, prompt: &str) {
-        let Some(interval) = crate::schedule::parse_interval(interval) else {
+        let Some(interval) = keke_schedule::parse_interval(interval) else {
             self.transcript.push(Cell::Error(format!(
                 "`{interval}` is not an interval — use 60s, 5m, 2h, or 1d"
             )));
@@ -183,13 +191,13 @@ impl App {
         match self.schedule.add(
             interval,
             prompt.to_string(),
+            keke_schedule::Origin::Person,
             true,
-            std::time::Instant::now(),
         ) {
             Ok(id) => {
                 self.transcript.push(Cell::Notice(format!(
-                    "loop {id} · every {} · /loop stop {id} ends it",
-                    crate::schedule::format_interval(interval)
+                    "{id} · every {} · /loop stop {id} ends it",
+                    keke_schedule::format_interval(interval)
                 )));
                 self.fire_due_schedules();
             }

@@ -449,6 +449,10 @@ pub(crate) struct Composed {
     /// rather than by a turn, because a command outlives the turn that
     /// started it.
     pub background: Arc<keke_tasks::BackgroundTasks>,
+    /// The session's standing prompts. Held here because both the model's
+    /// `schedule_prompt` and the surface's `/loop` write to it, and only the
+    /// composition root knows both exist.
+    pub schedules: keke_schedule::Schedules,
     /// The session-mode switch plan mode was installed against, when this
     /// composition is for a session. `session_builder` hands it to the builder
     /// so the engine and the extension read the same cell.
@@ -598,6 +602,12 @@ impl Composed {
         // next, and the thing holding it must not be per-turn.
         let background = Arc::new(keke_tasks::BackgroundTasks::new(background_limits));
         keke_tools::install(&mut extensions, Some(Arc::clone(&background)));
+        // The scheduler the surface fires from and the tool writes to. One
+        // handle, for the same reason the task registry is one: a loop the
+        // model gave itself that a person cannot list is a prompt arriving
+        // from nowhere.
+        let schedules = keke_schedule::Schedules::default();
+        keke_schedule::install(&mut extensions, schedules.clone());
 
         // `web_search` is offered only when the route this session will talk
         // to has a search to run, and the route is settled here because a
@@ -649,6 +659,7 @@ impl Composed {
             vec![
                 Arc::clone(&background) as Arc<dyn keke_tasks::TaskSource>,
                 Arc::clone(&subagents) as Arc<dyn keke_tasks::TaskSource>,
+                Arc::new(schedules.clone()) as Arc<dyn keke_tasks::TaskSource>,
             ],
         );
         keke_skills::install_with(&mut extensions, &plugins, skills);
@@ -685,6 +696,7 @@ impl Composed {
             extensions: extensions.build(),
             subagents,
             background,
+            schedules,
             plan_mode,
             skills: enabled_skills,
             commands,

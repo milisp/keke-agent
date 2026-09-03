@@ -59,6 +59,10 @@ RANK = {
     # buffer, not the engine.
     "keke-tasks": 13,
     "keke-subagent": 14,
+    # standing prompts. Above `keke-tasks` because a loop is one more kind of
+    # outstanding work and answers its `TaskSource`; below every surface,
+    # because the scheduler holds records and the surface holds the clock.
+    "keke-schedule": 14,
     # test support sits beside the plugins: it may use the contracts, and
     # anything may depend on it as a dev-dependency
     "keke-test-support": 15,
@@ -86,6 +90,7 @@ VENDOR_FREE = {
     "keke-config",
     "keke-subagent",
     "keke-tasks",
+    "keke-schedule",
     "keke-workspace",
     "keke-acp",
     "keke-tui",

@@ -1723,6 +1723,7 @@ dependencies = [
  "keke-provider-codex",
  "keke-provider-grok",
  "keke-provider-ollama",
+ "keke-schedule",
  "keke-skills",
  "keke-subagent",
  "keke-tasks",
@@ -1995,6 +1996,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-schedule"
+version = "0.1.16"
+dependencies = [
+ "keke-paths",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-tasks",
+ "keke-tool",
+ "schemars 0.8.22",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "keke-skills"
 version = "0.1.16"
 dependencies = [
@@ -2112,6 +2127,7 @@ dependencies = [
  "keke-plugin",
  "keke-protocol",
  "keke-provider-api",
+ "keke-schedule",
  "nucleo",
  "pulldown-cmark",
  "ratatui",

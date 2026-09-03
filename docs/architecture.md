@@ -59,6 +59,7 @@ graph TD
 
     subgraph Tier1_5["Tier 1.5 - Engine-dependent Tools"]
         keke-subagent --> keke-tasks
+        keke-schedule --> keke-tasks
     end
 
     subgraph Tier1["Tier 1 - Engine"]
@@ -174,6 +175,22 @@ as an ordinary `task_output` tool result, which is already logged like any
 other, so invariant 6 needs no new `SessionEvent` to hold it. Waking an idle
 agent when a task finishes would be model-visible input arriving outside a
 turn, and that is a seam this deliberately does not open.
+
+`keke-schedule` is standing prompts: the same instruction sent again on an
+interval. It answers to two callers that must not each keep their own copy —
+`/loop` typed at the keyboard, and `schedule_prompt` called by the model — so
+the records live in one `Schedules` handle that the composition root builds and
+gives to both. It implements `TaskSource` as well, which is what puts a loop in
+the same id namespace as a background command: `list_tasks` shows the loops the
+model gave itself, and `kill_task` stops one, without a second vocabulary.
+
+The scheduler holds records; the surface holds the clock. That is what keeps
+the crate below the surfaces and what keeps invariant 6 satisfied for free: a
+loop that comes due is sent down the ordinary prompt path by the interface that
+already has an event loop, so it is logged as the user message it is, and no
+`SessionEvent` variant is needed for the timer behind it. A scheduler that fired
+prompts itself would be originating a turn from below the surface, which is the
+seam `keke-tasks` also declines to open.
 
 ### Tier 2 — plugins
 

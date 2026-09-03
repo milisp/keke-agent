@@ -18,6 +18,7 @@ keke-paths = { workspace = true }
 keke-plugin = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
+keke-schedule = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }

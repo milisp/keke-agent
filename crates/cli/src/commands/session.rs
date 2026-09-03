@@ -205,8 +205,10 @@ pub(super) async fn tui(
     let prompts = prompt_history(&config.home.home, &history_cwd, session_id);
     let (conversation, updates) = (opened.conversation, opened.updates);
     let result = keke_tui::run(
-        conversation,
-        updates,
+        keke_tui::Attached {
+            conversation,
+            updates,
+        },
         commands,
         keke_tui::SessionDefaults {
             approval: config.approval_policy,
@@ -242,6 +244,7 @@ pub(super) async fn tui(
                 home: config.home.clone(),
             })),
         },
+        composed.schedules.clone(),
     )
     .await;
     // A session that never held a turn is a log opening the interface wrote
