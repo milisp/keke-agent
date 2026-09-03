@@ -305,6 +305,18 @@ async fn event_loop(
     let mut input = EventStream::new();
     let mut capturing = app.mouse_capture();
     terminal.draw(|frame| draw::draw(frame, &mut app))?;
+    if std::env::var_os("KEKE_STARTUP_TRACE").is_some() {
+        eprintln!("[startup] first frame drawn");
+    }
+
+    // Benchmark-only escape hatch: quitting the instant the first frame is on
+    // screen turns the wall-clock time of the whole process (as `hyperfine` or
+    // `time` sees it) into a fair "time to first frame" comparison against
+    // other TUIs, which a real interactive run can never offer since it waits
+    // on a person. Not a general flag — nothing user-facing depends on it.
+    if std::env::var_os("KEKE_EXIT_AFTER_FIRST_FRAME").is_some() {
+        return Ok(());
+    }
 
     while !app.should_quit() {
         // `pending` rather than a long sleep when nothing is timing: the arm is

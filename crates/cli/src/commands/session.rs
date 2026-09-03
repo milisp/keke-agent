@@ -175,7 +175,9 @@ pub(super) async fn tui(
     // The directory the typing history belongs to: for a resumed session, the
     // one it was started in rather than wherever keke was invoked.
     let history_cwd = cwd.clone();
+    crate::startup_trace::mark("session_builder: start");
     let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+    crate::startup_trace::mark("session_builder: done");
     if let Some(continued) = resume {
         builder = builder
             .resume(continued.id, continued.history)
@@ -185,7 +187,9 @@ pub(super) async fn tui(
     // Asked before the interface opens so `/model` can answer without a round
     // trip mid-conversation. It costs at most one request, and usually none:
     // the compiled-in vendors cache what they serve between runs.
+    crate::startup_trace::mark("models_for: start");
     let models = models_for(&composed, &config.model.provider).await;
+    crate::startup_trace::mark("models_for: done");
     let opened = keke_acp::local_with(
         builder,
         approvals,
@@ -194,6 +198,7 @@ pub(super) async fn tui(
         Some(task_views(&composed.background)),
     )
     .await?;
+    crate::startup_trace::mark("local_with: done");
     // Read only once the session has an id: a fresh session's id is minted
     // inside `session_builder`/`local`, and every recorded prompt should carry
     // the session it was actually typed in, not none at all.

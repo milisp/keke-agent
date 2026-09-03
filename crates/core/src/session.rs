@@ -141,10 +141,14 @@ pub struct Session {
     pub(crate) workspace: Workspace,
     pub(crate) cwd: PathBuf,
     pub(crate) history: Vec<Message>,
-    /// Working-tree snapshots, when the deployment keeps them. `None` when
-    /// checkpoints are off, or when the store could not be opened — a session
-    /// whose snapshots failed goes on running and simply cannot put files back.
-    pub(crate) checkpoints: Option<keke_checkpoint::Checkpoints>,
+    /// Working-tree snapshots, when the deployment keeps them.
+    ///
+    /// Opening the store means creating a bare git repo the first time a
+    /// project sees one, which costs a real `git init` subprocess — paid once
+    /// per turn that actually writes, not once per session opened. A session
+    /// that only talks, or that a person quits without prompting, must not pay
+    /// it at all.
+    pub(crate) checkpoints: CheckpointsState,
     /// The snapshot each user turn started from, by turn ordinal. Seeded from
     /// the log on a resume, so a rewind reaches past this process.
     pub(crate) snapshots: std::collections::BTreeMap<usize, keke_checkpoint::Snapshot>,
@@ -170,6 +174,65 @@ pub struct Session {
     /// it can be supplied to the builder rather than only created by it.
     pub(crate) mode: Arc<crate::SessionModeSwitch>,
     flag: Arc<AtomicBool>,
+}
+
+/// Where the working-tree snapshot store stands.
+///
+/// `Pending` carries everything [`keke_checkpoint::Checkpoints::open`] needs
+/// so opening it can be deferred past session construction to the first turn
+/// that actually writes — see [`Session::checkpoints`].
+pub(crate) enum CheckpointsState {
+    /// The deployment has checkpoints off, or this is a subagent session.
+    Disabled,
+    /// Not opened yet: the store's directory, waiting for a first write.
+    Pending(PathBuf),
+    /// Opened and ready.
+    Open(keke_checkpoint::Checkpoints),
+    /// Opening failed. Remembered rather than retried every turn — a store
+    /// that could not be created once is not going to succeed on the next
+    /// attempt with nothing about the environment having changed.
+    Failed,
+}
+
+impl Session {
+    /// The snapshot store, opening it on first use.
+    ///
+    /// A session whose store failed to open, or that has checkpoints off,
+    /// answers `None` and goes on running — it simply cannot put files back.
+    pub(crate) async fn checkpoints(&mut self) -> Option<&keke_checkpoint::Checkpoints> {
+        if let CheckpointsState::Pending(dir) = &self.checkpoints {
+            let dir = dir.clone();
+            let opened = keke_checkpoint::Checkpoints::open(
+                &dir,
+                &self.config.home.workspace_root,
+                // keke's home, and the session logs inside it: a deployment
+                // may put either in the project, and a restore that rolled
+                // back the log being written into would take the record of
+                // itself with it.
+                &[
+                    self.config.home.home.as_path(),
+                    &crate::sessions_dir(&self.config.home.home),
+                ],
+                &self.id.to_string(),
+            )
+            .await;
+            self.checkpoints = match opened {
+                Ok(store) => CheckpointsState::Open(store),
+                Err(error) => {
+                    // Not fatal: a session whose snapshots failed still works,
+                    // it just cannot offer to put files back.
+                    tracing::warn!(%error, "checkpoints are off for this session");
+                    CheckpointsState::Failed
+                }
+            };
+        }
+        match &self.checkpoints {
+            CheckpointsState::Open(store) => Some(store),
+            CheckpointsState::Disabled
+            | CheckpointsState::Pending(_)
+            | CheckpointsState::Failed => None,
+        }
+    }
 }
 
 impl Session {
@@ -347,12 +410,16 @@ impl Session {
     /// Asked when a person is deciding, not when the list is drawn: it is a
     /// diff against the working tree, and running one per row would spend the
     /// cost on every point they are not choosing.
-    pub async fn changed_since_turn(&self, nth: usize) -> Result<Vec<String>, CoreError> {
-        let (Some(store), Some(snapshot)) = (self.checkpoints.as_ref(), self.snapshots.get(&nth))
-        else {
+    pub async fn changed_since_turn(&mut self, nth: usize) -> Result<Vec<String>, CoreError> {
+        // No point opening the store for a turn that never took a snapshot —
+        // there is nothing on either side of the diff to open it for.
+        let Some(snapshot) = self.snapshots.get(&nth).cloned() else {
             return Ok(Vec::new());
         };
-        Ok(store.changed_since(snapshot).await?)
+        let Some(store) = self.checkpoints().await else {
+            return Ok(Vec::new());
+        };
+        Ok(store.changed_since(&snapshot).await?)
     }
 
     /// Wind the session back to just before its `nth` user turn (counting from
@@ -394,9 +461,9 @@ impl Session {
         // The files first: a failure here must not leave a conversation wound
         // back past the tree it was talking about, and a restore is the half
         // that can fail.
-        let restored = match (scope.touches_files(), self.checkpoints.as_ref()) {
-            (true, Some(store)) => match self.snapshots.get(&nth) {
-                Some(snapshot) => store.restore(snapshot).await?,
+        let restored = match (scope.touches_files(), self.snapshots.get(&nth).cloned()) {
+            (true, Some(snapshot)) => match self.checkpoints().await {
+                Some(store) => store.restore(&snapshot).await?,
                 None => keke_checkpoint::Restored::default(),
             },
             _ => keke_checkpoint::Restored::default(),
@@ -441,16 +508,19 @@ impl Session {
         if read_only || self.snapshot_taken {
             return;
         }
-        let Some(store) = self.checkpoints.as_ref() else {
-            return;
-        };
         self.snapshot_taken = true;
+        // Computed before the store borrow starts: the store's lifetime is
+        // tied to `&mut self`, so nothing else on `self` can be read while
+        // it's held.
         let user_turn = self
             .history
             .iter()
             .filter(|message| message.role == keke_protocol::Role::User)
             .count()
             .saturating_sub(1);
+        let Some(store) = self.checkpoints().await else {
+            return;
+        };
         let snapshot = match store.take(&format!("before turn {}", user_turn + 1)).await {
             Ok(Some(snapshot)) => snapshot,
             Ok(None) => return,
@@ -663,48 +733,35 @@ impl SessionBuilder {
             })
             .await?;
 
+        // Beside the project's logs rather than the session's: a store keyed
+        // by session id would never see its own `HEAD` on the next run — every
+        // session mints a fresh id — so opening it would `git init` a bare
+        // repo on every single startup instead of hitting the early return
+        // that makes a repeat run's `open` free. One repo per project, shared
+        // across that project's sessions, is what makes the early return
+        // actually fire after the first session ever opened here.
+        //
         // Beside the log rather than inside the project: the snapshots are
         // keke's, and a store in the workspace would be one more directory a
         // person has to know to ignore.
+        //
+        // Not opened here: `git init`-ing a bare repo the first time a project
+        // sees one is a real subprocess, and a session that only talks — or
+        // that a person quits before typing anything — must not pay for it.
+        // [`Session::checkpoints`] opens it lazily, the first time a turn
+        // actually writes.
+        //
         // A subagent takes no snapshots of its own. Its work happens inside a
         // tool call of the parent's turn, which the parent has already
         // snapshotted before dispatching — a second store under the child's
         // session would record the same tree again and offer a point no
         // conversation has a prompt for.
         let checkpoints = if config.checkpoints.enabled && self.parent.is_none() {
-            let dir = recorder
-                .path()
-                .parent()
-                .map(|dir| dir.join("checkpoints.git"));
-            match dir {
-                Some(dir) => {
-                    match keke_checkpoint::Checkpoints::open(
-                        &dir,
-                        &config.home.workspace_root,
-                        // keke's home, and the session logs inside it: a
-                        // deployment may put either in the project, and a
-                        // restore that rolled back the log being written into
-                        // would take the record of itself with it.
-                        &[
-                            config.home.home.as_path(),
-                            &crate::sessions_dir(&config.home.home),
-                        ],
-                    )
-                    .await
-                    {
-                        Ok(store) => Some(store),
-                        Err(error) => {
-                            // Not fatal: a session whose snapshots failed still
-                            // works, it just cannot offer to put files back.
-                            tracing::warn!(%error, "checkpoints are off for this session");
-                            None
-                        }
-                    }
-                }
-                None => None,
-            }
+            CheckpointsState::Pending(
+                crate::project_dir(&config.home.home, &cwd).join("checkpoints.git"),
+            )
         } else {
-            None
+            CheckpointsState::Disabled
         };
 
         let approval = config.approval;

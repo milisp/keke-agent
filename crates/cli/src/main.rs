@@ -13,6 +13,7 @@ mod declared;
 mod first_run;
 mod install;
 mod plugins;
+mod startup_trace;
 mod ui;
 
 use anyhow::Result;
@@ -34,9 +35,11 @@ fn log_file() -> Option<std::fs::File> {
 }
 
 fn main() -> Result<()> {
+    startup_trace::record_start();
     // Parsed before logging is wired: which surface is about to run decides
     // where a log line may go.
     let cli = cli::Cli::parse();
+    startup_trace::mark("cli parsed");
 
     let filter = tracing_subscriber::EnvFilter::try_from_env("KEKE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
