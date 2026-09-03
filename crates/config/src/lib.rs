@@ -147,6 +147,8 @@ pub struct ConfigFile {
 pub struct CheckpointFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<usize>,
 }
 
 /// The compaction section, separated so a layer can override one field of it.
@@ -267,6 +269,7 @@ impl Config {
                     .checkpoints
                     .get_or_insert_with(CheckpointFile::default);
                 base.enabled = checkpoints.enabled.or(base.enabled);
+                base.keep = checkpoints.keep.or(base.keep);
             }
             if let Some(plugins) = layer.file.plugins {
                 let base = merged.plugins.get_or_insert_with(PluginsFile::default);
@@ -320,13 +323,28 @@ impl Config {
                 .unwrap_or(CompactionConfig::default().context_window),
         };
 
+        let checkpoint_file = merged.checkpoints.unwrap_or_default();
         let checkpoints = CheckpointConfig {
-            enabled: merged
-                .checkpoints
-                .unwrap_or_default()
+            enabled: checkpoint_file
                 .enabled
                 .unwrap_or(CheckpointConfig::default().enabled),
+            keep: checkpoint_file
+                .keep
+                .unwrap_or(CheckpointConfig::default().keep),
         };
+
+        // Zero would mean a store that prunes every snapshot the moment it
+        // opens, which is checkpoints being off by another name — and off has
+        // its own setting that says so plainly.
+        if checkpoints.keep == 0 {
+            return Err(ConfigError::Invalid {
+                path: sources
+                    .last()
+                    .map(LayerSource::describe)
+                    .unwrap_or_else(|| "<defaults>".to_string()),
+                message: "checkpoints.keep must be at least 1; set checkpoints.enabled = false to turn snapshots off".to_string(),
+            });
+        }
 
         if !(1..=99).contains(&compaction.trigger_percent) {
             return Err(ConfigError::Invalid {

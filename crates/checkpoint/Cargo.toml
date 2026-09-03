@@ -11,12 +11,12 @@ repository.workspace = true
 keke-paths = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "macros", "process", "rt"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

@@ -16,6 +16,19 @@
 //! that: no commit, no stash, no index of the person's that a snapshot could
 //! disturb. Someone who runs `git status` mid-session must see exactly what
 //! they would have seen without keke running.
+//!
+//! It is also deliberately not a `git worktree`. A worktree is the other tool
+//! for this shape of problem — codex has a whole crate for them — but it
+//! answers a different question: *isolation*, giving an agent a checkout of
+//! its own to work in. Isolation is not undo. A worktree would move the edits
+//! out of the directory the person is looking at, needs the project to be a
+//! git repository at all, cannot represent an uncommitted tree the person
+//! already had, and leaves a second checkout on disk to reconcile afterwards.
+//! Snapshotting in place keeps the person's own directory the one thing keke
+//! and they are both looking at, works in a project that has no repository,
+//! and costs one staged index rather than a full checkout.
+
+use std::collections::BTreeSet;
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -99,7 +112,19 @@ pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
     index_file: PathBuf,
+    session: String,
 }
+
+/// Where a snapshot's ref lives.
+///
+/// Every snapshot is anchored under a ref of its own, because a commit that no
+/// ref names is *unreachable*, and unreachable is what `git gc` exists to
+/// delete. The store is a git repository like any other: the day something
+/// runs a `gc` in it — git's own automatic one, a person tidying up, a backup
+/// tool — every snapshot a resumed session still names would be gone, and the
+/// session would find out by failing to restore. Naming them makes keke, not
+/// git's default policy, the one that decides when a snapshot stops existing.
+const REFS: &str = "refs/keke/snapshots";
 
 /// The identity snapshots are committed under.
 ///
@@ -125,18 +150,25 @@ impl Checkpoints {
     /// `session` names the caller's own index within this store — see the
     /// type's doc comment. Any string unique to the caller works; a session
     /// id is what every caller of this happens to already have.
+    ///
+    /// `keep` is how many snapshots the store is allowed to hold. Pruning runs
+    /// here, before this session has taken any, so the newest `keep` of what
+    /// earlier sessions left survive and the rest are dropped.
     pub async fn open(
         dir: &Path,
         work_tree: &AbsPath,
         keep_out: &[&Path],
         session: &str,
+        keep: usize,
     ) -> Result<Self, CheckpointError> {
         let store = Self {
             git_dir: dir.to_path_buf(),
             work_tree: work_tree.as_path().to_path_buf(),
-            index_file: dir.join(format!("index.{session}")),
+            index_file: dir.join(format!("index.{}", ref_safe(session))),
+            session: ref_safe(session),
         };
         if store.git_dir.join("HEAD").exists() {
+            store.prune(keep).await?;
             return Ok(store);
         }
         tokio::fs::create_dir_all(&store.git_dir)
@@ -244,6 +276,20 @@ impl Checkpoints {
         if commit.is_empty() {
             return Ok(None);
         }
+        // Anchored under a ref before it is handed out, so it is reachable
+        // from the moment anything can name it — see [`REFS`]. The commit id
+        // is the ref's own name: it needs no counter to stay unique, and two
+        // sessions that snapshot an identical tree land on one ref rather than
+        // two names for one object.
+        self.git(
+            &[
+                "update-ref",
+                &format!("{REFS}/{}/{commit}", self.session),
+                &commit,
+            ],
+            false,
+        )
+        .await?;
         Ok(Some(Snapshot(commit)))
     }
 
@@ -288,6 +334,81 @@ impl Checkpoints {
         Ok(Restored { files, undo })
     }
 
+    /// Drop everything but the newest `keep` snapshots.
+    ///
+    /// A store nobody prunes is a store that grows for as long as the project
+    /// does: every turn that writes adds a tree and the blobs it changed, and
+    /// none of it was ever going to be asked for again once the session that
+    /// took it ended. Retention is keke's to decide rather than git's, which
+    /// is the other half of why snapshots are anchored under refs at all.
+    ///
+    /// Ordered by commit time, which for a snapshot is the moment it was
+    /// taken. Deletes are batched through one `update-ref --stdin`: a store
+    /// left unpruned for a long time has a lot of them, and one process is the
+    /// difference between pruning being free and being the reason the first
+    /// writing turn feels slow.
+    async fn prune(&self, keep: usize) -> Result<(), CheckpointError> {
+        let listed = self
+            .git(
+                &[
+                    "for-each-ref",
+                    "--sort=-committerdate",
+                    "--format=%(refname)",
+                    REFS,
+                ],
+                true,
+            )
+            .await?;
+        let refs: Vec<&str> = listed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let Some(doomed) = refs.get(keep..) else {
+            return Ok(());
+        };
+        if doomed.is_empty() {
+            return Ok(());
+        }
+        let mut deletes = String::new();
+        for name in doomed {
+            deletes.push_str(&format!("delete {name}\n"));
+        }
+        self.git_with_stdin(&["update-ref", "--stdin"], deletes)
+            .await?;
+        // The sessions that still own a ref are the ones whose index file is
+        // still worth the disk. Any other belongs to a session whose snapshots
+        // just went, or that ended long ago — an index per session is cheap
+        // until nothing ever removes one.
+        let live: BTreeSet<&str> = refs[..refs.len().min(keep)]
+            .iter()
+            .filter_map(|name| name.strip_prefix(REFS)?.trim_matches('/').split('/').next())
+            .collect();
+        self.drop_stale_indexes(&live).await;
+        Ok(())
+    }
+
+    /// Remove the per-session index files of sessions with nothing left.
+    ///
+    /// Best effort: an index that could not be removed is wasted disk, not a
+    /// reason to fail the turn that was about to be snapshotted.
+    async fn drop_stale_indexes(&self, live: &BTreeSet<&str>) {
+        let Ok(mut entries) = tokio::fs::read_dir(&self.git_dir).await else {
+            return;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(session) = name.strip_prefix("index.") else {
+                continue;
+            };
+            if session == self.session || live.contains(session) {
+                continue;
+            }
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+
     /// Bring the index up to date with the working tree.
     ///
     /// Every query and every snapshot starts here: the index is keke's own, so
@@ -299,6 +420,23 @@ impl Checkpoints {
     }
 
     async fn git(&self, args: &[&str], want_output: bool) -> Result<String, CheckpointError> {
+        self.run(args, want_output, None).await
+    }
+
+    /// Run a git command that reads its work from standard input.
+    ///
+    /// One process for a whole batch of ref deletes, rather than one per ref.
+    async fn git_with_stdin(&self, args: &[&str], input: String) -> Result<(), CheckpointError> {
+        self.run(args, false, Some(input)).await?;
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        args: &[&str],
+        want_output: bool,
+        input: Option<String>,
+    ) -> Result<String, CheckpointError> {
         let mut command = tokio::process::Command::new("git");
         command
             .args(IDENTITY)
@@ -311,14 +449,35 @@ impl Checkpoints {
             .env("GIT_INDEX_FILE", &self.index_file)
             .current_dir(&self.work_tree)
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(if want_output {
                 Stdio::piped()
             } else {
                 Stdio::null()
             })
             .stderr(Stdio::piped());
-        let output = command.output().await.map_err(|source| {
+        let output = match input {
+            None => command.output().await,
+            Some(input) => {
+                use tokio::io::AsyncWriteExt as _;
+
+                match command.spawn() {
+                    Err(error) => Err(error),
+                    Ok(mut child) => {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(input.as_bytes()).await;
+                            let _ = stdin.shutdown().await;
+                        }
+                        child.wait_with_output().await
+                    }
+                }
+            }
+        };
+        let output = output.map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 CheckpointError::NoGit
             } else {
@@ -335,6 +494,31 @@ impl Checkpoints {
             });
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// A session id as a single ref path component.
+///
+/// Callers pass whatever names them — a session id today, something else if
+/// that ever changes — and git refuses a ref name with a space, a `~`, or a
+/// `..` in it. Substituting rather than rejecting because a store that refused
+/// to open over the shape of a name would take snapshots away from a session
+/// that has no say in what it is called.
+fn ref_safe(session: &str) -> String {
+    let cleaned: String = session
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "session".to_string()
+    } else {
+        cleaned
     }
 }
 
@@ -357,6 +541,10 @@ mod tests {
         project_storing_in(None).await
     }
 
+    /// Enough that no test in here trips over retention by accident; the two
+    /// that are about retention say their own number.
+    const KEEP: usize = 100;
+
     /// `inside` names a directory *within* the project to keep the store in,
     /// for the one test about that hazard.
     async fn project_storing_in(inside: Option<&str>) -> Project {
@@ -370,7 +558,7 @@ mod tests {
                 .expect("canonicalize")
                 .join("checkpoints.git"),
         };
-        let store = Checkpoints::open(&git_dir, &root, &[], "test")
+        let store = Checkpoints::open(&git_dir, &root, &[], "test", KEEP)
             .await
             .expect("opens");
         Project {
@@ -551,6 +739,7 @@ mod tests {
             &root,
             &[home.as_path()],
             "test",
+            KEEP,
         )
         .await
         .expect("opens");
@@ -620,10 +809,10 @@ mod tests {
         let root = AbsPath::new(root).expect("absolute");
         let git_dir = root.as_path().join("checkpoints.git");
 
-        let first = Checkpoints::open(&git_dir, &root, &[], "session-a")
+        let first = Checkpoints::open(&git_dir, &root, &[], "session-a", KEEP)
             .await
             .expect("first session opens");
-        let second = Checkpoints::open(&git_dir, &root, &[], "session-b")
+        let second = Checkpoints::open(&git_dir, &root, &[], "session-b", KEEP)
             .await
             .expect("second session hits the HEAD-exists early return");
 
@@ -632,5 +821,144 @@ mod tests {
         let (a, b) = tokio::join!(first.take("turn from a"), second.take("turn from b"));
         assert!(a.expect("session a snapshots").is_some());
         assert!(b.expect("session b snapshots").is_some());
+    }
+
+    /// Run a git command directly against a store, the way something outside
+    /// keke would.
+    fn in_store(store: &Checkpoints, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&store.git_dir)
+            .arg("--work-tree")
+            .arg(&store.work_tree)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn snapshot_refs(store: &Checkpoints) -> Vec<String> {
+        in_store(store, &["for-each-ref", "--format=%(refname)", REFS])
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A snapshot no ref names is an unreachable commit, and unreachable is
+    /// exactly what `git gc` deletes. The store is an ordinary repository that
+    /// git's own automatic housekeeping — or a person tidying up — may collect
+    /// at any time, so a snapshot a resumed session still names has to survive
+    /// one.
+    #[tokio::test]
+    async fn a_snapshot_survives_a_garbage_collection() {
+        let project = project().await;
+        write(&project.root, "file.txt", "before");
+        let snapshot = project
+            .store
+            .take("turn 1")
+            .await
+            .expect("snapshots")
+            .expect("a tree");
+
+        in_store(&project.store, &["gc", "--prune=now", "--quiet"]);
+
+        write(&project.root, "file.txt", "after");
+        let restored = project.store.restore(&snapshot).await.expect("restores");
+        assert_eq!(restored.files, vec!["file.txt".to_string()]);
+        assert_eq!(read(&project.root, "file.txt").as_deref(), Some("before"));
+    }
+
+    /// A store nobody prunes grows for as long as the project does. Retention
+    /// is keke's decision, taken when the store opens and before this session
+    /// has added anything of its own.
+    #[tokio::test]
+    async fn the_store_keeps_only_the_newest_snapshots() {
+        let project = project_storing_in(None).await;
+        write(&project.root, "file.txt", "first");
+        let oldest = project
+            .store
+            .take("turn 1")
+            .await
+            .expect("snapshots")
+            .expect("a tree");
+        // Snapshots are ordered by the time they were taken, which is the
+        // second they were committed in.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        write(&project.root, "file.txt", "second");
+        let newest = project
+            .store
+            .take("turn 2")
+            .await
+            .expect("snapshots")
+            .expect("a tree");
+        assert_eq!(snapshot_refs(&project.store).len(), 2);
+
+        let reopened = Checkpoints::open(
+            &project.store.git_dir,
+            &project.root,
+            &[],
+            "later-session",
+            1,
+        )
+        .await
+        .expect("reopens");
+
+        let kept = snapshot_refs(&reopened);
+        assert_eq!(kept.len(), 1, "retention is what bounds the store");
+        assert!(
+            kept[0].ends_with(newest.as_str()),
+            "the snapshot a rewind is most likely to want is the one kept"
+        );
+        assert!(!kept[0].ends_with(oldest.as_str()));
+    }
+
+    /// An index file per session is cheap until nothing ever removes one. A
+    /// session whose snapshots have all been pruned has nothing left the index
+    /// could be staged against.
+    #[tokio::test]
+    async fn a_pruned_sessions_index_goes_with_its_snapshots() {
+        let project = project_storing_in(None).await;
+        let git_dir = project.store.git_dir.clone();
+        let earlier = Checkpoints::open(&git_dir, &project.root, &[], "earlier", KEEP)
+            .await
+            .expect("opens");
+        write(&project.root, "file.txt", "first");
+        earlier.take("turn 1").await.expect("snapshots");
+        assert!(git_dir.join("index.earlier").exists());
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        write(&project.root, "file.txt", "second");
+        let later = Checkpoints::open(&git_dir, &project.root, &[], "later", KEEP)
+            .await
+            .expect("opens");
+        later.take("turn 2").await.expect("snapshots");
+
+        // Reopening with room for one snapshot prunes the earlier session's,
+        // and its index with it.
+        Checkpoints::open(&git_dir, &project.root, &[], "later", 1)
+            .await
+            .expect("reopens");
+        assert!(
+            !git_dir.join("index.earlier").exists(),
+            "an index nothing can be staged against is disk keke never gets back"
+        );
+        assert!(
+            git_dir.join("index.later").exists(),
+            "a session that still owns a snapshot keeps its index"
+        );
+    }
+
+    /// git refuses a ref name with a space or a `..` in it, and a session that
+    /// has no say in what it is called must not lose its snapshots over one.
+    #[test]
+    fn an_awkward_session_name_still_makes_a_ref() {
+        assert_eq!(ref_safe("019a-b2c3"), "019a-b2c3");
+        assert_eq!(ref_safe("a session..name"), "a-session--name");
+        assert_eq!(ref_safe(""), "session");
     }
 }
