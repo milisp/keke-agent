@@ -28,6 +28,7 @@ keke-mcp = { workspace = true }
 keke-paths = { workspace = true }
 keke-plan = { workspace = true }
 keke-plugin = { workspace = true }
+keke-schedule = { workspace = true }
 keke-skills = { workspace = true }
 keke-subagent = { workspace = true }
 keke-tasks = { workspace = true }

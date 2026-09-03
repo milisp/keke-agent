@@ -24,6 +24,7 @@ members = [
     "crates/provider-codex",
     "crates/provider-grok",
     "crates/provider-ollama",
+    "crates/schedule",
     "crates/skills",
     "crates/subagent",
     "crates/tasks",
@@ -70,6 +71,7 @@ keke-auth-codex = { path = "crates/auth-codex" }
 keke-hooks = { path = "crates/hooks" }
 keke-mcp = { path = "crates/mcp" }
 keke-plan = { path = "crates/plan" }
+keke-schedule = { path = "crates/schedule" }
 keke-skills = { path = "crates/skills" }
 keke-auth-grok = { path = "crates/auth-grok" }
 keke-plugin = { path = "crates/plugin" }

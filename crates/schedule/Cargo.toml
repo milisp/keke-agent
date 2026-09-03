@@ -1,0 +1,23 @@
+[package]
+name = "keke-schedule"
+description = "Standing prompts: the same instruction sent again on an interval, from the keyboard or from the model."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-plugin-api = { workspace = true }
+keke-protocol = { workspace = true }
+keke-tasks = { workspace = true }
+keke-tool = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+keke-paths = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

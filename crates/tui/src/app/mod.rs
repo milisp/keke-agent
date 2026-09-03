@@ -81,10 +81,10 @@ pub struct App {
     notices: Option<UnboundedSender<Notice>>,
     /// `@`-completion: fuzzy file/folder search over the current line.
     pub file_search: FileSearchState,
-    /// Standing prompts from `/loop`. Held by the surface, not the session:
-    /// a loop is a person's instruction to keep asking, and it ends with the
-    /// window it was typed into.
-    pub(crate) schedule: crate::schedule::Scheduler,
+    /// Standing prompts, from `/loop` or from the model's `schedule_prompt`.
+    /// The records are shared with the tool; the clock is the surface's, and
+    /// a loop ends with the window it belongs to.
+    pub(crate) schedule: keke_schedule::Schedules,
     /// What was typed in this project before, and where the arrow keys are
     /// within it.
     pub history: PromptHistory,
@@ -249,7 +249,7 @@ impl App {
                 sign_in: None,
                 notices: None,
                 file_search: FileSearchState::new(cwd),
-                schedule: crate::schedule::Scheduler::default(),
+                schedule: keke_schedule::Schedules::default(),
                 history: PromptHistory::default(),
                 completion: 0,
                 esc_armed: None,
@@ -328,6 +328,14 @@ impl App {
     #[must_use]
     pub fn with_prompt_history(mut self, history: PromptHistory) -> Self {
         self.history = history;
+        self
+    }
+
+    /// The scheduler this surface fires from. The same handle the model's
+    /// `schedule_prompt` writes to, so both kinds of loop are one list.
+    #[must_use]
+    pub fn with_schedules(mut self, schedules: keke_schedule::Schedules) -> Self {
+        self.schedule = schedules;
         self
     }
 
@@ -494,13 +502,16 @@ impl App {
         // A due loop that cannot fire yet must not be woken for: while a turn
         // holds it up, waking on its deadline is a spin at zero delay. The
         // turn's own tick is what brings us back to look again.
-        let due = self.schedule.until_due(Instant::now()).map(|due| {
-            if self.turn.is_busy() {
-                due.max(tick)
-            } else {
-                due
-            }
-        });
+        let due = self
+            .schedule
+            .with(|schedule| schedule.until_due(Instant::now()))
+            .map(|due| {
+                if self.turn.is_busy() {
+                    due.max(tick)
+                } else {
+                    due
+                }
+            });
         match (timing, due) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (only, None) | (None, only) => only,
@@ -513,19 +524,29 @@ impl App {
     /// turn is running rather than interrupting it: two prompts in flight
     /// means one of them is answered with the other's context.
     pub fn fire_due_schedules(&mut self) {
-        for id in self.schedule.expire(Instant::now()) {
+        for id in self
+            .schedule
+            .with(|schedule| schedule.expire(Instant::now()))
+        {
             self.transcript.push(Cell::Notice(format!(
-                "loop {id} expired after a week and has stopped"
+                "{}_{id} expired after a week and has stopped",
+                keke_schedule::KIND
             )));
         }
         if self.turn.is_busy() {
             return;
         }
-        let Some((id, prompt)) = self.schedule.take_due(Instant::now()) else {
+        // The lock is dropped before the prompt is sent: sending re-enters the
+        // app, and a scheduler held open across it is a scheduler the model's
+        // own `schedule_prompt` would block on.
+        let Some((id, prompt)) = self
+            .schedule
+            .with(|schedule| schedule.take_due(Instant::now()))
+        else {
             return;
         };
         self.transcript
-            .push(Cell::Notice(format!("loop {id} firing")));
+            .push(Cell::Notice(format!("{}_{id} firing", keke_schedule::KIND)));
         self.transcript.push(Cell::User(prompt.clone()));
         self.send_text(prompt);
     }

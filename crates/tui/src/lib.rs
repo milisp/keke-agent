@@ -20,7 +20,6 @@ pub mod mcp;
 mod picker;
 mod ported;
 pub mod rewind;
-mod schedule;
 mod scroll;
 mod selection;
 pub mod slash;
@@ -54,6 +53,7 @@ pub use app::Turn;
 pub use history::PromptHistory;
 pub use history::PromptRecorder;
 pub use input::InputBox;
+pub use keke_schedule::Schedules;
 pub use login::Notice;
 pub use picker::ProviderChoice;
 pub use rewind::Rewind;
@@ -140,24 +140,40 @@ pub struct Mcp {
     pub manage: Option<Arc<dyn McpManage>>,
 }
 
+/// The agent this interface is attached to, and the stream it reports on.
+///
+/// One value because the two are only meaningful together: a conversation
+/// whose updates nobody drains reports into a channel that fills, and a stream
+/// with no conversation behind it has nothing to report.
+pub struct Attached {
+    pub conversation: Arc<dyn Conversation>,
+    pub updates: UnboundedReceiver<Update>,
+}
+
 /// Run the interface until the person quits.
 ///
-/// `updates` is the agent's stream; the app also produces its own, so both are
-/// drained here rather than merged upstream. `commands`, `defaults` and
+/// The agent's stream is drained here alongside the app's own, rather than
+/// merged upstream. `commands`, `defaults` and
 /// `models` come from the composition root: nothing here knows what a plugin
 /// is, what the configured policy or effort level was, or how to ask a provider
 /// what it serves. `history` is what was typed in this project before, which
 /// the host reads and writes because only it knows where that lives.
+/// `schedules` is shared with `schedule_prompt`, so a loop the model started
+/// and a loop a person typed are one list and fire from this one clock.
 pub async fn run(
-    conversation: Arc<dyn Conversation>,
-    updates: UnboundedReceiver<Update>,
+    attached: Attached,
     commands: SlashCommands,
     defaults: SessionDefaults,
     models: Models,
     resumed: Resumed,
     history: PromptHistory,
     mcp: Mcp,
+    schedules: Schedules,
 ) -> anyhow::Result<()> {
+    let Attached {
+        conversation,
+        updates,
+    } = attached;
     let (app, local) = App::new(conversation);
     // The login stream is created here rather than by whoever starts a flow,
     // because the event loop is what drains it — a sender handed out without a
@@ -175,6 +191,7 @@ pub async fn run(
         .with_models(models.provider, models.current, models.available)
         .with_provider_routes(models.routes)
         .with_prompt_history(history)
+        .with_schedules(schedules)
         .with_config_home(defaults.config_home);
     if is_resumed {
         app = app.with_history(&resumed.history, resumed.usage, resumed.context_input);
