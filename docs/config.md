@@ -302,9 +302,16 @@ context_window = 128000       # Context window size compaction measures against
 # `keep_days` bounds the store: a snapshot older than this is dropped when a
 # session opens the store, unless the session that took it is still working. A
 # rewind that reaches back past the window finds the snapshot gone and says so.
+#
+# `max_tree_mb` is the working tree keke refuses to snapshot at all. A snapshot
+# holds everything git would not ignore, so a project with a dataset, model
+# weights or video in it that no .gitignore covers would be copied whole into
+# $KEKE_HOME. Measured once, when the project's store is first created; over the
+# limit, keke says so and runs with snapshots off for that project.
 [checkpoints]
 enabled = true
 keep_days = 14
+max_tree_mb = 2048
 
 # Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
 model_catalog_ttl_seconds = 21600  # 6 hours default

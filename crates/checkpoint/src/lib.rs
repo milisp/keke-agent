@@ -41,6 +41,12 @@ use keke_paths::AbsPath;
 pub enum CheckpointError {
     #[error("git is not installed, so keke cannot snapshot the working tree")]
     NoGit,
+    #[error(
+        "{megabytes} MB of files would go into every snapshot, over the {limit} MB \
+         limit; raise checkpoints.max-tree-mb, or add what does not belong in a \
+         snapshot to .gitignore"
+    )]
+    TooLarge { megabytes: u64, limit: u32 },
     #[error("git {command} failed: {message}")]
     Git { command: String, message: String },
     #[error("{path}: {source}")]
@@ -155,12 +161,18 @@ impl Checkpoints {
     /// per session, rather than on every snapshot: it is housekeeping, and
     /// housekeeping that ran per turn would be a subprocess per turn for a
     /// store that changes size in days.
+    ///
+    /// `max_tree_mb` is the working tree keke refuses to snapshot at all — see
+    /// [`Self::refuse_if_too_large`]. Checked only when the store is created,
+    /// so it is a decision about a project rather than a check a session
+    /// repeats.
     pub async fn open(
         dir: &Path,
         work_tree: &AbsPath,
         keep_out: &[&Path],
         session: &str,
         keep_days: u32,
+        max_tree_mb: u32,
     ) -> Result<Self, CheckpointError> {
         let store = Self {
             git_dir: dir.to_path_buf(),
@@ -218,7 +230,63 @@ impl Checkpoints {
         // touches one.
         store.git(&["config", "core.bare", "false"], false).await?;
         store.keep_out(keep_out).await?;
+        // Only on the store's first creation. A project that was small enough
+        // yesterday is not re-measured every session, and one that has grown
+        // past the limit since is not suddenly cut off from the snapshots it
+        // already has.
+        if let Err(error) = store.refuse_if_too_large(max_tree_mb).await {
+            // Leave nothing behind. A store that was refused must not be
+            // mistaken for an existing one by the next session, which would
+            // take the early return above and skip the measuring entirely.
+            let _ = tokio::fs::remove_dir_all(&store.git_dir).await;
+            return Err(error);
+        }
         Ok(store)
+    }
+
+    /// Refuse a working tree whose every snapshot would be enormous.
+    ///
+    /// A snapshot holds everything git would not ignore, and nothing about a
+    /// project stops that from being a hundred gigabytes of video, model
+    /// weights or captured data that happen not to be in a `.gitignore`.
+    /// Copying that into `$KEKE_HOME` is not a slow snapshot, it is somebody's
+    /// disk filling up because they ran a coding agent in the wrong directory
+    /// — and they never asked for a snapshot in the first place, so the
+    /// failure has to be keke's to prevent rather than theirs to discover.
+    ///
+    /// Measured with `ls-files`, which walks and applies the ignore rules but
+    /// hashes nothing: 0.01s on a one-gigabyte tree, 0.18s on one of sixty
+    /// thousand files. A guard this cheap has no excuse not to run.
+    async fn refuse_if_too_large(&self, limit: u32) -> Result<(), CheckpointError> {
+        let listed = self
+            .git(
+                &[
+                    "ls-files",
+                    "--others",
+                    "--cached",
+                    "--exclude-standard",
+                    "-z",
+                ],
+                true,
+            )
+            .await?;
+        let mut bytes: u64 = 0;
+        let ceiling = u64::from(limit) * 1024 * 1024;
+        for path in listed.split('\0').filter(|path| !path.is_empty()) {
+            // Symlinks are not followed: what a snapshot stores is the link,
+            // and a link pointing at something enormous costs nothing.
+            let Ok(meta) = tokio::fs::symlink_metadata(self.work_tree.join(path)).await else {
+                continue;
+            };
+            bytes = bytes.saturating_add(meta.len());
+            if bytes > ceiling {
+                return Err(CheckpointError::TooLarge {
+                    megabytes: bytes / (1024 * 1024),
+                    limit,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Write the exclusion rules for keke's own directories.
@@ -298,6 +366,23 @@ impl Checkpoints {
         )
         .await?;
         Ok(Some(Snapshot(commit)))
+    }
+
+    /// Read the working tree into the index without recording anything.
+    ///
+    /// A snapshot's cost is almost entirely the first one: an index with no
+    /// stat cache makes `git add` read every file in the project, measured at
+    /// 25 seconds on a sixty-thousand-file tree against 0.2 for every snapshot
+    /// after it. Paid where it lands, that is 25 seconds of a person waiting
+    /// in the middle of the first turn that edits a file.
+    ///
+    /// So it is paid somewhere else. Nothing here is recorded and no ref
+    /// moves, which is what makes this safe to run at any moment: whatever
+    /// changes between warming and the real snapshot is picked up by that
+    /// snapshot's own staging, so the snapshot means exactly what it meant
+    /// before.
+    pub async fn warm(&self) -> Result<(), CheckpointError> {
+        self.stage().await
     }
 
     /// Which files differ between `snapshot` and the tree as it stands.
@@ -673,6 +758,10 @@ mod tests {
     /// about retention build their own old snapshots.
     const KEEP: u32 = 14;
 
+    /// Larger than any tree these tests build; the one about the limit says
+    /// its own number.
+    const ROOMY: u32 = 1_024;
+
     /// `inside` names a directory *within* the project to keep the store in,
     /// for the one test about that hazard.
     async fn project_storing_in(inside: Option<&str>) -> Project {
@@ -686,7 +775,7 @@ mod tests {
                 .expect("canonicalize")
                 .join("checkpoints.git"),
         };
-        let store = Checkpoints::open(&git_dir, &root, &[], "test", KEEP)
+        let store = Checkpoints::open(&git_dir, &root, &[], "test", KEEP, ROOMY)
             .await
             .expect("opens");
         Project {
@@ -868,6 +957,7 @@ mod tests {
             &[home.as_path()],
             "test",
             KEEP,
+            ROOMY,
         )
         .await
         .expect("opens");
@@ -937,10 +1027,10 @@ mod tests {
         let root = AbsPath::new(root).expect("absolute");
         let git_dir = root.as_path().join("checkpoints.git");
 
-        let first = Checkpoints::open(&git_dir, &root, &[], "session-a", KEEP)
+        let first = Checkpoints::open(&git_dir, &root, &[], "session-a", KEEP, ROOMY)
             .await
             .expect("first session opens");
-        let second = Checkpoints::open(&git_dir, &root, &[], "session-b", KEEP)
+        let second = Checkpoints::open(&git_dir, &root, &[], "session-b", KEEP, ROOMY)
             .await
             .expect("second session hits the HEAD-exists early return");
 
@@ -1068,6 +1158,83 @@ mod tests {
     /// in the store, which are the ones the first session took at the start of
     /// the turn it is still running. Under any kind of automation that is the
     /// normal case, and neither session did anything wrong.
+    /// Nobody asks for a snapshot; keke takes one. So a project whose every
+    /// snapshot would be enormous — a dataset, model weights, video, anything
+    /// large that is simply not in a `.gitignore` — has to be keke's to refuse
+    /// rather than the person's to discover when their disk is full.
+    #[tokio::test]
+    async fn an_enormous_working_tree_is_refused_rather_than_copied() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let root = AbsPath::new(root).expect("absolute");
+        let git_dir = std::fs::canonicalize(home.path())
+            .expect("canonicalize")
+            .join("checkpoints.git");
+
+        write(&root, "small.txt", "fine");
+        std::fs::write(root.as_path().join("data.bin"), vec![0u8; 3 * 1024 * 1024]).expect("write");
+
+        let refused = Checkpoints::open(&git_dir, &root, &[], "test", KEEP, 1).await;
+        assert!(
+            matches!(refused, Err(CheckpointError::TooLarge { limit: 1, .. })),
+            "a tree over the limit is refused, not copied"
+        );
+        assert!(
+            !git_dir.exists(),
+            "a refused store leaves nothing behind, or the next session would \
+             take the early return and never measure at all"
+        );
+
+        // The same project under a ceiling that fits is ordinary.
+        let store = Checkpoints::open(&git_dir, &root, &[], "test", KEEP, ROOMY)
+            .await
+            .expect("opens");
+        assert!(store.take("turn 1").await.expect("snapshots").is_some());
+    }
+
+    /// Warming is what makes the expensive first read of the tree happen off
+    /// the critical path, and it is only safe if it records nothing. Whatever
+    /// the tree does between the warming and the snapshot has to be what the
+    /// snapshot says — otherwise a turn would be rewound to a tree that
+    /// existed before it started rather than as it started.
+    #[tokio::test]
+    async fn warming_changes_when_the_reading_happens_and_nothing_else() {
+        let project = project().await;
+        write(&project.root, "file.txt", "as the turn started");
+        project.store.warm().await.expect("warms");
+        assert!(
+            snapshot_refs(&project.store).is_empty(),
+            "warming records nothing: no snapshot exists to rewind to yet"
+        );
+
+        // What a person does between keke warming the index and the turn
+        // reaching its first writing tool.
+        write(&project.root, "file.txt", "edited by hand meanwhile");
+        write(&project.root, "late.txt", "and a new file");
+        let snapshot = project
+            .store
+            .take("turn 1")
+            .await
+            .expect("snapshots")
+            .expect("a tree");
+
+        write(&project.root, "file.txt", "and then the turn wrote");
+        std::fs::remove_file(project.root.as_path().join("late.txt")).expect("remove");
+        project.store.restore(&snapshot).await.expect("restores");
+
+        assert_eq!(
+            read(&project.root, "file.txt").as_deref(),
+            Some("edited by hand meanwhile"),
+            "the snapshot is the tree as the turn found it, not as warming left it"
+        );
+        assert_eq!(
+            read(&project.root, "late.txt").as_deref(),
+            Some("and a new file"),
+            "a file created after warming is still in the snapshot"
+        );
+    }
+
     #[tokio::test]
     async fn snapshots_are_retired_by_age_and_never_by_who_else_showed_up() {
         let project = project_storing_in(None).await;
@@ -1085,7 +1252,7 @@ mod tests {
             .expect("snapshots")
             .expect("a tree");
 
-        Checkpoints::open(&git_dir, &project.root, &[], "arriving", 14)
+        Checkpoints::open(&git_dir, &project.root, &[], "arriving", 14, ROOMY)
             .await
             .expect("reopens");
 
@@ -1118,7 +1285,7 @@ mod tests {
         let project = project_storing_in(None).await;
         let git_dir = project.store.git_dir.clone();
 
-        let busy = Checkpoints::open(&git_dir, &project.root, &[], "busy", 14)
+        let busy = Checkpoints::open(&git_dir, &project.root, &[], "busy", 14, ROOMY)
             .await
             .expect("opens");
         let old = backdate(&project.store, "busy", 30);
@@ -1127,7 +1294,7 @@ mod tests {
         write(&project.root, "file.txt", "still going");
         busy.take("turn 40").await.expect("snapshots");
 
-        Checkpoints::open(&git_dir, &project.root, &[], "arriving", 14)
+        Checkpoints::open(&git_dir, &project.root, &[], "arriving", 14, ROOMY)
             .await
             .expect("reopens");
 
@@ -1156,7 +1323,7 @@ mod tests {
             .expect("snapshots")
             .expect("a tree");
 
-        let second = Checkpoints::open(&git_dir, &project.root, &[], "second", 14)
+        let second = Checkpoints::open(&git_dir, &project.root, &[], "second", 14, ROOMY)
             .await
             .expect("opens");
 

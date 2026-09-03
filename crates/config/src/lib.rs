@@ -149,6 +149,8 @@ pub struct CheckpointFile {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tree_mb: Option<u32>,
 }
 
 /// The compaction section, separated so a layer can override one field of it.
@@ -270,6 +272,7 @@ impl Config {
                     .get_or_insert_with(CheckpointFile::default);
                 base.enabled = checkpoints.enabled.or(base.enabled);
                 base.keep_days = checkpoints.keep_days.or(base.keep_days);
+                base.max_tree_mb = checkpoints.max_tree_mb.or(base.max_tree_mb);
             }
             if let Some(plugins) = layer.file.plugins {
                 let base = merged.plugins.get_or_insert_with(PluginsFile::default);
@@ -331,6 +334,9 @@ impl Config {
             keep_days: checkpoint_file
                 .keep_days
                 .unwrap_or(CheckpointConfig::default().keep_days),
+            max_tree_mb: checkpoint_file
+                .max_tree_mb
+                .unwrap_or(CheckpointConfig::default().max_tree_mb),
         };
 
         // Zero would mean a store that prunes every snapshot the moment it
@@ -343,6 +349,18 @@ impl Config {
                     .map(LayerSource::describe)
                     .unwrap_or_else(|| "<defaults>".to_string()),
                 message: "checkpoints.keep-days must be at least 1; set checkpoints.enabled = false to turn snapshots off".to_string(),
+            });
+        }
+
+        // A ceiling of zero refuses every project, which is checkpoints being
+        // off by another name, and off has its own setting.
+        if checkpoints.max_tree_mb == 0 {
+            return Err(ConfigError::Invalid {
+                path: sources
+                    .last()
+                    .map(LayerSource::describe)
+                    .unwrap_or_else(|| "<defaults>".to_string()),
+                message: "checkpoints.max-tree-mb must be at least 1; set checkpoints.enabled = false to turn snapshots off".to_string(),
             });
         }
 

@@ -717,6 +717,20 @@ pub struct CheckpointConfig {
     /// in a large tree wants a short window; somebody who resumes month-old
     /// sessions wants a long one.
     pub keep_days: u32,
+    /// The largest working tree keke will snapshot at all, in megabytes.
+    ///
+    /// A snapshot holds everything git would not ignore, and nothing about a
+    /// project stops that from being a hundred gigabytes of video, model
+    /// weights or captured data that happen not to be in a `.gitignore`.
+    /// Copying that into `$KEKE_HOME` is not a slow snapshot, it is somebody's
+    /// disk filling up because they started a coding agent in the wrong
+    /// directory — and they never asked for a snapshot, so it is keke's to
+    /// prevent rather than theirs to discover.
+    ///
+    /// A deployment's to choose because what counts as too large is a fact
+    /// about the machine, not about keke. Measured once, when a project's
+    /// store is first created.
+    pub max_tree_mb: u32,
 }
 
 impl Default for CheckpointConfig {
@@ -730,6 +744,11 @@ impl Default for CheckpointConfig {
             // week still rewinds, short enough that a store is never the
             // reason a `$KEKE_HOME` is large.
             keep_days: 14,
+            // Comfortably above any source tree and well below the size at
+            // which a person would notice `$KEKE_HOME` on their disk. A
+            // project over this is nearly always one with data in it that
+            // nobody meant to snapshot.
+            max_tree_mb: 2_048,
         }
     }
 }

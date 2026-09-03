@@ -186,6 +186,13 @@ pub(crate) enum CheckpointsState {
     Disabled,
     /// Not opened yet: the store's directory, waiting for a first write.
     Pending(PathBuf),
+    /// Being opened and warmed on a task of its own — see
+    /// [`Session::warm_checkpoints`].
+    Warming(
+        tokio::task::JoinHandle<
+            Result<keke_checkpoint::Checkpoints, keke_checkpoint::CheckpointError>,
+        >,
+    ),
     /// Opened and ready.
     Open(keke_checkpoint::Checkpoints),
     /// Opening failed. Remembered rather than retried every turn — a store
@@ -195,28 +202,103 @@ pub(crate) enum CheckpointsState {
 }
 
 impl Session {
+    /// Start opening and warming the snapshot store, without waiting for it.
+    ///
+    /// Called when a turn's first tool call arrives. The first snapshot in a
+    /// project reads the whole tree into an index — 25 seconds on a
+    /// sixty-thousand-file checkout — and paid lazily that lands squarely in
+    /// the middle of the first turn that edits a file, with a person watching.
+    ///
+    /// That moment is chosen so the work is never done for nothing. A turn
+    /// that only answers a question calls no tool and pays exactly what it
+    /// paid before this existed: nothing, not even the `git init`. A turn that
+    /// reaches for a tool is working on the project and is likely to write
+    /// before it is done, and its read-only calls — which nearly always come
+    /// first — are the head start.
+    ///
+    /// Not at session construction, and not at the top of the turn, for the
+    /// same reason: a session someone opens and quits, or a conversation that
+    /// never touches a file, must cost nothing at all.
+    ///
+    /// A turn that reaches a writing tool before this finishes simply waits
+    /// for it, which costs exactly what doing the work inline would have. So
+    /// `keke exec`, where the first turn often writes almost at once, is never
+    /// worse off for this and is usually better: the warming runs while the
+    /// model is still being asked.
+    pub(crate) fn warm_checkpoints(&mut self) {
+        let CheckpointsState::Pending(dir) = &self.checkpoints else {
+            return;
+        };
+        let dir = dir.clone();
+        let work_tree = self.config.home.workspace_root.clone();
+        let home = self.config.home.home.as_path().to_path_buf();
+        let sessions = crate::sessions_dir(&self.config.home.home);
+        let session = self.id.to_string();
+        let keep_days = self.config.checkpoints.keep_days;
+        let max_tree_mb = self.config.checkpoints.max_tree_mb;
+        self.checkpoints = CheckpointsState::Warming(tokio::spawn(async move {
+            let store = keke_checkpoint::Checkpoints::open(
+                &dir,
+                &work_tree,
+                &[&home, &sessions],
+                &session,
+                keep_days,
+                max_tree_mb,
+            )
+            .await?;
+            // Warming is a cache, not a record. A store that opened but could
+            // not be read into an index is still a working store; it just has
+            // to do that reading when the first snapshot asks for it.
+            if let Err(error) = store.warm().await {
+                tracing::debug!(%error, "could not warm the snapshot index");
+            }
+            Ok(store)
+        }));
+    }
+
     /// The snapshot store, opening it on first use.
     ///
     /// A session whose store failed to open, or that has checkpoints off,
     /// answers `None` and goes on running — it simply cannot put files back.
     pub(crate) async fn checkpoints(&mut self) -> Option<&keke_checkpoint::Checkpoints> {
-        if let CheckpointsState::Pending(dir) = &self.checkpoints {
-            let dir = dir.clone();
-            let opened = keke_checkpoint::Checkpoints::open(
-                &dir,
-                &self.config.home.workspace_root,
-                // keke's home, and the session logs inside it: a deployment
-                // may put either in the project, and a restore that rolled
-                // back the log being written into would take the record of
-                // itself with it.
-                &[
-                    self.config.home.home.as_path(),
-                    &crate::sessions_dir(&self.config.home.home),
-                ],
-                &self.id.to_string(),
-                self.config.checkpoints.keep_days,
-            )
-            .await;
+        let opened = match &mut self.checkpoints {
+            // Warming already started: wait for it. A task that panicked or
+            // was cancelled leaves the store unopened rather than the session
+            // broken.
+            CheckpointsState::Warming(handle) => match handle.await {
+                Ok(opened) => Some(opened),
+                Err(error) => {
+                    tracing::warn!(%error, "the snapshot store was never opened");
+                    Some(Err(keke_checkpoint::CheckpointError::NoGit))
+                }
+            },
+            // Nothing warmed it, so this is the whole cost, here.
+            CheckpointsState::Pending(dir) => {
+                let dir = dir.clone();
+                Some(
+                    keke_checkpoint::Checkpoints::open(
+                        &dir,
+                        &self.config.home.workspace_root,
+                        // keke's home, and the session logs inside it: a
+                        // deployment may put either in the project, and a
+                        // restore that rolled back the log being written into
+                        // would take the record of itself with it.
+                        &[
+                            self.config.home.home.as_path(),
+                            &crate::sessions_dir(&self.config.home.home),
+                        ],
+                        &self.id.to_string(),
+                        self.config.checkpoints.keep_days,
+                        self.config.checkpoints.max_tree_mb,
+                    )
+                    .await,
+                )
+            }
+            CheckpointsState::Disabled | CheckpointsState::Open(_) | CheckpointsState::Failed => {
+                None
+            }
+        };
+        if let Some(opened) = opened {
             self.checkpoints = match opened {
                 Ok(store) => CheckpointsState::Open(store),
                 Err(error) => {
@@ -231,6 +313,7 @@ impl Session {
             CheckpointsState::Open(store) => Some(store),
             CheckpointsState::Disabled
             | CheckpointsState::Pending(_)
+            | CheckpointsState::Warming(_)
             | CheckpointsState::Failed => None,
         }
     }
