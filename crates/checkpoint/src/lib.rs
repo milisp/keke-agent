@@ -151,15 +151,16 @@ impl Checkpoints {
     /// type's doc comment. Any string unique to the caller works; a session
     /// id is what every caller of this happens to already have.
     ///
-    /// `keep` is how many snapshots the store is allowed to hold. Pruning runs
-    /// here, before this session has taken any, so the newest `keep` of what
-    /// earlier sessions left survive and the rest are dropped.
+    /// `keep_days` is how long a snapshot survives. Pruning runs here, once
+    /// per session, rather than on every snapshot: it is housekeeping, and
+    /// housekeeping that ran per turn would be a subprocess per turn for a
+    /// store that changes size in days.
     pub async fn open(
         dir: &Path,
         work_tree: &AbsPath,
         keep_out: &[&Path],
         session: &str,
-        keep: usize,
+        keep_days: u32,
     ) -> Result<Self, CheckpointError> {
         let store = Self {
             git_dir: dir.to_path_buf(),
@@ -168,7 +169,13 @@ impl Checkpoints {
             session: ref_safe(session),
         };
         if store.git_dir.join("HEAD").exists() {
-            store.prune(keep).await?;
+            // Best effort: a store that could not be tidied is a store that is
+            // larger than it needs to be, which is not a reason to leave a
+            // session with no snapshots at all.
+            if let Err(error) = store.prune(keep_days).await {
+                tracing::warn!(%error, "could not prune old snapshots");
+            }
+            store.seed_index().await;
             return Ok(store);
         }
         tokio::fs::create_dir_all(&store.git_dir)
@@ -334,58 +341,162 @@ impl Checkpoints {
         Ok(Restored { files, undo })
     }
 
-    /// Drop everything but the newest `keep` snapshots.
+    /// Drop snapshots older than `keep_days`, except any belonging to a
+    /// session that is still working.
     ///
-    /// A store nobody prunes is a store that grows for as long as the project
-    /// does: every turn that writes adds a tree and the blobs it changed, and
-    /// none of it was ever going to be asked for again once the session that
-    /// took it ended. Retention is keke's to decide rather than git's, which
-    /// is the other half of why snapshots are anchored under refs at all.
+    /// A store nobody prunes grows for as long as the project does: every turn
+    /// that writes adds a tree and the blobs it changed, and none of it was
+    /// ever going to be asked for again once the session that took it ended.
     ///
-    /// Ordered by commit time, which for a snapshot is the moment it was
-    /// taken. Deletes are batched through one `update-ref --stdin`: a store
-    /// left unpruned for a long time has a lot of them, and one process is the
+    /// Age rather than a count, and this is the part that matters when more
+    /// than one session is open on a project — which is the normal case under
+    /// any kind of automation. A count is global: session B opening with a
+    /// limit of *n* would delete the oldest snapshots in the store, and the
+    /// oldest snapshots in the store are the ones session A took at the start
+    /// of the long turn it is still running. A rewind in A would then fail on
+    /// a snapshot B deleted, and neither session did anything wrong. Age is a
+    /// property of the snapshot rather than of everything around it, so
+    /// pruning cannot be made to depend on who else showed up.
+    ///
+    /// That leaves the session that has been running for longer than the
+    /// window. Its own index file is the heartbeat that covers it: staging
+    /// rewrites the index on every snapshot, so an index touched inside the
+    /// window belongs to a session that has taken a snapshot inside the
+    /// window, and none of its refs are touched however old they are.
+    ///
+    /// Deletes are batched through one `update-ref --stdin`: a store left
+    /// unpruned for a long time has a lot of them, and one process is the
     /// difference between pruning being free and being the reason the first
     /// writing turn feels slow.
-    async fn prune(&self, keep: usize) -> Result<(), CheckpointError> {
+    async fn prune(&self, keep_days: u32) -> Result<(), CheckpointError> {
+        let Some(cutoff) = cutoff(keep_days) else {
+            return Ok(());
+        };
         let listed = self
             .git(
                 &[
                     "for-each-ref",
-                    "--sort=-committerdate",
-                    "--format=%(refname)",
+                    "--format=%(refname) %(committerdate:unix)",
                     REFS,
                 ],
                 true,
             )
             .await?;
-        let refs: Vec<&str> = listed
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        let Some(doomed) = refs.get(keep..) else {
-            return Ok(());
-        };
-        if doomed.is_empty() {
-            return Ok(());
+
+        let mut expired: Vec<(&str, &str)> = Vec::new();
+        let mut owners: BTreeSet<&str> = BTreeSet::new();
+        for line in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let Some((name, taken)) = line.rsplit_once(' ') else {
+                continue;
+            };
+            let Some(session) = ref_owner(name) else {
+                continue;
+            };
+            owners.insert(session);
+            // A date git could not print is a ref keke does not understand the
+            // age of, and a snapshot of unknown age is not one to delete.
+            let Ok(taken) = taken.parse::<u64>() else {
+                continue;
+            };
+            if taken < cutoff {
+                expired.push((name, session));
+            }
         }
+
+        let mut working = BTreeSet::new();
+        for session in &owners {
+            if self.recently_active(session, cutoff).await {
+                working.insert(*session);
+            }
+        }
+
         let mut deletes = String::new();
-        for name in doomed {
+        for (name, session) in &expired {
+            if working.contains(session) {
+                continue;
+            }
             deletes.push_str(&format!("delete {name}\n"));
         }
-        self.git_with_stdin(&["update-ref", "--stdin"], deletes)
-            .await?;
-        // The sessions that still own a ref are the ones whose index file is
-        // still worth the disk. Any other belongs to a session whose snapshots
-        // just went, or that ended long ago — an index per session is cheap
-        // until nothing ever removes one.
-        let live: BTreeSet<&str> = refs[..refs.len().min(keep)]
-            .iter()
-            .filter_map(|name| name.strip_prefix(REFS)?.trim_matches('/').split('/').next())
-            .collect();
-        self.drop_stale_indexes(&live).await;
+        if !deletes.is_empty() {
+            self.git_with_stdin(&["update-ref", "--stdin"], deletes)
+                .await?;
+        }
+
+        // A session still holding a snapshot, or still working, keeps its
+        // index. Anything else is a file nothing can be staged against — an
+        // index per session is cheap until nothing ever removes one.
+        let mut keep: BTreeSet<&str> = working;
+        let expired: BTreeSet<&str> = expired.iter().map(|(_, session)| *session).collect();
+        for session in &owners {
+            if !expired.contains(session) {
+                keep.insert(session);
+            }
+        }
+        self.drop_stale_indexes(&keep).await;
         Ok(())
+    }
+
+    /// Whether `session` has taken a snapshot since `cutoff`.
+    ///
+    /// Read from its index file's modification time, which staging rewrites on
+    /// every snapshot. A session with no index file has never staged anything,
+    /// and an unreadable time is treated as active — the cost of keeping a
+    /// snapshot too long is disk, and the cost of deleting one too early is a
+    /// rewind that cannot put the files back.
+    async fn recently_active(&self, session: &str, cutoff: u64) -> bool {
+        let path = self.git_dir.join(format!("index.{session}"));
+        let Ok(metadata) = tokio::fs::metadata(&path).await else {
+            return false;
+        };
+        let Ok(modified) = metadata.modified() else {
+            return true;
+        };
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(true, |since| since.as_secs() >= cutoff)
+    }
+
+    /// Start this session's index from an existing one rather than from
+    /// nothing.
+    ///
+    /// An index is not only a list of paths: it carries a stat cache, and that
+    /// cache is what lets `git add --all` skip re-reading a file whose size
+    /// and mtime have not moved. A session starting with an empty index has no
+    /// cache, so its first snapshot hashes the entire tree — measured at 3.7
+    /// seconds against 0.27 on a sixty-thousand-file checkout, which is the
+    /// difference between a second session starting and a second session
+    /// stalling. Copying is not sharing: what the copy stages afterwards is
+    /// its own, and the reason the index is per session in the first place
+    /// survives intact.
+    ///
+    /// Best effort in both directions. Nothing to copy is the first session,
+    /// which has to pay the cost once; a copy that fails leaves an empty index
+    /// that is correct and merely slow.
+    async fn seed_index(&self) {
+        if self.index_file.exists() {
+            return;
+        }
+        let Ok(mut entries) = tokio::fs::read_dir(&self.git_dir).await else {
+            return;
+        };
+        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with("index.") {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().await.and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|(seen, _)| modified > *seen) {
+                newest = Some((modified, entry.path()));
+            }
+        }
+        let Some((_, seed)) = newest else { return };
+        if let Err(error) = tokio::fs::copy(&seed, &self.index_file).await {
+            tracing::debug!(%error, "starting this session's index from nothing");
+        }
     }
 
     /// Remove the per-session index files of sessions with nothing left.
@@ -497,6 +608,23 @@ impl Checkpoints {
     }
 }
 
+/// The instant before which a snapshot has outlived `keep_days`.
+///
+/// `None` when the clock is before the epoch or the window is longer than the
+/// clock has run: neither is a reason to start deleting.
+fn cutoff(keep_days: u32) -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    now.checked_sub(u64::from(keep_days) * 86_400)
+}
+
+/// Which session took the snapshot a ref names.
+fn ref_owner(name: &str) -> Option<&str> {
+    name.strip_prefix(REFS)?.trim_matches('/').split('/').next()
+}
+
 /// A session id as a single ref path component.
 ///
 /// Callers pass whatever names them — a session id today, something else if
@@ -541,9 +669,9 @@ mod tests {
         project_storing_in(None).await
     }
 
-    /// Enough that no test in here trips over retention by accident; the two
-    /// that are about retention say their own number.
-    const KEEP: usize = 100;
+    /// A window no test in here trips over by accident; the ones that are
+    /// about retention build their own old snapshots.
+    const KEEP: u32 = 14;
 
     /// `inside` names a directory *within* the project to keep the store in,
     /// for the one test about that hazard.
@@ -873,83 +1001,184 @@ mod tests {
         assert_eq!(read(&project.root, "file.txt").as_deref(), Some("before"));
     }
 
-    /// A store nobody prunes grows for as long as the project does. Retention
-    /// is keke's decision, taken when the store opens and before this session
-    /// has added anything of its own.
+    /// Give `session` a snapshot that was taken `days` ago.
+    ///
+    /// Built directly rather than by winding a clock: a snapshot's age is its
+    /// commit's, and `commit-tree` takes that from the environment.
+    fn backdate(store: &Checkpoints, session: &str, days: u64) -> String {
+        const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        let when = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_secs()
+            - days * 86_400;
+        let out = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&store.git_dir)
+            .arg("--work-tree")
+            .arg(&store.work_tree)
+            .env("GIT_COMMITTER_DATE", format!("{when} +0000"))
+            .env("GIT_AUTHOR_DATE", format!("{when} +0000"))
+            .env("GIT_COMMITTER_NAME", "keke")
+            .env("GIT_COMMITTER_EMAIL", "keke@localhost")
+            .env("GIT_AUTHOR_NAME", "keke")
+            .env("GIT_AUTHOR_EMAIL", "keke@localhost")
+            .args(["commit-tree", EMPTY_TREE, "-m", "an old turn"])
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        in_store(
+            store,
+            &["update-ref", &format!("{REFS}/{session}/{commit}"), &commit],
+        );
+        commit
+    }
+
+    /// Leave behind the index file a session that stopped a month ago would
+    /// have left: present, and untouched since.
+    fn stale_index(git_dir: &Path, session: &str, days: u64) {
+        let path = git_dir.join(format!("index.{session}"));
+        std::fs::write(&path, b"what a departed session left").expect("write");
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open");
+        file.set_times(std::fs::FileTimes::new().set_modified(when))
+            .expect("backdate");
+    }
+
+    fn refs_owned_by(store: &Checkpoints, session: &str) -> Vec<String> {
+        snapshot_refs(store)
+            .into_iter()
+            .filter(|name| ref_owner(name) == Some(session))
+            .collect()
+    }
+
+    /// A store nobody prunes grows for as long as the project does, and what
+    /// bounds it has to be the snapshot's own age.
+    ///
+    /// A count would be a property of everything *around* the snapshot: a
+    /// second session opening on the project would delete the oldest snapshots
+    /// in the store, which are the ones the first session took at the start of
+    /// the turn it is still running. Under any kind of automation that is the
+    /// normal case, and neither session did anything wrong.
     #[tokio::test]
-    async fn the_store_keeps_only_the_newest_snapshots() {
+    async fn snapshots_are_retired_by_age_and_never_by_who_else_showed_up() {
         let project = project_storing_in(None).await;
-        write(&project.root, "file.txt", "first");
-        let oldest = project
+        let git_dir = project.store.git_dir.clone();
+
+        // A session that finished a fortnight ago, and one that took a
+        // snapshot just now.
+        backdate(&project.store, "departed", 30);
+        stale_index(&git_dir, "departed", 30);
+        write(&project.root, "file.txt", "now");
+        let recent = project
             .store
             .take("turn 1")
             .await
             .expect("snapshots")
             .expect("a tree");
-        // Snapshots are ordered by the time they were taken, which is the
-        // second they were committed in.
-        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
-        write(&project.root, "file.txt", "second");
-        let newest = project
-            .store
-            .take("turn 2")
-            .await
-            .expect("snapshots")
-            .expect("a tree");
-        assert_eq!(snapshot_refs(&project.store).len(), 2);
 
-        let reopened = Checkpoints::open(
-            &project.store.git_dir,
-            &project.root,
-            &[],
-            "later-session",
-            1,
-        )
-        .await
-        .expect("reopens");
-
-        let kept = snapshot_refs(&reopened);
-        assert_eq!(kept.len(), 1, "retention is what bounds the store");
-        assert!(
-            kept[0].ends_with(newest.as_str()),
-            "the snapshot a rewind is most likely to want is the one kept"
-        );
-        assert!(!kept[0].ends_with(oldest.as_str()));
-    }
-
-    /// An index file per session is cheap until nothing ever removes one. A
-    /// session whose snapshots have all been pruned has nothing left the index
-    /// could be staged against.
-    #[tokio::test]
-    async fn a_pruned_sessions_index_goes_with_its_snapshots() {
-        let project = project_storing_in(None).await;
-        let git_dir = project.store.git_dir.clone();
-        let earlier = Checkpoints::open(&git_dir, &project.root, &[], "earlier", KEEP)
-            .await
-            .expect("opens");
-        write(&project.root, "file.txt", "first");
-        earlier.take("turn 1").await.expect("snapshots");
-        assert!(git_dir.join("index.earlier").exists());
-
-        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
-        write(&project.root, "file.txt", "second");
-        let later = Checkpoints::open(&git_dir, &project.root, &[], "later", KEEP)
-            .await
-            .expect("opens");
-        later.take("turn 2").await.expect("snapshots");
-
-        // Reopening with room for one snapshot prunes the earlier session's,
-        // and its index with it.
-        Checkpoints::open(&git_dir, &project.root, &[], "later", 1)
+        Checkpoints::open(&git_dir, &project.root, &[], "arriving", 14)
             .await
             .expect("reopens");
+
         assert!(
-            !git_dir.join("index.earlier").exists(),
+            refs_owned_by(&project.store, "departed").is_empty(),
+            "a month-old snapshot of a session that is gone is what retention is for"
+        );
+        assert!(
+            snapshot_refs(&project.store)
+                .iter()
+                .any(|name| name.ends_with(recent.as_str())),
+            "a snapshot inside the window stays, whoever else opens the store"
+        );
+        assert!(
+            !git_dir.join("index.departed").exists(),
             "an index nothing can be staged against is disk keke never gets back"
         );
         assert!(
-            git_dir.join("index.later").exists(),
+            git_dir.join("index.test").exists(),
             "a session that still owns a snapshot keeps its index"
+        );
+    }
+
+    /// The session that has been running longer than the retention window is
+    /// the one a store must not tidy up around. Its index file is the
+    /// heartbeat that says so: staging rewrites it on every snapshot, so an
+    /// index touched inside the window belongs to a session still working.
+    #[tokio::test]
+    async fn a_working_sessions_old_snapshots_are_left_alone() {
+        let project = project_storing_in(None).await;
+        let git_dir = project.store.git_dir.clone();
+
+        let busy = Checkpoints::open(&git_dir, &project.root, &[], "busy", 14)
+            .await
+            .expect("opens");
+        let old = backdate(&project.store, "busy", 30);
+        // What makes it busy rather than departed: a snapshot taken now, which
+        // is what writes its index.
+        write(&project.root, "file.txt", "still going");
+        busy.take("turn 40").await.expect("snapshots");
+
+        Checkpoints::open(&git_dir, &project.root, &[], "arriving", 14)
+            .await
+            .expect("reopens");
+
+        assert!(
+            snapshot_refs(&project.store)
+                .iter()
+                .any(|name| name.ends_with(&old)),
+            "a rewind to the start of a long turn must still find its snapshot"
+        );
+        assert!(git_dir.join("index.busy").exists());
+    }
+
+    /// A new session hashing the whole tree again is the difference between a
+    /// second session starting in a moment and starting in seconds — measured
+    /// at 3.7s against 0.27s on a sixty-thousand-file tree. The index carries
+    /// a stat cache, and copying one is what makes the copy warm.
+    #[tokio::test]
+    async fn a_new_session_starts_from_an_existing_index() {
+        let project = project_storing_in(None).await;
+        let git_dir = project.store.git_dir.clone();
+        write(&project.root, "file.txt", "first");
+        let snapshot = project
+            .store
+            .take("turn 1")
+            .await
+            .expect("snapshots")
+            .expect("a tree");
+
+        let second = Checkpoints::open(&git_dir, &project.root, &[], "second", 14)
+            .await
+            .expect("opens");
+
+        assert!(
+            git_dir.join("index.second").exists(),
+            "a new session's index is seeded rather than built from nothing"
+        );
+        // Seeded, not shared: what the second session stages is its own.
+        assert_ne!(second.index_file, project.store.index_file);
+        assert!(
+            second
+                .changed_since(&snapshot)
+                .await
+                .expect("compares")
+                .is_empty(),
+            "a seeded index describes the same tree the one it was copied from did"
+        );
+        write(&project.root, "file.txt", "changed by the second session");
+        assert_eq!(
+            second.changed_since(&snapshot).await.expect("compares"),
+            vec!["file.txt".to_string()],
+            "and goes on tracking the tree from there"
         );
     }
 

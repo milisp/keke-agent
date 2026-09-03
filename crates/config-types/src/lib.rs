@@ -703,15 +703,20 @@ pub struct CheckpointConfig {
     /// Off means no snapshot is ever taken, and a rewind then offers to wind
     /// the conversation back and says plainly that the files cannot follow.
     pub enabled: bool,
-    /// How many snapshots a project's store keeps before the oldest are
-    /// dropped.
+    /// How many days a snapshot survives before the store drops it.
+    ///
+    /// Age rather than a count, because a count is global and "is anybody
+    /// still going to want this?" is not: two sessions open on one project
+    /// would have each other's snapshots deleted out from under them the
+    /// moment the total crossed the limit. Age asks the question the store can
+    /// actually answer.
     ///
     /// A deployment's to choose because the two costs pull opposite ways: the
-    /// store holds a tree per writing turn forever otherwise, and a rewind
-    /// that reaches back past the limit finds the snapshot gone. Somebody
-    /// working in a large tree wants a small number; somebody who resumes
-    /// month-old sessions wants a large one.
-    pub keep: usize,
+    /// store holds a tree per writing turn otherwise, and a rewind that
+    /// reaches back past the window finds the snapshot gone. Somebody working
+    /// in a large tree wants a short window; somebody who resumes month-old
+    /// sessions wants a long one.
+    pub keep_days: u32,
 }
 
 impl Default for CheckpointConfig {
@@ -721,10 +726,10 @@ impl Default for CheckpointConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            // A few hundred turns of history: far more than a session rewinds
-            // through, small enough that a store never becomes the reason a
-            // `$KEKE_HOME` is large.
-            keep: 200,
+            // A working fortnight. Long enough that a session resumed after a
+            // week still rewinds, short enough that a store is never the
+            // reason a `$KEKE_HOME` is large.
+            keep_days: 14,
         }
     }
 }

@@ -299,12 +299,12 @@ context_window = 128000       # Context window size compaction measures against
 # stay out. A turn that only talks costs nothing: the snapshot is taken before
 # the turn first runs a tool that can write.
 #
-# `keep` bounds the store: the newest N snapshots of a project survive, older
-# ones are dropped when a session opens the store. A rewind that reaches back
-# past the limit finds the snapshot gone and says so.
+# `keep_days` bounds the store: a snapshot older than this is dropped when a
+# session opens the store, unless the session that took it is still working. A
+# rewind that reaches back past the window finds the snapshot gone and says so.
 [checkpoints]
 enabled = true
-keep = 200
+keep_days = 14
 
 # Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
 model_catalog_ttl_seconds = 21600  # 6 hours default

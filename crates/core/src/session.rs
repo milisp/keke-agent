@@ -214,7 +214,7 @@ impl Session {
                     &crate::sessions_dir(&self.config.home.home),
                 ],
                 &self.id.to_string(),
-                self.config.checkpoints.keep,
+                self.config.checkpoints.keep_days,
             )
             .await;
             self.checkpoints = match opened {
