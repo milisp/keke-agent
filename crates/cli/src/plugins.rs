@@ -235,16 +235,36 @@ pub(crate) fn discover_trusted(home: &HomeLayout) -> Result<(PluginSet, Vec<With
 pub(crate) fn report_withheld(withheld: &[Withheld]) {
     for plugin in withheld {
         eprintln!(
-            "keke: plugin `{}` is {} — its {} program(s) will not run",
-            plugin.name,
-            plugin.trust,
-            plugin.executables.len()
+            "{}",
+            warn(&format!(
+                "keke: plugin `{}` is {} — its {} program(s) will not run",
+                plugin.name,
+                plugin.trust,
+                plugin.executables.len()
+            ))
         );
     }
     if !withheld.is_empty() {
         eprintln!(
-            "keke: review with `keke plugin show <name>`, allow with `keke plugin trust <name>`"
+            "{}",
+            warn(
+                "keke: review with `keke plugin show <name>`, allow with `keke plugin trust <name>`"
+            )
         );
+    }
+}
+
+/// Wrap `text` in yellow, when stderr is a terminal that can show it.
+///
+/// A withheld plugin is a warning, not a routine status line, and it is easy to
+/// miss among startup output that is otherwise plain. Piped or redirected
+/// output gets the bare text back — escape codes in a log file are noise, not
+/// color.
+fn warn(text: &str) -> std::borrow::Cow<'_, str> {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        std::borrow::Cow::Owned(format!("\u{1b}[33m{text}\u{1b}[0m"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
     }
 }
 
