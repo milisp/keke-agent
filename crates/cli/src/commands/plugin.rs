@@ -283,7 +283,7 @@ fn add_plugin(
     };
 
     let package = AbsPath::new(&package).context("the plugin directory inside the source")?;
-    let plugin = keke_plugin::load(package.as_path(), keke_plugin::PluginScope::User)
+    let plugin = keke_plugin::load(package.as_path(), keke_plugin::PluginScope::User, true)
         .with_context(|| format!("reading the plugin at {package}"))?;
 
     if !crate::plugins::confirm_executables(&plugin, assumed_yes)? {
@@ -322,7 +322,7 @@ fn add_plugin(
     store.record_install(&target, &plugin.name, install_source, revision);
     // Approval is recorded against the installed path, so it is taken after the
     // move: the record has to describe where the plugin actually is.
-    let installed = keke_plugin::load(target.as_path(), keke_plugin::PluginScope::User)
+    let installed = keke_plugin::load(target.as_path(), keke_plugin::PluginScope::User, true)
         .with_context(|| format!("reading the installed plugin at {target}"))?;
     store.approve(&installed);
     crate::plugins::save_trust_store(&config.home, store)?;
@@ -394,7 +394,7 @@ fn update_plugins(
         }
 
         crate::install::swap_in(&fetched, plugin.root.as_path())?;
-        let refreshed = keke_plugin::load(plugin.root.as_path(), plugin.scope)
+        let refreshed = keke_plugin::load(plugin.root.as_path(), plugin.scope, plugin.owned)
             .with_context(|| format!("reading the updated plugin at {}", plugin.root))?;
         store.record_install(&plugin.root, &refreshed.name, source, after.clone());
         updated += 1;

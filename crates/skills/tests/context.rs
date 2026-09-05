@@ -71,7 +71,7 @@ async fn only_descriptions_reach_the_context_window_not_bodies() {
         "how this team reviews",
         "SECRET-BODY-CONTENT should not be injected up front",
     );
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
 
     let fragments = contributed_fragments(&set).await;
@@ -94,7 +94,7 @@ async fn no_skills_means_no_fragment_at_all() {
 async fn the_skills_fragment_is_ordered_as_tool_guidance() {
     let tmp = tempfile::tempdir().expect("tempdir");
     plugin_with_skill(tmp.path(), "acme", "review", "how we review", "body");
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
 
     let fragments = contributed_fragments(&set).await;
@@ -110,8 +110,8 @@ async fn two_plugins_contributing_the_same_skill_name_are_both_listed_namespaced
     plugin_with_skill(tmp.path(), "alpha", "review", "alpha's review skill", "a");
     plugin_with_skill(tmp.path(), "beta", "review", "beta's review skill", "b");
     let plugins = vec![
-        load(&tmp.path().join("alpha"), PluginScope::User).expect("resolves"),
-        load(&tmp.path().join("beta"), PluginScope::User).expect("resolves"),
+        load(&tmp.path().join("alpha"), PluginScope::User, true).expect("resolves"),
+        load(&tmp.path().join("beta"), PluginScope::User, true).expect("resolves"),
     ];
     let set = PluginSet::compose(plugins).expect("composes");
 
@@ -132,7 +132,7 @@ async fn reading_a_skill_body_strips_the_frontmatter() {
         "how we review",
         "Only the body should come back.",
     );
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
 
     let body = keke_skills::read_skill_body(&set, "acme:review")
@@ -147,7 +147,7 @@ async fn reading_a_skill_body_strips_the_frontmatter() {
 async fn reading_an_unqualified_or_unknown_name_is_refused_without_touching_disk() {
     let tmp = tempfile::tempdir().expect("tempdir");
     plugin_with_skill(tmp.path(), "acme", "review", "how we review", "body");
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
 
     let error = keke_skills::read_skill_body(&set, "../../etc/passwd")
@@ -165,7 +165,7 @@ async fn a_disabled_skill_is_not_listed_for_the_model() {
     let tmp = tempfile::tempdir().expect("tempdir");
     plugin_with_skill(tmp.path(), "acme", "review", "how we review", "a");
     plugin_with_skill(tmp.path(), "acme", "deploy", "how we deploy", "b");
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
     let selection =
         keke_config_types::SkillSelection::new(vec!["acme:review".to_string()]).expect("valid");
@@ -183,7 +183,7 @@ async fn a_disabled_skill_is_not_listed_for_the_model() {
 async fn a_disabled_skill_cannot_be_read_by_name() {
     let tmp = tempfile::tempdir().expect("tempdir");
     plugin_with_skill(tmp.path(), "acme", "review", "how we review", "body");
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
     let selection =
         keke_config_types::SkillSelection::new(vec!["review".to_string()]).expect("valid");
@@ -201,7 +201,7 @@ async fn a_plugin_wildcard_disables_all_of_its_skills() {
     let tmp = tempfile::tempdir().expect("tempdir");
     plugin_with_skill(tmp.path(), "acme", "review", "how we review", "a");
     plugin_with_skill(tmp.path(), "acme", "deploy", "how we deploy", "b");
-    let plugin = load(&tmp.path().join("acme"), PluginScope::User).expect("resolves");
+    let plugin = load(&tmp.path().join("acme"), PluginScope::User, true).expect("resolves");
     let set = PluginSet::compose(vec![plugin]).expect("composes");
     let selection =
         keke_config_types::SkillSelection::new(vec!["acme:*".to_string()]).expect("valid");

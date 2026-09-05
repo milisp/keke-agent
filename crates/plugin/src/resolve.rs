@@ -88,6 +88,16 @@ pub struct ResolvedPlugin {
     pub version: Option<String>,
     pub description: Option<String>,
     pub scope: PluginScope,
+    /// Whether this plugin lives in a directory keke itself put it in, as
+    /// opposed to another harness's own directory read for compatibility
+    /// (`~/.claude/plugins`, its `installed_plugins.json`).
+    ///
+    /// A person choosing where to put something for one program is not consent
+    /// for a second program to run it. [`crate::TrustStore::evaluate`]'s
+    /// automatic trust for a `User`-scoped plugin depends on this being true —
+    /// it means the person placed this plugin under *keke's* home directory,
+    /// not merely somewhere on their own machine.
+    pub owned: bool,
     pub root: AbsPath,
     pub skills: Vec<ResolvedSkill>,
     pub commands: Vec<ResolvedCommand>,
@@ -189,7 +199,11 @@ impl PluginSet {
 /// installed is the normal case. A directory with neither a manifest nor any
 /// convention content is skipped, so unrelated files under a plugin root do not
 /// break startup — but a manifest that exists and is broken is always an error.
-pub fn discover(dir: &AbsPath, scope: PluginScope) -> Result<Vec<ResolvedPlugin>, PluginError> {
+pub fn discover(
+    dir: &AbsPath,
+    scope: PluginScope,
+    owned: bool,
+) -> Result<Vec<ResolvedPlugin>, PluginError> {
     let entries = match std::fs::read_dir(dir.as_path()) {
         Ok(entries) => entries,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -216,7 +230,7 @@ pub fn discover(dir: &AbsPath, scope: PluginScope) -> Result<Vec<ResolvedPlugin>
     }
     roots.sort();
 
-    roots.iter().map(|root| load(root, scope)).collect()
+    roots.iter().map(|root| load(root, scope, owned)).collect()
 }
 
 /// Whether a directory carries a manifest or any convention content.
@@ -233,8 +247,8 @@ fn looks_like_a_plugin(root: &Path) -> bool {
 /// A package with no manifest still loads, taking its name from the directory
 /// and its contributions from the convention paths. That is how most published
 /// plugins are actually shaped.
-pub fn load(root: &Path, scope: PluginScope) -> Result<ResolvedPlugin, PluginError> {
-    load_named(root, scope, None)
+pub fn load(root: &Path, scope: PluginScope, owned: bool) -> Result<ResolvedPlugin, PluginError> {
+    load_named(root, scope, owned, None)
 }
 
 /// Read a package under a name of the caller's choosing.
@@ -245,6 +259,7 @@ pub fn load(root: &Path, scope: PluginScope) -> Result<ResolvedPlugin, PluginErr
 pub fn load_named(
     root: &Path,
     scope: PluginScope,
+    owned: bool,
     name_override: Option<&str>,
 ) -> Result<ResolvedPlugin, PluginError> {
     let canonical = std::fs::canonicalize(root).map_err(|source| PluginError::Read {
@@ -282,6 +297,7 @@ pub fn load_named(
         version: manifest.version,
         description: manifest.description,
         scope,
+        owned,
         root,
         skills,
         commands,

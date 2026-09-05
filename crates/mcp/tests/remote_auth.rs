@@ -247,6 +247,7 @@ fn installed_tools(url: &str, auth: AuthHome) -> Vec<String> {
         version: None,
         description: None,
         scope: PluginScope::User,
+        owned: true,
         root: root.clone(),
         skills: Vec::new(),
         commands: Vec::new(),

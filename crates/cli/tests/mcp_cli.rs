@@ -28,6 +28,11 @@ impl Fixture {
             .env("KEKE_HOME", self.home.path())
             .env("KEKE_CREDENTIAL_STORE", "file")
             .env("KEKE_IMPORT", "off")
+            // Plugin discovery also reads `~/.claude` for compatibility with the
+            // other ecosystem. Left pointing at the real `$HOME`, a machine that
+            // happens to have Claude Code plugins installed would leak them into
+            // this test's `mcp list` output.
+            .env("HOME", self.home.path())
             .arg("--cwd")
             .arg(self.workspace.path());
         command

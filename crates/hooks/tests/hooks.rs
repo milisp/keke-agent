@@ -50,7 +50,7 @@ fn plugin(root: &Path, name: &str, event: &str, matcher: &str, command: &str, ti
 fn plugin_set(root: &Path, names: &[&str]) -> PluginSet {
     let plugins = names
         .iter()
-        .map(|name| load(&root.join(name), PluginScope::User).expect("load"))
+        .map(|name| load(&root.join(name), PluginScope::User, true).expect("load"))
         .collect();
     PluginSet::compose(plugins).expect("compose")
 }

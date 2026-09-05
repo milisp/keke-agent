@@ -216,13 +216,17 @@ impl TrustStore {
         let record = self.entries.get(&plugin.root.to_string());
 
         // The shortcut for a plugin in the person's own directory covers one
-        // thing: a directory they placed there themselves. It does not extend
-        // to what `keke plugin add` fetched into the same directory on their
-        // behalf — they named a URL, they did not read what came back. Without
-        // this exclusion, `add` would reopen from the inside the hole the
-        // project-scope gate closes from the outside.
+        // thing: a directory they placed there themselves, under *keke's* home
+        // directory. It does not extend to what `keke plugin add` fetched into
+        // that directory on their behalf — they named a URL, they did not read
+        // what came back — nor to a plugin found under another harness's home
+        // directory: putting something in `~/.claude` is consent for Claude
+        // Code to run it, not for keke to. Without these exclusions, `add`
+        // would reopen from the inside the hole the project-scope gate closes
+        // from the outside, and a foreign plugin would be trusted on the
+        // strength of a decision the person never made about keke at all.
         let keke_installed = record.is_some_and(|record| record.installed.is_some());
-        if plugin.scope == PluginScope::User && !keke_installed {
+        if plugin.scope == PluginScope::User && plugin.owned && !keke_installed {
             return Trust::OwnedByThePerson;
         }
 

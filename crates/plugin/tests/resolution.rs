@@ -54,7 +54,7 @@ fn a_plugin_written_for_claude_code_loads_unchanged() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let dir = claude_plugin(tmp.path(), "acme");
 
-    let plugin = load(&dir, PluginScope::User).expect("resolves");
+    let plugin = load(&dir, PluginScope::User, true).expect("resolves");
 
     assert_eq!(plugin.name, "acme");
     assert_eq!(plugin.skills.len(), 1);
@@ -79,7 +79,7 @@ fn resolution_does_not_run_anything() {
         ),
     );
 
-    let plugin = load(&dir, PluginScope::User).expect("resolves");
+    let plugin = load(&dir, PluginScope::User, true).expect("resolves");
 
     assert_eq!(plugin.hooks.len(), 1);
     // Located, not launched. A surface can list an untrusted plugin safely.
@@ -95,7 +95,7 @@ fn a_package_with_no_manifest_still_loads_from_convention() {
         "---\ndescription: no manifest anywhere\n---\n\nbody\n",
     );
 
-    let plugin = load(&dir, PluginScope::User).expect("resolves");
+    let plugin = load(&dir, PluginScope::User, true).expect("resolves");
 
     // The name comes from the directory, which is how most published plugins
     // are actually shaped.
@@ -112,7 +112,7 @@ fn the_claude_manifest_location_is_accepted() {
         r#"{"name": "compat", "description": "manifest in the claude location"}"#,
     );
 
-    let plugin = load(&dir, PluginScope::User).expect("resolves");
+    let plugin = load(&dir, PluginScope::User, true).expect("resolves");
 
     assert_eq!(plugin.name, "compat");
     assert_eq!(
@@ -130,7 +130,7 @@ fn unknown_metadata_is_ignored_but_an_unknown_contribution_is_reported() {
         r#"{"name": "newer", "homepage": "https://x", "keywords": ["a"], "lspServers": {"rust": {}}}"#,
     );
 
-    let plugin = load(&dir, PluginScope::User).expect("loads despite the unknown key");
+    let plugin = load(&dir, PluginScope::User, true).expect("loads despite the unknown key");
 
     // Metadata drift must not block a load, or no manifest written for a newer
     // host would ever install.
@@ -150,7 +150,7 @@ fn a_hook_for_an_event_keke_does_not_run_is_reported_not_dropped() {
         r#"{"hooks": {"Notification": [{"hooks": [{"type": "command", "command": "./notify.sh"}]}]}}"#,
     );
 
-    let plugin = load(&dir, PluginScope::User).expect("resolves");
+    let plugin = load(&dir, PluginScope::User, true).expect("resolves");
 
     assert_eq!(plugin.inert_hooks().count(), 1);
     assert_eq!(
@@ -175,7 +175,7 @@ fn a_hook_of_an_unrecognized_type_is_not_run() {
     // Guessing at an unknown type would mean running something under a contract
     // keke does not know.
     assert!(
-        load(&dir, PluginScope::User)
+        load(&dir, PluginScope::User, true)
             .expect("resolves")
             .hooks
             .is_empty()
@@ -196,7 +196,7 @@ fn a_resource_outside_the_package_root_is_refused() {
     );
 
     assert!(matches!(
-        load(&dir, PluginScope::User),
+        load(&dir, PluginScope::User, true),
         Err(PluginError::Escape { .. })
     ));
 }
@@ -218,7 +218,7 @@ fn a_symlink_out_of_the_package_root_is_refused() {
     // A textual prefix check passes here. Containment is checked against the
     // canonical path for exactly this case.
     assert!(matches!(
-        load(&dir, PluginScope::User),
+        load(&dir, PluginScope::User, true),
         Err(PluginError::Escape { .. })
     ));
 }
@@ -230,7 +230,7 @@ fn a_name_that_could_reach_a_path_or_a_shell_is_refused() {
     write(&dir.join("plugin.json"), r#"{"name": "../../etc/passwd"}"#);
 
     assert!(matches!(
-        load(&dir, PluginScope::User),
+        load(&dir, PluginScope::User, true),
         Err(PluginError::InvalidName { .. })
     ));
 }
@@ -251,8 +251,8 @@ fn the_project_copy_of_a_plugin_wins_over_the_user_copy() {
 
     let user_root = keke_paths::AbsPath::new(&user).expect("absolute");
     let project_root = keke_paths::AbsPath::new(&project).expect("absolute");
-    let mut plugins = discover(&user_root, PluginScope::User).expect("discovers");
-    plugins.extend(discover(&project_root, PluginScope::Project).expect("discovers"));
+    let mut plugins = discover(&user_root, PluginScope::User, true).expect("discovers");
+    plugins.extend(discover(&project_root, PluginScope::Project, true).expect("discovers"));
 
     let set = PluginSet::compose(plugins).expect("composes");
 
@@ -275,7 +275,7 @@ fn one_plugin_installed_twice_in_a_scope_is_an_error_not_a_silent_pick() {
     );
 
     let root = keke_paths::AbsPath::new(tmp.path()).expect("absolute");
-    let plugins = discover(&root, PluginScope::User).expect("discovers");
+    let plugins = discover(&root, PluginScope::User, true).expect("discovers");
 
     assert!(matches!(
         PluginSet::compose(plugins),
@@ -299,7 +299,7 @@ fn two_plugins_can_contribute_the_same_command_name() {
     }
 
     let root = keke_paths::AbsPath::new(tmp.path()).expect("absolute");
-    let set = PluginSet::compose(discover(&root, PluginScope::User).expect("discovers"))
+    let set = PluginSet::compose(discover(&root, PluginScope::User, true).expect("discovers"))
         .expect("composes");
 
     // Contributions are namespaced by plugin, so this is not ambiguity at all.
@@ -325,7 +325,7 @@ fn a_hook_without_a_matcher_observes_every_tool() {
            ]}}"#,
     );
 
-    let plugin = load(&dir, PluginScope::User).expect("resolves");
+    let plugin = load(&dir, PluginScope::User, true).expect("resolves");
     let applies: Vec<&str> = plugin
         .hooks
         .iter()
@@ -353,7 +353,7 @@ fn discovery_order_is_stable_so_hook_order_is_not_a_filesystem_accident() {
     }
 
     let root = keke_paths::AbsPath::new(tmp.path()).expect("absolute");
-    let set = PluginSet::compose(discover(&root, PluginScope::User).expect("discovers"))
+    let set = PluginSet::compose(discover(&root, PluginScope::User, true).expect("discovers"))
         .expect("composes");
     let order: Vec<&str> = set
         .hooks_for(&HookEvent::SessionStart)
@@ -369,7 +369,7 @@ fn no_plugins_installed_is_not_a_failure() {
     let missing = keke_paths::AbsPath::new(tmp.path().join("plugins")).expect("absolute");
 
     assert!(
-        discover(&missing, PluginScope::User)
+        discover(&missing, PluginScope::User, true)
             .expect("empty, not an error")
             .is_empty()
     );
@@ -380,7 +380,11 @@ fn no_plugins_installed_is_not_a_failure() {
 // ---------------------------------------------------------------------------
 
 fn set_of(root: &Path, name: &str, scope: PluginScope) -> PluginSet {
-    PluginSet::compose(vec![load(&root.join(name), scope).expect("load")]).expect("compose")
+    set_of_owned(root, name, scope, true)
+}
+
+fn set_of_owned(root: &Path, name: &str, scope: PluginScope, owned: bool) -> PluginSet {
+    PluginSet::compose(vec![load(&root.join(name), scope, owned).expect("load")]).expect("compose")
 }
 
 #[test]
@@ -535,6 +539,20 @@ fn what_keke_fetched_does_not_get_the_benefit_of_the_doubt() {
 
     store.approve(plugin);
     assert_eq!(store.evaluate(plugin), Trust::Approved);
+}
+
+#[test]
+fn a_plugin_under_another_harnesss_home_directory_does_not_get_the_benefit_of_the_doubt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    claude_plugin(dir.path(), "acme");
+    // User scope, but `owned: false` — this stands in for `~/.claude/plugins`,
+    // read for compatibility with the other ecosystem. Placing something there
+    // is consent for that harness to run it, not for keke to.
+    let set = set_of_owned(dir.path(), "acme", PluginScope::User, false);
+    let plugin = set.get("acme").expect("resolved");
+
+    let store = TrustStore::default();
+    assert_eq!(store.evaluate(plugin), Trust::NeverApproved);
 }
 
 #[test]
@@ -705,8 +723,9 @@ fn a_directory_can_be_read_under_a_name_it_does_not_have() {
 
     // `.keke` is not a valid plugin name, which is exactly why a caller that
     // knows what the directory is gets to say.
-    assert!(keke_plugin::load(&root, PluginScope::User).is_err());
-    let named = keke_plugin::load_named(&root, PluginScope::User, Some("local")).expect("loads");
+    assert!(keke_plugin::load(&root, PluginScope::User, true).is_err());
+    let named =
+        keke_plugin::load_named(&root, PluginScope::User, true, Some("local")).expect("loads");
     assert_eq!(named.name, "local");
     assert_eq!(named.commands.len(), 1);
 }

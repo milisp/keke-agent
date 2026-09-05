@@ -75,24 +75,27 @@ fn roots(home: &HomeLayout) -> Vec<(AbsPath, PluginScope, Origin)> {
 /// collision here would be reported as the same plugin installed twice.
 pub(crate) fn local_roots(
     home: &HomeLayout,
-) -> Vec<(std::path::PathBuf, &'static str, PluginScope)> {
+) -> Vec<(std::path::PathBuf, &'static str, PluginScope, bool)> {
     let mut roots = vec![(
         home.home.as_path().to_path_buf(),
         "local",
         PluginScope::User,
+        true,
     )];
     if let Some(claude) = dirs::home_dir() {
-        roots.push((claude.join(".claude"), "claude", PluginScope::User));
+        roots.push((claude.join(".claude"), "claude", PluginScope::User, false));
     }
     roots.push((
         home.workspace_root.as_path().join(".keke"),
         "workspace",
         PluginScope::Project,
+        true,
     ));
     roots.push((
         home.workspace_root.as_path().join(".claude"),
         "claude-workspace",
         PluginScope::Project,
+        false,
     ));
     roots
 }
@@ -116,7 +119,8 @@ fn has_local_content(root: &std::path::Path) -> bool {
 pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
     let mut plugins = Vec::new();
     for (root, scope, origin) in roots(home) {
-        match keke_plugin::discover(&root, scope) {
+        let owned = origin == Origin::Keke;
+        match keke_plugin::discover(&root, scope, owned) {
             Ok(found) => plugins.extend(found),
             // A directory keke owns failing is keke's problem to state. Another
             // harness's directory failing is not: keke would be refusing to
@@ -140,8 +144,10 @@ pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
     if let Some(claude) = dirs::home_dir() {
         let record = claude.join(".claude/plugins/installed_plugins.json");
         for install in keke_plugin::foreign_installs(&record, &home.workspace_root) {
+            // `false`: this came out of Claude Code's own install record, not
+            // out of a directory keke put the plugin in itself.
             let Ok(mut plugin) =
-                keke_plugin::load(install.install_path.as_path(), PluginScope::User)
+                keke_plugin::load(install.install_path.as_path(), PluginScope::User, false)
             else {
                 continue;
             };
@@ -164,11 +170,11 @@ pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
         }
     }
 
-    for (root, name, scope) in local_roots(home) {
+    for (root, name, scope, owned) in local_roots(home) {
         if !has_local_content(&root) {
             continue;
         }
-        match keke_plugin::load_named(&root, scope, Some(name)) {
+        match keke_plugin::load_named(&root, scope, owned, Some(name)) {
             Ok(plugin) => plugins.push(plugin),
             // Same division as above: keke's own directory failing is keke's to
             // state, another harness's is not.
