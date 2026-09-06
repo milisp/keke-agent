@@ -53,7 +53,7 @@ main() {
   tag="$(curl -fsSL "$api_url" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
   [ -n "${tag:-}" ] || die "could not resolve a release tag from $api_url"
 
-  asset="keke-${tag}-${target}.tar.gz"
+  asset="keke-${target}.tar.gz"
   url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 
   say "downloading ${asset} (${tag})..."
