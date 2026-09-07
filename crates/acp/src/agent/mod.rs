@@ -13,6 +13,7 @@
 //! Both implementations drive the same [`SessionFactory`], so the versions
 //! cannot drift into offering different sessions.
 
+mod present;
 mod v1;
 mod v2;
 
@@ -176,6 +177,9 @@ struct Choice {
 /// One live ACP session.
 struct Entry {
     conversation: Arc<dyn Conversation>,
+    /// Where the session is rooted. Kept so a tool call's relative path can be
+    /// reported to the client as the absolute one its follow-along needs.
+    cwd: PathBuf,
     /// What the provider serves. Fixed for the session's life: it is what the
     /// session was opened against, and a list that changed underneath a client
     /// would make a selection it just made invalid.
@@ -246,10 +250,12 @@ impl Sessions {
 fn enrol(
     sessions: &Sessions,
     opened: &Opened,
+    cwd: PathBuf,
     outcomes: UnboundedReceiver<StopReason>,
 ) -> Arc<Entry> {
     let entry = Arc::new(Entry {
         conversation: Arc::clone(&opened.conversation),
+        cwd,
         models: opened.models.clone(),
         selected: Mutex::new(Selected {
             model: opened.model.clone(),
@@ -501,6 +507,7 @@ mod tests {
         (
             Entry {
                 conversation: Arc::clone(&scripted) as Arc<dyn Conversation>,
+                cwd: PathBuf::from("/work"),
                 models,
                 selected: Mutex::new(Selected {
                     model,

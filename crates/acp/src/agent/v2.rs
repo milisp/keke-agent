@@ -57,8 +57,10 @@ use agent_client_protocol::schema::v2::StateUpdate;
 use agent_client_protocol::schema::v2::StopReason as AcpStopReason;
 use agent_client_protocol::schema::v2::TextContent;
 use agent_client_protocol::schema::v2::ToolCallContent;
+use agent_client_protocol::schema::v2::ToolCallLocation;
 use agent_client_protocol::schema::v2::ToolCallStatus;
 use agent_client_protocol::schema::v2::ToolCallUpdate;
+use agent_client_protocol::schema::v2::ToolKind;
 use agent_client_protocol::schema::v2::UpdateSessionNotification;
 use agent_client_protocol::schema::v2::UserMessage;
 use keke_protocol::StopReason;
@@ -74,6 +76,7 @@ use super::apply;
 use super::choices;
 use super::enrol;
 use super::note_mode;
+use super::present;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::SessionListing;
@@ -165,11 +168,12 @@ pub(super) fn agent(
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
                 async move |request: NewSessionRequest, responder, cx: ConnectionTo<_>| {
+                    let cwd = request.cwd.clone().into_inner();
                     let opened = factory
                         .open(request.cwd.into_inner())
                         .await
                         .map_err(agent_client_protocol::Error::into_internal_error)?;
-                    let (id, options) = start(&sessions, opened, &cx)?;
+                    let (id, options) = start(&sessions, opened, cwd, &cx)?;
                     responder.respond(NewSessionResponse::new(id).config_options(options))
                 }
             },
@@ -230,6 +234,7 @@ pub(super) fn agent(
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
                 async move |request: ResumeSessionRequest, responder, cx: ConnectionTo<_>| {
+                    let cwd = request.cwd.clone().into_inner();
                     let opened = match factory
                         .resume(request.session_id.to_string(), request.cwd.into_inner())
                         .await
@@ -240,7 +245,7 @@ pub(super) fn agent(
                         }
                     };
                     let history = opened.history.clone();
-                    let (id, options) = start(&sessions, opened, &cx)?;
+                    let (id, options) = start(&sessions, opened, cwd, &cx)?;
                     // Resuming restores the session; replaying the transcript
                     // is the separate thing v1 spelled `session/load`, and in
                     // v2 a client asks for it by naming where to replay from.
@@ -295,6 +300,7 @@ pub(super) fn agent(
 fn start(
     sessions: &Sessions,
     opened: Opened,
+    cwd: std::path::PathBuf,
     cx: &ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), agent_client_protocol::Error> {
     // The id is the one the session is logged under, not one invented here:
@@ -302,7 +308,7 @@ fn start(
     let id = SessionId::new(opened.id.clone());
     let commands = opened.commands.clone();
     let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
-    let entry = enrol(sessions, &opened, outcome_rx);
+    let entry = enrol(sessions, &opened, cwd, outcome_rx);
     let options = rendered(&choices(&entry));
     // Spawned, so the dispatch loop is free to deliver the permission
     // responses the pump is about to wait on.
@@ -491,13 +497,22 @@ async fn pump(
                 )?;
             }
             Update::ToolCallStarted(call) => {
+                let shown = present::describe(&call, &entry.cwd);
                 notify(
                     &cx,
                     &id,
                     SessionUpdate::ToolCallUpdate(
                         ToolCallUpdate::new(call.id.to_string())
-                            .title(call.name.clone())
+                            .title(shown.title)
+                            .kind(tool_kind(shown.kind))
                             .status(ToolCallStatus::InProgress)
+                            .locations(
+                                shown
+                                    .locations
+                                    .into_iter()
+                                    .map(|path| ToolCallLocation::new(AbsolutePath::new(path)))
+                                    .collect::<Vec<_>>(),
+                            )
                             .raw_input(call.arguments.clone()),
                     ),
                 )?;
@@ -547,14 +562,16 @@ async fn pump(
             } => {
                 // Asked and answered on this task rather than the dispatch
                 // loop, which is what makes waiting for the reply safe.
+                let shown = present::describe(&call, &entry.cwd);
                 let request = RequestPermissionRequest::new(
                     id.clone(),
-                    format!("{}: {reason}", call.name),
+                    format!("{}: {reason}", shown.title),
                     permission_options(),
                 )
                 .subject(RequestPermissionSubject::from(
                     ToolCallUpdate::new(call.id.to_string())
-                        .title(call.name.clone())
+                        .title(shown.title.clone())
+                        .kind(tool_kind(shown.kind))
                         .raw_input(call.arguments.clone()),
                 ));
                 let answer = match cx.send_request(request).block_task().await {
@@ -644,6 +661,21 @@ fn chosen(outcome: &RequestPermissionOutcome) -> PermissionAnswer {
     match outcome {
         RequestPermissionOutcome::Selected(selected) => answer_for(selected.option_id.0.as_ref()),
         _ => PermissionAnswer::Deny,
+    }
+}
+
+/// keke's own reading of what a tool does, in the client's terms.
+fn tool_kind(facet: present::Facet) -> ToolKind {
+    match facet {
+        present::Facet::Read => ToolKind::Read,
+        present::Facet::Edit => ToolKind::Edit,
+        present::Facet::Delete => ToolKind::Delete,
+        present::Facet::Move => ToolKind::Move,
+        present::Facet::Search => ToolKind::Search,
+        present::Facet::Execute => ToolKind::Execute,
+        present::Facet::Fetch => ToolKind::Fetch,
+        present::Facet::Think => ToolKind::Think,
+        present::Facet::Other => ToolKind::Other,
     }
 }
 

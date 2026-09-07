@@ -54,9 +54,11 @@ use agent_client_protocol::schema::v1::SetSessionConfigOptionRequest;
 use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
 use agent_client_protocol::schema::v1::StopReason as AcpStopReason;
 use agent_client_protocol::schema::v1::TextContent;
+use agent_client_protocol::schema::v1::ToolCallLocation;
 use agent_client_protocol::schema::v1::ToolCallStatus;
 use agent_client_protocol::schema::v1::ToolCallUpdate;
 use agent_client_protocol::schema::v1::ToolCallUpdateFields;
+use agent_client_protocol::schema::v1::ToolKind;
 use keke_protocol::StopReason;
 use keke_protocol::ToolStatus;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -70,6 +72,7 @@ use super::apply;
 use super::choices;
 use super::enrol;
 use super::note_mode;
+use super::present;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::SessionListing;
@@ -163,11 +166,12 @@ pub(super) fn agent(
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
                 async move |request: NewSessionRequest, responder, cx: ConnectionTo<_>| {
+                    let cwd = request.cwd.clone();
                     let opened = factory
                         .open(request.cwd)
                         .await
                         .map_err(agent_client_protocol::Error::into_internal_error)?;
-                    let (id, options) = start(&sessions, opened, &cx)?;
+                    let (id, options) = start(&sessions, opened, cwd, &cx)?;
                     responder.respond(NewSessionResponse::new(id).config_options(options))
                 }
             },
@@ -228,6 +232,7 @@ pub(super) fn agent(
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
                 async move |request: LoadSessionRequest, responder, cx: ConnectionTo<_>| {
+                    let cwd = request.cwd.clone();
                     let opened = match factory
                         .resume(request.session_id.to_string(), request.cwd)
                         .await
@@ -238,7 +243,7 @@ pub(super) fn agent(
                         }
                     };
                     let history = opened.history.clone();
-                    let (id, options) = start(&sessions, opened, &cx)?;
+                    let (id, options) = start(&sessions, opened, cwd, &cx)?;
                     // Replaying is what makes this `session/load` rather than
                     // `session/resume`: in v1 the transcript is the difference
                     // between the two methods.
@@ -253,6 +258,7 @@ pub(super) fn agent(
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
                 async move |request: ResumeSessionRequest, responder, cx: ConnectionTo<_>| {
+                    let cwd = request.cwd.clone();
                     let opened = match factory
                         .resume(request.session_id.to_string(), request.cwd)
                         .await
@@ -264,7 +270,7 @@ pub(super) fn agent(
                     };
                     // Deliberately no replay: a client that wants the
                     // transcript back asks for `session/load`.
-                    let (_, options) = start(&sessions, opened, &cx)?;
+                    let (_, options) = start(&sessions, opened, cwd, &cx)?;
                     responder.respond(ResumeSessionResponse::new().config_options(options))
                 }
             },
@@ -307,6 +313,7 @@ pub(super) fn agent(
 fn start(
     sessions: &Sessions,
     opened: Opened,
+    cwd: std::path::PathBuf,
     cx: &ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), agent_client_protocol::Error> {
     // The id is the one the session is logged under, not one invented here:
@@ -314,7 +321,7 @@ fn start(
     let id = SessionId::new(opened.id.clone());
     let commands = opened.commands.clone();
     let (outcome_tx, outcome_rx) = tokio::sync::mpsc::unbounded_channel();
-    let entry = enrol(sessions, &opened, outcome_rx);
+    let entry = enrol(sessions, &opened, cwd, outcome_rx);
     let options = rendered(&choices(&entry));
     // Spawned, so the dispatch loop is free to deliver the permission
     // responses the pump is about to wait on.
@@ -473,11 +480,21 @@ async fn pump(
                 notify(&cx, &id, SessionUpdate::AgentThoughtChunk(chunk(text)))?;
             }
             Update::ToolCallStarted(call) => {
+                let shown = present::describe(&call, &entry.cwd);
                 let started = agent_client_protocol::schema::v1::ToolCall::new(
                     call.id.to_string(),
-                    call.name.clone(),
+                    shown.title,
                 )
-                .status(ToolCallStatus::InProgress);
+                .kind(tool_kind(shown.kind))
+                .status(ToolCallStatus::InProgress)
+                .locations(
+                    shown
+                        .locations
+                        .into_iter()
+                        .map(ToolCallLocation::new)
+                        .collect::<Vec<_>>(),
+                )
+                .raw_input(call.arguments.clone());
                 notify(&cx, &id, SessionUpdate::ToolCall(started))?;
             }
             // Reported once, already completed: the vendor ran it and told us
@@ -525,12 +542,14 @@ async fn pump(
             } => {
                 // Asked and answered on this task rather than the dispatch
                 // loop, which is what makes waiting for the reply safe.
+                let shown = present::describe(&call, &entry.cwd);
                 let request = RequestPermissionRequest::new(
                     id.clone(),
                     ToolCallUpdate::new(
                         call.id.to_string(),
                         ToolCallUpdateFields::new()
-                            .title(format!("{}: {reason}", call.name))
+                            .title(format!("{}: {reason}", shown.title))
+                            .kind(tool_kind(shown.kind))
                             .raw_input(call.arguments.clone()),
                     ),
                     permission_options(),
@@ -591,6 +610,21 @@ fn chosen(outcome: &RequestPermissionOutcome) -> PermissionAnswer {
     match outcome {
         RequestPermissionOutcome::Selected(selected) => answer_for(selected.option_id.0.as_ref()),
         _ => PermissionAnswer::Deny,
+    }
+}
+
+/// keke's own reading of what a tool does, in the client's terms.
+fn tool_kind(facet: present::Facet) -> ToolKind {
+    match facet {
+        present::Facet::Read => ToolKind::Read,
+        present::Facet::Edit => ToolKind::Edit,
+        present::Facet::Delete => ToolKind::Delete,
+        present::Facet::Move => ToolKind::Move,
+        present::Facet::Search => ToolKind::Search,
+        present::Facet::Execute => ToolKind::Execute,
+        present::Facet::Fetch => ToolKind::Fetch,
+        present::Facet::Think => ToolKind::Think,
+        present::Facet::Other => ToolKind::Other,
     }
 }
 
