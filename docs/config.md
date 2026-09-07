@@ -281,6 +281,16 @@ sandbox_mode = "workspace_write"
 # Reasoning effort: "low", "medium", "high", "xhigh", "max" (default: "medium")
 reasoning_effort = "medium"
 
+# A persona: who the agent is and how it should behave. It leads the system
+# prompt, after keke's own identity and before the project's AGENTS.md, so a
+# repository still has the last word on how it wants to be worked on. Blank is
+# the same as unset.
+#
+# Prefer `--instructions` or KEKE_INSTRUCTIONS when one installation drives
+# several named agents at once: a persona is usually a property of the run
+# rather than of the machine.
+instructions = "You are Ada. Review before you write, and say what you changed."
+
 # Maximum output tokens per model reply (256-200000)
 max_output_tokens = 8192
 

@@ -334,6 +334,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         service_tier: None,
         compaction: CompactionConfig::default(),
         checkpoints: CheckpointConfig::default(),
+        instructions: None,
         approval,
     }
 }

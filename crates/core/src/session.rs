@@ -123,6 +123,11 @@ pub struct SessionConfig {
     /// When and how far to summarize the history. A session that never compacts
     /// works until the provider rejects the request mid-conversation.
     pub compaction: CompactionConfig,
+    /// Who this agent is, joined into the system prompt ahead of the project's
+    /// instruction files. `None` leaves keke's plain identity alone. Carried on
+    /// the session rather than passed per turn because a persona that could
+    /// change mid-conversation would make the transcript unreadable.
+    pub instructions: Option<String>,
     /// When a tool call must be approved before it runs.
     pub approval: ApprovalPolicy,
     /// Whether the working tree is snapshotted per turn, so a rewind can put

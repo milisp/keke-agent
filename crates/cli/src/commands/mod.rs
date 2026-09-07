@@ -62,6 +62,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     if let Some(effort) = cli.reasoning_effort {
         config.reasoning_effort = Some(effort);
     }
+    if let Some(instructions) = cli.instructions {
+        config.instructions = Some(instructions);
+    }
 
     // Only the interactive surface can answer an approval request, so only it
     // installs the bridge; everything else runs with the engine's default.
@@ -373,6 +376,7 @@ async fn session_builder(
             service_tier,
             compaction: config.compaction,
             checkpoints: config.checkpoints,
+            instructions: config.instructions.clone(),
             approval,
         })
         .provider(provider)

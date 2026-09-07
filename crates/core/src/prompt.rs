@@ -21,6 +21,9 @@ use keke_workspace::Workspace;
 /// Order slots, so a fragment's position in the prompt is a property of the
 /// fragment rather than an accident of registration order.
 pub const ORDER_IDENTITY: i32 = -100;
+/// Between the two on purpose: a caller's persona refines what keke is, and
+/// the project it is pointed at still gets the last word over the persona.
+pub const ORDER_PERSONA: i32 = -50;
 pub const ORDER_PROJECT: i32 = 0;
 pub const ORDER_ENVIRONMENT: i32 = 50;
 
@@ -36,10 +39,18 @@ tool to inspect the project over guessing. Be concise.";
 pub async fn assemble_system_prompt(
     workspace: &Workspace,
     cwd: &std::path::Path,
+    instructions: Option<&str>,
     registry: &ExtensionRegistry,
     ext_ctx: &ExtensionContext,
 ) -> String {
     let mut fragments = vec![ContextFragment::new("identity", ORDER_IDENTITY, IDENTITY)];
+
+    // Blank is the same as absent: a caller that passes an empty persona meant
+    // to say nothing, and an empty fragment would still cost a blank line in
+    // front of the model and a fragment in the log accounting for it.
+    if let Some(persona) = instructions.map(str::trim).filter(|text| !text.is_empty()) {
+        fragments.push(ContextFragment::new("persona", ORDER_PERSONA, persona));
+    }
 
     if let Ok(instructions) = workspace.instructions(cwd) {
         for (index, file) in instructions.iter().enumerate() {
@@ -137,10 +148,71 @@ mod tests {
     }
 
     async fn assemble(registry: &ExtensionRegistry, ext_ctx: &ExtensionContext) -> String {
+        assemble_with(None, registry, ext_ctx).await
+    }
+
+    /// The same assembly, with a project instruction file on disk, so a test
+    /// can say where a persona lands relative to what the repository asked for.
+    async fn assemble_with(
+        instructions: Option<&str>,
+        registry: &ExtensionRegistry,
+        ext_ctx: &ExtensionContext,
+    ) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("AGENTS.md"), "the project speaks").expect("write");
+        let root = keke_paths::AbsPath::new(dir.path()).expect("absolute");
+        let workspace = Workspace::new(root);
+        assemble_system_prompt(&workspace, dir.path(), instructions, registry, ext_ctx).await
+    }
+
+    /// A caller running several named agents from one installation gives each
+    /// its own character, and the repository still gets the last word: the
+    /// persona is read before the instructions the project wrote.
+    #[tokio::test]
+    async fn a_persona_leads_the_project_it_is_pointed_at() {
+        let registry = ExtensionRegistryBuilder::new().build();
+        let ext_ctx = ExtensionContext::new(SessionId::new(), ThreadId::new());
+
+        let prompt = assemble_with(Some("You are Ada, and you review."), &registry, &ext_ctx).await;
+
+        let persona = prompt
+            .find("You are Ada")
+            .expect("the persona reached the prompt");
+        let project = prompt
+            .find("the project speaks")
+            .expect("project instructions");
+        let identity = prompt.find("You are keke").expect("keke's own identity");
+        assert!(
+            identity < persona && persona < project,
+            "a persona refines keke's identity and is refined by the project"
+        );
+        assert!(
+            ext_ctx.drain_events().into_iter().any(|event| matches!(
+                event,
+                keke_protocol::SessionEvent::ContextFragment { ref name, .. } if name == "persona"
+            )),
+            "invariant 6: a persona is model-visible, so it is logged"
+        );
+    }
+
+    /// A caller with nothing to say passes an empty string as readily as it
+    /// passes nothing, and the two must not produce different prompts.
+    #[tokio::test]
+    async fn a_blank_persona_is_the_same_as_none() {
+        let registry = ExtensionRegistryBuilder::new().build();
+        let blank = ExtensionContext::new(SessionId::new(), ThreadId::new());
+        let absent = ExtensionContext::new(SessionId::new(), ThreadId::new());
+        // One directory for both, because the environment fragment names it and
+        // two tempdirs would differ for a reason this test is not about.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = keke_paths::AbsPath::new(dir.path()).expect("absolute");
         let workspace = Workspace::new(root);
-        assemble_system_prompt(&workspace, dir.path(), registry, ext_ctx).await
+
+        assert_eq!(
+            assemble_system_prompt(&workspace, dir.path(), Some("   \n  "), &registry, &blank)
+                .await,
+            assemble_system_prompt(&workspace, dir.path(), None, &registry, &absent).await
+        );
     }
 
     /// Invariant 6: what an extension puts in front of the model reaches the

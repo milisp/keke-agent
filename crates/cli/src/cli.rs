@@ -31,6 +31,17 @@ pub(crate) struct Cli {
     #[arg(long, global = true, env = "KEKE_REASONING_EFFORT", value_parser = parse_effort)]
     pub reasoning_effort: Option<keke_config_types::ReasoningEffort>,
 
+    /// A persona for this run: who the agent is and how it should behave. It
+    /// leads the system prompt, ahead of the project's own `AGENTS.md`, so a
+    /// repository still has the last word on how it wants to be worked on.
+    ///
+    /// A flag rather than only a configuration field because one installation
+    /// may drive several named agents at once, each with its own character —
+    /// that is a property of the run, not of the machine. Long text is easier
+    /// to pass as `KEKE_INSTRUCTIONS`.
+    #[arg(long, global = true, env = "KEKE_INSTRUCTIONS")]
+    pub instructions: Option<String>,
+
     /// Start in plan mode: research and propose, editing nothing but the plan
     /// file, until the plan is approved. A startup flag rather than a
     /// configuration field because plan mode is about the task in front of you,

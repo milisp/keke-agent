@@ -202,6 +202,7 @@ async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Start
             service_tier: None,
             compaction: CompactionConfig::default(),
             checkpoints: keke_config_types::CheckpointConfig::default(),
+            instructions: None,
             approval,
         })
         .provider(Arc::new(Scripted::new(script)))

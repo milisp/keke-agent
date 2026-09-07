@@ -42,6 +42,7 @@ pub use mode::SessionModeSwitch;
 pub use model::ModelSwitch;
 pub use prompt::ORDER_ENVIRONMENT;
 pub use prompt::ORDER_IDENTITY;
+pub use prompt::ORDER_PERSONA;
 pub use prompt::ORDER_PROJECT;
 pub use prompt::assemble_system_prompt;
 pub use prompt_history::PromptHistory;

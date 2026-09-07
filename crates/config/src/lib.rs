@@ -75,6 +75,12 @@ pub struct Config {
     /// stops being a question.
     pub require_plan_approval: bool,
     pub sandbox_mode: SandboxMode,
+    /// A persona for the agent: who it is and how it should behave, joined
+    /// into the system prompt ahead of the project's own `AGENTS.md`. Absent
+    /// leaves keke's plain identity in place. A caller running several named
+    /// agents from one installation gives each its own through
+    /// `KEKE_INSTRUCTIONS` rather than through this file.
+    pub instructions: Option<String>,
     pub max_output_tokens: MaxOutputTokens,
     /// How hard the model is asked to think. `None` leaves each vendor's own
     /// default in place, which is not the same as asking for the least
@@ -116,6 +122,7 @@ pub struct ConfigFile {
     pub approval_policy: Option<ApprovalPolicy>,
     pub require_plan_approval: Option<bool>,
     pub sandbox_mode: Option<SandboxMode>,
+    pub instructions: Option<String>,
     pub max_output_tokens: Option<u32>,
     /// Read as a string rather than as the enum so a misspelled level names
     /// itself in the error, instead of arriving as serde's list of variants
@@ -245,6 +252,7 @@ impl Config {
                 .require_plan_approval
                 .or(merged.require_plan_approval);
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
+            merged.instructions = layer.file.instructions.clone().or(merged.instructions);
             merged.max_output_tokens = layer.file.max_output_tokens.or(merged.max_output_tokens);
             merged.reasoning_effort = layer
                 .file
@@ -522,6 +530,7 @@ impl Config {
             approval_policy: merged.approval_policy.unwrap_or_default(),
             require_plan_approval: merged.require_plan_approval.unwrap_or(false),
             sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
+            instructions: merged.instructions,
             max_output_tokens,
             reasoning_effort,
             compaction,

@@ -135,6 +135,7 @@ impl Session {
         let system = crate::prompt::assemble_system_prompt(
             &self.workspace,
             &self.cwd,
+            self.config.instructions.as_deref(),
             &self.registry,
             ext_ctx,
         )
