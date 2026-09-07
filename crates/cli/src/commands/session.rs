@@ -208,13 +208,28 @@ pub(super) async fn tui(
         .map(keke_protocol::SessionId::from)
         .ok();
     let prompts = prompt_history(&config.home.home, &history_cwd, session_id);
+    // A throwaway context: this is for naming what is available at the top of
+    // the transcript, not for a real turn, so it needs no real session or
+    // thread id behind it.
+    let ext_ctx = keke_plugin_api::ExtensionContext::new(
+        keke_protocol::SessionId::new(),
+        keke_protocol::ThreadId::new(),
+    );
+    let tool_names: Vec<String> = keke_core::ToolSet::from_registry(&composed.extensions, &ext_ctx)
+        .iter()
+        .map(|tool| tool.id().as_str().to_string())
+        .collect();
+    let skill_names: Vec<String> = composed
+        .skills
+        .iter()
+        .map(|skill| skill.name.clone())
+        .collect();
     let (conversation, updates) = (opened.conversation, opened.updates);
     let result = keke_tui::run(
         keke_tui::Attached {
             conversation,
             updates,
         },
-        commands,
         keke_tui::SessionDefaults {
             approval: config.approval_policy,
             // What the session is actually in, not what the config said: a
@@ -236,7 +251,6 @@ pub(super) async fn tui(
             routes: provider_choices(&composed),
         },
         seed,
-        prompts,
         keke_tui::Mcp {
             // A row that cannot be built is no reason to refuse a session:
             // `/mcp` then reports nothing, which is what a person with no
@@ -249,7 +263,16 @@ pub(super) async fn tui(
                 home: config.home.clone(),
             })),
         },
-        composed.schedules.clone(),
+        keke_tui::Session {
+            commands,
+            history: prompts,
+            schedules: composed.schedules.clone(),
+            banner: keke_tui::Banner {
+                startup: crate::startup_trace::elapsed(),
+                tools: tool_names,
+                skills: skill_names,
+            },
+        },
     )
     .await;
     // A session that never held a turn is a log opening the interface wrote

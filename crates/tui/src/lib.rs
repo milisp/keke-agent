@@ -150,6 +150,28 @@ pub struct Attached {
     pub updates: UnboundedReceiver<Update>,
 }
 
+/// What the startup banner shows beyond the fixed icon art: how long launch
+/// took, and how many tools and skills this session has, when the caller
+/// measured or collected them.
+#[derive(Default)]
+pub struct Banner {
+    pub startup: Option<std::time::Duration>,
+    pub tools: Vec<String>,
+    pub skills: Vec<String>,
+}
+
+/// The surface-level handles [`run`] needs beyond the conversation, its
+/// configured defaults, its models, its MCP servers, and its resume state —
+/// grouped because each is a value from the composition root the surface
+/// merely holds and does not interpret, and `run` was at the argument-count
+/// lint's limit without them bundled.
+pub struct Session {
+    pub commands: SlashCommands,
+    pub history: PromptHistory,
+    pub schedules: Schedules,
+    pub banner: Banner,
+}
+
 /// Run the interface until the person quits.
 ///
 /// The agent's stream is drained here alongside the app's own, rather than
@@ -158,22 +180,28 @@ pub struct Attached {
 /// is, what the configured policy or effort level was, or how to ask a provider
 /// what it serves. `history` is what was typed in this project before, which
 /// the host reads and writes because only it knows where that lives.
-/// `schedules` is shared with `schedule_prompt`, so a loop the model started
-/// and a loop a person typed are one list and fire from this one clock.
+/// `session.schedules` is shared with `schedule_prompt`, so a loop the model
+/// started and a loop a person typed are one list and fire from this one
+/// clock. `session.banner` carries what the startup banner adds beyond the
+/// fixed icon art.
 pub async fn run(
     attached: Attached,
-    commands: SlashCommands,
     defaults: SessionDefaults,
     models: Models,
     resumed: Resumed,
-    history: PromptHistory,
     mcp: Mcp,
-    schedules: Schedules,
+    session: Session,
 ) -> anyhow::Result<()> {
     let Attached {
         conversation,
         updates,
     } = attached;
+    let Session {
+        commands,
+        history,
+        schedules,
+        banner,
+    } = session;
     let (app, local) = App::new(conversation);
     // The login stream is created here rather than by whoever starts a flow,
     // because the event loop is what drains it — a sender handed out without a
@@ -196,7 +224,7 @@ pub async fn run(
     if is_resumed {
         app = app.with_history(&resumed.history, resumed.usage, resumed.context_input);
     } else {
-        app = app.with_banner();
+        app = app.with_banner(banner.startup, banner.tools, banner.skills);
     }
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no

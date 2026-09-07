@@ -3,6 +3,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 /// Three rows, all the same width, so the text column beside it stays
 /// aligned regardless of which row it is next to.
@@ -11,17 +12,58 @@ const ICON: [&str; 3] = [" ▗▄▄▖  ", "▐▘◕‿◕▘ ", "▝▀▀▀
 /// Built once, at session start, from `cwd`. Not refreshed: it answers "what
 /// does this workspace look like right now", and once a prompt is sent that
 /// answer is stale, so nothing here is worth recomputing.
-pub(crate) fn startup(cwd: &Path) -> Vec<String> {
+///
+/// `startup` is the elapsed time from process start to this banner being
+/// built, when the caller measured one — shown next to the version so a
+/// person can see how long the launch took without setting
+/// `KEKE_STARTUP_TRACE`.
+///
+/// `tools` and `skills`, when either is non-empty, sit as counts right after
+/// the workspace line — `<cwd>  Tools (15)  Skills (71)` — rather than the
+/// names themselves. What is available to a session is worth a glance at
+/// launch; what each one does is what `/tools` and `/skills` are for, so the
+/// banner only says how many.
+pub(crate) fn startup(
+    cwd: &Path,
+    startup: Option<Duration>,
+    tools: &[String],
+    skills: &[String],
+) -> Vec<String> {
     let mut display = crate::draw::header::tilde(cwd);
     if let Some((added, removed)) = diff_stat(cwd) {
         display = format!("{display}  +{added} -{removed}");
     }
 
-    vec![
-        format!("{}keke v{}", ICON[0], env!("CARGO_PKG_VERSION")),
+    let version_line = match startup {
+        Some(elapsed) => format!(
+            "{}keke v{} {:.0?}",
+            ICON[0],
+            env!("CARGO_PKG_VERSION"),
+            elapsed
+        ),
+        None => format!("{}keke v{}", ICON[0], env!("CARGO_PKG_VERSION")),
+    };
+
+    let mut lines = vec![
+        version_line,
         format!("{}any model, one workflow", ICON[1]),
         format!("{}{}", ICON[2], display),
+    ];
+
+    let counts: Vec<String> = [
+        (!tools.is_empty()).then(|| format!("Tools ({})", tools.len())),
+        (!skills.is_empty()).then(|| format!("Skills ({})", skills.len())),
     ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if !counts.is_empty() {
+        lines[2].push_str("  ");
+        lines[2].push_str(&counts.join("  "));
+    }
+
+    lines
 }
 
 /// `git diff --shortstat`, parsed into `(insertions, deletions)`. `None` when
@@ -89,10 +131,24 @@ mod tests {
 
     #[test]
     fn all_three_lines_share_the_icon_width() {
-        let lines = startup(Path::new("/tmp"));
+        let lines = startup(Path::new("/tmp"), None, &[], &[]);
         assert_eq!(lines.len(), 3);
         for line in &lines {
             assert!(line.starts_with(' ') || line.starts_with('▐') || line.starts_with('▝'));
         }
+    }
+
+    #[test]
+    fn tools_and_skills_show_as_counts_after_the_workspace_line() {
+        let tools: Vec<String> = (0..15).map(|n| format!("tool-{n}")).collect();
+        let skills: Vec<String> = (0..71).map(|n| format!("skill-{n}")).collect();
+        let lines = startup(Path::new("/tmp"), None, &tools, &skills);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[2].contains("Tools (15)"));
+        assert!(lines[2].contains("Skills (71)"));
+        assert!(!lines[0].contains("Tools") && !lines[0].contains("Skills"));
+        assert!(!lines[1].contains("Tools") && !lines[1].contains("Skills"));
+        assert!(!lines[2].contains("tool-0"));
+        assert!(!lines[2].contains("skill-0"));
     }
 }

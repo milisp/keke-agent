@@ -14,6 +14,13 @@ pub(crate) fn record_start() {
     let _ = START.set(Instant::now());
 }
 
+/// Time since [`record_start`], for callers that display it (the TUI's
+/// startup banner) rather than merely tracing it. `None` before
+/// `record_start` has run.
+pub(crate) fn elapsed() -> Option<std::time::Duration> {
+    START.get().map(Instant::elapsed)
+}
+
 /// Print `label` and the elapsed time since [`record_start`] to stderr, if
 /// `KEKE_STARTUP_TRACE` is set. A no-op otherwise, so it costs nothing in a
 /// normal run beyond one env lookup.

@@ -344,9 +344,17 @@ impl App {
     /// A surface call, not part of `new`: state tests build an `App` and
     /// expect an empty transcript to assert against, and a banner naming a
     /// real version and shelling out to `git` has nothing to do with that.
+    /// `startup` is the elapsed time since process start, when the caller
+    /// measured one. `tools` and `skills` are the names available this
+    /// session, listed as two more banner sections.
     #[must_use]
-    pub fn with_banner(mut self) -> Self {
-        let lines = crate::banner::startup(self.cwd());
+    pub fn with_banner(
+        mut self,
+        startup: Option<std::time::Duration>,
+        tools: Vec<String>,
+        skills: Vec<String>,
+    ) -> Self {
+        let lines = crate::banner::startup(self.cwd(), startup, &tools, &skills);
         self.transcript.push(Cell::Banner(lines));
         self
     }
