@@ -188,8 +188,8 @@ async fn an_editor_prompts_keke_and_answers_its_permission_request() {
     );
     assert_eq!(
         seen.tool_calls,
-        vec!["bash".to_string()],
-        "the editor must be told which tool ran"
+        vec!["bash: echo hello".to_string()],
+        "the editor must be told which tool ran, and with what"
     );
     assert_eq!(
         seen.tool_statuses,
