@@ -5,9 +5,15 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-/// Three rows, all the same width, so the text column beside it stays
-/// aligned regardless of which row it is next to.
 const ICON: [&str; 3] = [" ▗▄▄▖  ", "▐▘◕‿◕▘ ", "▝▀▀▀▘  "];
+const BRIGHT_GREEN: &str = "\u{1b}[92m";
+const CYAN: &str = "\u{1b}[96m";
+const MAGENTA: &str = "\u{1b}[95m";
+const RESET: &str = "\u{1b}[0m";
+
+fn colored_face() -> String {
+    format!("{CYAN}▐▘{MAGENTA}◕‿◕{CYAN}▘{RESET} ")
+}
 
 /// Built once, at session start, from `cwd`. Not refreshed: it answers "what
 /// does this workspace look like right now", and once a prompt is sent that
@@ -36,7 +42,7 @@ pub(crate) fn startup(
 
     let version_line = match startup {
         Some(elapsed) => format!(
-            "{}keke v{} {:.0?}",
+            "{}keke v{} {BRIGHT_GREEN}{:.0?}{RESET}",
             ICON[0],
             env!("CARGO_PKG_VERSION"),
             elapsed
@@ -46,7 +52,7 @@ pub(crate) fn startup(
 
     let mut lines = vec![
         version_line,
-        format!("{}any model, one workflow", ICON[1]),
+        format!("{}{}", colored_face(), "any model, one workflow"),
         format!("{}{}", ICON[2], display),
     ];
 
@@ -134,7 +140,12 @@ mod tests {
         let lines = startup(Path::new("/tmp"), None, &[], &[]);
         assert_eq!(lines.len(), 3);
         for line in &lines {
-            assert!(line.starts_with(' ') || line.starts_with('▐') || line.starts_with('▝'));
+            assert!(
+                line.starts_with('\x1b')
+                    || line.starts_with(' ')
+                    || line.starts_with('▐')
+                    || line.starts_with('▝')
+            );
         }
     }
 
