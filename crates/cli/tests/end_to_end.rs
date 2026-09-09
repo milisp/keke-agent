@@ -139,8 +139,10 @@ async fn exec_runs_a_tool_and_records_a_replayable_session() {
             "turn_start",
             // The system prompt reaches the model but is not part of
             // `model_request`, so each fragment of it is logged separately —
-            // identity and environment here (this fixture has no project
-            // instructions file and no plugins installed).
+            // identity, environment, and the built-in tool pack's patch-format
+            // guidance here (this fixture has no project instructions file and
+            // no plugins installed).
+            "context_fragment",
             "context_fragment",
             "context_fragment",
             "model_request",

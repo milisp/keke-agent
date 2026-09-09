@@ -4,14 +4,22 @@
 //! Containment is enforced per call rather than at registration because the
 //! root is a property of the session, not of the tool.
 
+mod apply_patch;
 mod bash;
 mod edit;
 mod grep;
 mod list_dir;
+mod prompt;
 mod read_file;
 mod support;
 mod web_search;
 mod write_file;
+
+pub use apply_patch::ApplyPatch;
+pub use apply_patch::ApplyPatchArgs;
+pub use apply_patch::ApplyPatchOutput;
+pub use apply_patch::ChangeKind;
+pub use apply_patch::FileChange;
 
 pub use bash::Bash;
 pub use bash::BashArgs;
@@ -56,6 +64,7 @@ pub fn builtin_tools(background: Option<Arc<keke_tasks::BackgroundTasks>>) -> Ve
         Arc::new(Bash { background }),
         Arc::new(WriteFile),
         Arc::new(Edit),
+        Arc::new(ApplyPatch),
     ]
 }
 
@@ -69,7 +78,7 @@ impl ToolContributor for BuiltinTools {
     }
 }
 
-/// Register the built-in tool pack.
+/// Register the built-in tool pack, and the turn context it needs.
 ///
 /// Pass the background registry to let `bash` start commands that outlive the
 /// turn; pass `None` for a composition that has none.
@@ -78,6 +87,7 @@ pub fn install(
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) {
     registry.tool_contributor(Arc::new(BuiltinTools { background }));
+    registry.context_contributor(Arc::new(prompt::BuiltinToolGuidance));
 }
 
 #[cfg(test)]
@@ -410,6 +420,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_patch_lands_every_section_of_one_patch() {
+        let (_dir, ctx) = workspace();
+        write(&ctx, "keep.txt", "one\ntwo\n");
+        write(&ctx, "old.txt", "gone\n");
+
+        let out = ApplyPatch
+            .run(
+                ctx.clone(),
+                ApplyPatchArgs {
+                    patch: concat!(
+                        "*** Begin Patch\n",
+                        "*** Add File: new.txt\n",
+                        "+fresh\n",
+                        "*** Update File: keep.txt\n",
+                        "*** Move to: moved.txt\n",
+                        "@@\n",
+                        " one\n",
+                        "-two\n",
+                        "+three\n",
+                        "*** Delete File: old.txt\n",
+                        "*** End Patch\n",
+                    )
+                    .into(),
+                },
+            )
+            .await
+            .expect("patch applies");
+
+        let root = ctx.workspace_root.as_path();
+        assert_eq!(
+            std::fs::read_to_string(root.join("new.txt")).expect("added"),
+            "fresh\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("moved.txt")).expect("moved"),
+            "one\nthree\n"
+        );
+        assert!(!root.join("keep.txt").exists());
+        assert!(!root.join("old.txt").exists());
+        assert_eq!(out.changes.len(), 3);
+        assert!(rendered(&out).contains("keep.txt -> moved.txt"));
+    }
+
+    #[tokio::test]
+    async fn a_patch_that_cannot_apply_leaves_nothing_behind() {
+        let (_dir, ctx) = workspace();
+        write(&ctx, "a.txt", "unrelated\n");
+
+        let error = ApplyPatch
+            .run(
+                ctx.clone(),
+                ApplyPatchArgs {
+                    patch: concat!(
+                        "*** Begin Patch\n",
+                        "*** Add File: new.txt\n",
+                        "+fresh\n",
+                        "*** Update File: a.txt\n",
+                        "@@\n",
+                        "-missing\n",
+                        "+replaced\n",
+                        "*** End Patch\n",
+                    )
+                    .into(),
+                },
+            )
+            .await
+            .expect_err("second section cannot apply");
+
+        assert!(
+            matches!(error, ToolError::Execution { .. }),
+            "got {error:?}"
+        );
+        // The add section came first, so a non-atomic implementation would
+        // have written it before reaching the failure.
+        assert!(!ctx.workspace_root.as_path().join("new.txt").exists());
+    }
+
+    #[tokio::test]
     async fn write_file_creates_parents_and_reads_back() {
         let (_dir, ctx) = workspace();
 
@@ -552,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pack_installs_all_six_tools() {
+    fn the_pack_installs_every_builtin_tool() {
         let mut builder = ExtensionRegistryBuilder::new();
         install(&mut builder, None);
         let registry = builder.build();
@@ -575,7 +663,8 @@ mod tests {
                 "grep",
                 "bash",
                 "write_file",
-                "edit"
+                "edit",
+                "apply_patch"
             ]
         );
     }
