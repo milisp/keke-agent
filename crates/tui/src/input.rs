@@ -194,7 +194,8 @@ impl InputBox {
         while self.column < line_len && self.char_at_cursor().is_some_and(char::is_whitespace) {
             self.column += 1;
         }
-        while self.column < line_len && self.char_at_cursor().is_some_and(|ch| !ch.is_whitespace()) {
+        while self.column < line_len && self.char_at_cursor().is_some_and(|ch| !ch.is_whitespace())
+        {
             self.column += 1;
         }
     }
