@@ -164,6 +164,41 @@ impl InputBox {
         }
     }
 
+    /// Move the cursor left by one word.
+    ///
+    /// Skips whitespace backwards, then skips the preceding non-whitespace word.
+    /// If at the beginning of a line, wraps to the previous line.
+    pub fn move_word_left(&mut self) {
+        if self.column == 0 && self.row > 0 {
+            self.row -= 1;
+            self.column = self.line().chars().count();
+        }
+        while self.column > 0 && self.char_before().is_some_and(char::is_whitespace) {
+            self.column -= 1;
+        }
+        while self.column > 0 && self.char_before().is_some_and(|ch| !ch.is_whitespace()) {
+            self.column -= 1;
+        }
+    }
+
+    /// Move the cursor right by one word.
+    ///
+    /// Skips whitespace forwards, then skips the non-whitespace word.
+    /// If at the end of a line, wraps to the next line.
+    pub fn move_word_right(&mut self) {
+        if self.column >= self.line().chars().count() && self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.column = 0;
+        }
+        let line_len = self.line().chars().count();
+        while self.column < line_len && self.char_at_cursor().is_some_and(char::is_whitespace) {
+            self.column += 1;
+        }
+        while self.column < line_len && self.char_at_cursor().is_some_and(|ch| !ch.is_whitespace()) {
+            self.column += 1;
+        }
+    }
+
     pub fn move_up(&mut self) {
         if self.row > 0 {
             self.row -= 1;
@@ -218,6 +253,10 @@ impl InputBox {
 
     fn char_before(&self) -> Option<char> {
         self.line().chars().nth(self.column.checked_sub(1)?)
+    }
+
+    fn char_at_cursor(&self) -> Option<char> {
+        self.line().chars().nth(self.column)
     }
 
     /// Take the text and reset, so a submitted prompt cannot be sent twice.

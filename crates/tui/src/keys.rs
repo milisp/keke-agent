@@ -98,6 +98,8 @@ impl App {
             // prompt. Ctrl-A/E/B/F move, Ctrl-U/K/W delete.
             KeyCode::Char('a') if control => self.input.move_home(),
             KeyCode::Char('e') if control => self.input.move_end(),
+            KeyCode::Char('b') if alt => self.input.move_word_left(),
+            KeyCode::Char('f') if alt => self.input.move_word_right(),
             KeyCode::Char('b') if control => self.input.move_left(),
             KeyCode::Char('f') if control => self.input.move_right(),
             KeyCode::Char('u') if control => self.input.kill_to_start(),
@@ -135,7 +137,9 @@ impl App {
             KeyCode::Char(ch) if !control => self.input.insert_char(ch),
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
+            KeyCode::Left if control || alt => self.input.move_word_left(),
             KeyCode::Left => self.input.move_left(),
+            KeyCode::Right if control || alt => self.input.move_word_right(),
             KeyCode::Right => self.input.move_right(),
             KeyCode::Up => self.move_up(),
             KeyCode::Down => self.move_down(),

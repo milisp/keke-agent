@@ -885,3 +885,35 @@ fn a_paste_lands_where_the_cursor_is() {
     assert_eq!(app.input.text(), "a中b");
     assert_eq!(app.input.cursor_display().1, 3);
 }
+
+#[test]
+fn ctrl_left_and_right_jump_words_in_input_box() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+
+    type_text(&mut app, "hello world again");
+    assert_eq!(app.input.cursor(), (0, 17));
+
+    // Jump left one word -> before "again"
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), (0, 12));
+
+    // Jump left again -> before "world"
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), (0, 6));
+
+    // Jump left again -> before "hello" (start of buffer)
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), (0, 0));
+
+    // Jump right one word -> past "hello"
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), (0, 5));
+
+    // Jump right again -> past "world"
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), (0, 11));
+
+    // Jump right again -> past "again"
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), (0, 17));
+}
