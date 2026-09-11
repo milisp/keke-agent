@@ -62,8 +62,8 @@ pub struct SpawnAgentArgs {
     /// The complete instruction for the subagent. It shares no history with
     /// this conversation, so everything it needs must be stated here.
     pub task: String,
-    /// Wait for the result instead of returning a handle. Leave this off when
-    /// starting several subagents that should run at the same time.
+    /// Wait for the result instead of returning a handle. Leave this off only
+    /// when several genuinely independent tasks benefit from parallelism.
     #[serde(default)]
     pub wait: bool,
 }
@@ -132,14 +132,16 @@ impl Tool for SpawnAgent {
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
         ToolDescription::new(format!(
-            "Start a subagent: a fresh session with the same tools and workspace that works on \
-             one task and reports back a summary. Use it for work whose intermediate output you \
-             do not need to read — searching a large codebase, trying an approach that may not \
-             pan out — so its context stays out of yours.\n\nThe subagent shares none of this \
-             conversation: state the task completely. It cannot start subagents of its own. Up \
-             to {} run at once; further ones wait their turn. Set `wait` to block for the \
-             result, or leave it off and call `collect_agent` later — starting several without \
-             waiting is how you get them running in parallel.",
+            "Start a subagent for substantial, independent work whose intermediate output you do \
+             not need in this conversation. Use the direct tools yourself for routine reading, \
+             searching, editing, or small fixes; delegation adds another model call and is not \
+             a default. A subagent is useful for an isolated large investigation or an approach \
+             that may be discarded.\n\nThe subagent is a fresh session with the same \
+             tools and workspace, shares none of this conversation, and cannot start subagents \
+             of its own, so state the task completely. Up to {} run at once; further ones wait \
+             their turn. Set `wait` to block for the result, or leave it off only when starting \
+             several genuinely independent tasks that benefit from parallelism; otherwise wait \
+             for the result.",
             self.host.limits().max_concurrent
         ))
     }
