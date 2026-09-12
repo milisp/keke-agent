@@ -328,7 +328,7 @@ fn group_lines(
         // the whole run — so a run of several commands never leaves a reader
         // matching stdout back up to the command it came from.
         for (index, tool) in tools.iter().enumerate() {
-            if full_transcript && index > 0 {
+            if index > 0 {
                 lines.push(Line::default());
             }
             let (glyph, style) = self::marker(tool.state);
@@ -703,26 +703,28 @@ mod grouping_tests {
     }
 
     #[test]
-    fn full_transcript_separates_commands_with_a_blank_line() {
+    fn command_outputs_are_separated_with_a_blank_line_in_both_views() {
         let cells = vec![
             tool("c1", "bash", "echo one"),
             tool("c2", "bash", "echo two"),
         ];
-        let rendered = render(&cells, 80, &HashSet::new(), true);
-        let lines: Vec<String> = rendered
-            .lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect();
-        let second = lines.iter().position(|line| line.contains("echo two"));
-        let Some(second) = second else {
-            panic!("got {lines:?}");
-        };
-        assert!(second > 0 && lines[second - 1].is_empty(), "got {lines:?}");
+        for (expanded, full_transcript) in [(HashSet::from([0]), false), (HashSet::new(), true)] {
+            let rendered = render(&cells, 80, &expanded, full_transcript);
+            let lines: Vec<String> = rendered
+                .lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect()
+                })
+                .collect();
+            let second = lines.iter().position(|line| line.contains("echo two"));
+            let Some(second) = second else {
+                panic!("got {lines:?}");
+            };
+            assert!(second > 0 && lines[second - 1].is_empty(), "got {lines:?}");
+        }
     }
 }
