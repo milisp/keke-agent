@@ -10,7 +10,6 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use crate::app::App;
-use crate::app::Turn;
 
 /// `842`, `12.3k`, `1.2M`. Thousands once past four digits, so the number keeps
 /// a stable width while a turn runs and does not jitter the bar around it.
@@ -29,16 +28,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 /// The bar's spans, built apart from the frame so what a person reads there can
 /// be asserted on without a terminal.
 pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
-    let (state, style) = match app.turn() {
-        Turn::Idle => ("ready", Style::new().fg(Color::Green)),
-        Turn::Running => ("working", Style::new().fg(Color::Magenta)),
-        // The approval panel owns the bottom of the screen while a call is
-        // blocked, and says everything this bar would — the status draw is
-        // skipped entirely then (see draw/mod.rs), so this arm never runs.
-        Turn::AwaitingPermission => ("blocked", Style::new().fg(Color::Yellow)),
-    };
-
-    let mut spans = vec![Span::styled(format!(" {state} "), style)];
+    let mut spans = Vec::new();
     // Plan mode reads from the seam, never from the fact that this surface
     // asked for it: the agent enters and leaves plan mode on its own, and a
     // flag drawn from a local toggle would keep saying `plan` after it left.
@@ -52,11 +42,8 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     let in_plan = app.session_mode().is_plan();
     if in_plan {
         spans.push(Span::styled(
-            "· plan ",
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            " plan ",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ));
     }
     // Shown outside plan mode, and never only after a change: a person who
@@ -68,7 +55,7 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     if !in_plan {
         let policy = app.approval_policy();
         spans.push(Span::styled(
-            format!("· {} ", crate::slash::policy_name(policy)),
+            format!(" {} ", crate::slash::policy_name(policy)),
             if policy == keke_config_types::ApprovalPolicy::Never {
                 Style::new().fg(Color::Red)
             } else {
