@@ -278,15 +278,20 @@ fn enter() -> anyhow::Result<Tui> {
 
 fn leave(terminal: &mut Tui) -> anyhow::Result<()> {
     disable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.write_all(ALTERNATE_SCROLL_OFF.as_bytes())?;
-    set_mouse_capture(&mut stdout, false)?;
+    // Keep teardown on the backend that drew the screen. Mixing a fresh
+    // stdout handle with the backend can reorder escape sequences when Ctrl-C
+    // ends the loop, leaving the shell to display terminal-control garbage.
+    let backend = terminal.backend_mut();
+    backend.write_all(ALTERNATE_SCROLL_OFF.as_bytes())?;
+    backend.write_all(MOUSE_TRACKING_OFF.as_bytes())?;
     execute!(
-        terminal.backend_mut(),
+        backend,
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
+    terminal.backend_mut().flush()?;
     Ok(())
 }
 

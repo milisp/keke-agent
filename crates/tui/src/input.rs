@@ -65,6 +65,23 @@ impl InputBox {
         if text.is_empty() {
             return;
         }
+        // A terminal escape sequence must never become prompt text. In raw
+        // mode some terminals can surface an unsupported control byte as a
+        // character event, and ratatui would otherwise draw that byte as
+        // visible garbage on the next frame.
+        let filtered;
+        let text = if text.chars().any(char::is_control) {
+            filtered = text
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .collect::<String>();
+            filtered.as_str()
+        } else {
+            text
+        };
+        if text.is_empty() {
+            return;
+        }
         let column = self.column;
         let line = self.line_mut();
         let at = byte_index(line, column);
@@ -101,6 +118,9 @@ impl InputBox {
     }
 
     pub fn insert_char(&mut self, ch: char) {
+        if ch.is_control() {
+            return;
+        }
         let column = self.column;
         let line = self.line_mut();
         let at = byte_index(line, column);

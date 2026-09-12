@@ -918,6 +918,16 @@ fn a_pasted_block_keeps_its_line_breaks_instead_of_submitting() {
     assert_eq!(app.input.cursor(), (2, 5));
 }
 
+#[test]
+fn control_characters_never_become_prompt_text() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+
+    app.handle_paste("before\u{1b}[200~after\u{7f}");
+    app.handle_key(key(KeyCode::Char('\u{1b}')));
+
+    assert_eq!(app.input.text(), "before[200~after");
+}
+
 /// A paste lands at the cursor, not at the end of the buffer.
 #[test]
 fn a_paste_lands_where_the_cursor_is() {
