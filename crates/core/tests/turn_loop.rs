@@ -62,6 +62,7 @@ struct ScriptedProvider {
     info: ProviderInfo,
     script: Mutex<Vec<Vec<StreamChunk>>>,
     initial_errors: Mutex<Vec<ProviderError>>,
+    stream_errors: Mutex<Vec<ProviderError>>,
     /// Every request the engine made, so a test can assert what the model saw.
     seen: Arc<Mutex<Vec<ModelRequest>>>,
 }
@@ -80,6 +81,7 @@ impl ScriptedProvider {
             },
             script: Mutex::new(script),
             initial_errors: Mutex::new(Vec::new()),
+            stream_errors: Mutex::new(Vec::new()),
             seen: Arc::clone(&seen),
         });
         (provider, seen)
@@ -87,6 +89,10 @@ impl ScriptedProvider {
 
     fn fail_next(&self, error: ProviderError) {
         self.initial_errors.lock().expect("lock").push(error);
+    }
+
+    fn fail_next_stream(&self, error: ProviderError) {
+        self.stream_errors.lock().expect("lock").push(error);
     }
 }
 
@@ -103,6 +109,9 @@ impl ModelProvider for ScriptedProvider {
             self.seen.lock().expect("lock").push(request);
             if let Some(error) = self.initial_errors.lock().expect("lock").pop() {
                 return Err(error);
+            }
+            if let Some(error) = self.stream_errors.lock().expect("lock").pop() {
+                return Ok(futures::stream::once(async move { Err(error) }).boxed());
             }
             let mut script = self.script.lock().expect("lock");
             if script.is_empty() {
@@ -623,6 +632,33 @@ async fn an_initial_rate_limit_is_retried_before_the_turn_fails() {
     assert_eq!(
         outcome.message.as_ref().map(Message::text).as_deref(),
         Some("after retry")
+    );
+    assert_eq!(seen.lock().expect("lock").len(), 2);
+}
+
+#[tokio::test]
+async fn a_rate_limit_while_reading_before_output_is_retried() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![text_reply("after stream retry")]);
+    provider.fail_next_stream(ProviderError::RateLimited {
+        retry_after_millis: Some(0),
+    });
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+
+    let outcome = session
+        .run_turn(Message::user("try the stream"))
+        .await
+        .expect("the stream retry succeeds");
+
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("after stream retry")
     );
     assert_eq!(seen.lock().expect("lock").len(), 2);
 }

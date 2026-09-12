@@ -413,72 +413,108 @@ impl Session {
         turn: TurnId,
         request: ModelRequest,
     ) -> Result<(Message, StopReason, Usage), CoreError> {
-        let mut stream = self.stream_with_reauth(request).await?;
-        let mut assembler = MessageAssembler::default();
+        let mut retries = 0;
+        let mut retry_delay = INITIAL_STREAM_RETRY_DELAY;
+        'request: loop {
+            let mut stream = self.stream_with_reauth(request.clone()).await?;
+            let mut assembler = MessageAssembler::default();
+            let mut emitted = false;
 
-        while let Some(chunk) = stream.next().await {
-            // Checked per chunk, not just between steps: a cancel raised while
-            // the model is still streaming text has no tool dispatch to catch
-            // it at, and would otherwise run the stream to completion in the
-            // background while the UI already reads as idle.
-            if self.is_cancelled() {
-                return Ok((assembler.finish(), StopReason::Cancelled, assembler.usage));
-            }
-            match chunk? {
-                StreamChunk::TextDelta(delta) => {
-                    self.emit(TurnUpdate::TextDelta {
-                        turn,
-                        delta: delta.clone(),
-                    });
-                    assembler.text.push_str(&delta);
+            while let Some(chunk) = stream.next().await {
+                // Checked per chunk, not just between steps: a cancel raised while
+                // the model is still streaming text has no tool dispatch to catch
+                // it at, and would otherwise run the stream to completion in the
+                // background while the UI already reads as idle.
+                if self.is_cancelled() {
+                    return Ok((assembler.finish(), StopReason::Cancelled, assembler.usage));
                 }
-                StreamChunk::ThinkingDelta(delta) => {
-                    self.emit(TurnUpdate::ThinkingDelta {
-                        turn,
-                        delta: delta.clone(),
-                    });
-                    assembler.thinking.push_str(&delta);
-                }
-                StreamChunk::ThinkingSignature(signature) => {
-                    assembler.thinking_signature = Some(signature);
-                }
-                StreamChunk::ToolCallStart { id, name } => {
-                    assembler.calls.push((id, name, String::new()));
-                }
-                StreamChunk::ToolCallArgsDelta { id, delta } => {
-                    if let Some(entry) = assembler.calls.iter_mut().find(|(call, _, _)| call == &id)
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error)
+                        if !emitted
+                            && error.is_retryable()
+                            && retries < MAX_INITIAL_STREAM_RETRIES =>
                     {
-                        entry.2.push_str(&delta);
+                        retries += 1;
+                        let delay = match &error {
+                            ProviderError::RateLimited {
+                                retry_after_millis: Some(millis),
+                            } => Duration::from_millis(*millis),
+                            _ => retry_delay,
+                        };
+                        tracing::warn!(
+                            retry = retries,
+                            max_retries = MAX_INITIAL_STREAM_RETRIES,
+                            ?delay,
+                            error = %error,
+                            "retrying provider stream before response output"
+                        );
+                        tokio::time::sleep(delay).await;
+                        retry_delay = retry_delay.saturating_mul(2).min(MAX_STREAM_RETRY_DELAY);
+                        continue 'request;
+                    }
+                    Err(error) => return Err(CoreError::Provider(error)),
+                };
+                match chunk {
+                    StreamChunk::TextDelta(delta) => {
+                        emitted |= !delta.is_empty();
+                        self.emit(TurnUpdate::TextDelta {
+                            turn,
+                            delta: delta.clone(),
+                        });
+                        assembler.text.push_str(&delta);
+                    }
+                    StreamChunk::ThinkingDelta(delta) => {
+                        emitted |= !delta.is_empty();
+                        self.emit(TurnUpdate::ThinkingDelta {
+                            turn,
+                            delta: delta.clone(),
+                        });
+                        assembler.thinking.push_str(&delta);
+                    }
+                    StreamChunk::ThinkingSignature(signature) => {
+                        assembler.thinking_signature = Some(signature);
+                    }
+                    StreamChunk::ToolCallStart { id, name } => {
+                        assembler.calls.push((id, name, String::new()));
+                    }
+                    StreamChunk::ToolCallArgsDelta { id, delta } => {
+                        if let Some(entry) =
+                            assembler.calls.iter_mut().find(|(call, _, _)| call == &id)
+                        {
+                            entry.2.push_str(&delta);
+                        }
+                    }
+                    StreamChunk::ToolCallEnd { .. } => {}
+                    StreamChunk::HostedToolCall { name, query } => {
+                        emitted = true;
+                        // Not fed into `assembler.calls`: that path assembles a
+                        // `ContentBlock::ToolCall` the turn loop later dispatches
+                        // against the local tool registry, and a hosted tool has
+                        // no entry there — dispatching it would report the
+                        // vendor's own search back to the model as an unknown
+                        // tool. Logged directly instead, so it is still on the
+                        // record (invariant 6) without going through dispatch.
+                        self.emit(TurnUpdate::HostedToolCall {
+                            turn,
+                            name: name.clone(),
+                            query: query.clone(),
+                        });
+                        self.log(SessionEvent::HostedToolCall { turn, name, query })
+                            .await?;
+                    }
+                    StreamChunk::Usage(usage) => assembler.usage = usage,
+                    StreamChunk::Done(reason) => {
+                        return Ok((assembler.finish(), reason, assembler.usage));
                     }
                 }
-                StreamChunk::ToolCallEnd { .. } => {}
-                StreamChunk::HostedToolCall { name, query } => {
-                    // Not fed into `assembler.calls`: that path assembles a
-                    // `ContentBlock::ToolCall` the turn loop later dispatches
-                    // against the local tool registry, and a hosted tool has
-                    // no entry there — dispatching it would report the
-                    // vendor's own search back to the model as an unknown
-                    // tool. Logged directly instead, so it is still on the
-                    // record (invariant 6) without going through dispatch.
-                    self.emit(TurnUpdate::HostedToolCall {
-                        turn,
-                        name: name.clone(),
-                        query: query.clone(),
-                    });
-                    self.log(SessionEvent::HostedToolCall { turn, name, query })
-                        .await?;
-                }
-                StreamChunk::Usage(usage) => assembler.usage = usage,
-                StreamChunk::Done(reason) => {
-                    return Ok((assembler.finish(), reason, assembler.usage));
-                }
             }
-        }
 
-        // The provider contract says a successful stream ends with `Done`.
-        Err(CoreError::Provider(ProviderError::Protocol(
-            "the provider stream ended without a terminal chunk".to_string(),
-        )))
+            // The provider contract says a successful stream ends with `Done`.
+            return Err(CoreError::Provider(ProviderError::Protocol(
+                "the provider stream ended without a terminal chunk".to_string(),
+            )));
+        }
     }
 
     /// Call the provider, refreshing credentials or retrying a transient
