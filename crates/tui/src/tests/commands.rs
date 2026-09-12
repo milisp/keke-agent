@@ -645,6 +645,11 @@ async fn new_reaches_the_agent_and_resets_usage_too() {
     );
     assert!(app.transcript.is_empty(), "{:?}", app.transcript.cells());
     assert_eq!(app.usage().total(), 0);
+    assert_eq!(
+        app.elapsed(),
+        None,
+        "a new session must not show the old turn"
+    );
 }
 
 /// A person watching a turn wants the clock and the cost, and wants the clock

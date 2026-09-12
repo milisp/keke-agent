@@ -714,6 +714,11 @@ impl App {
                 self.transcript.clear();
                 self.set_subagents(Vec::new());
                 self.scroll.follow();
+                self.turn = Turn::Idle;
+                self.started = None;
+                self.last_turn = None;
+                self.last_turn_finished_at = None;
+                self.thinking = false;
                 self.usage = Usage::default();
                 self.context_input = 0;
             }
