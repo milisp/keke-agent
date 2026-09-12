@@ -76,14 +76,15 @@ const BLOCKED_TOOLS: &[&str] = &["write_file"];
 
 /// Where a session's plan file lives.
 ///
-/// Resolved through the session directory rather than a path this crate makes
-/// up, so the plan sits beside the rollout log that records the turn that wrote
-/// it.
+/// Resolved from the harness home rather than the workspace, so plan-mode
+/// writes cannot accidentally become project files. The session id keeps
+/// concurrent sessions separate below that home directory.
 #[derive(Clone, Debug)]
 pub enum PlanLocation {
-    /// `<project-dir>/<session-id>/plan.md`. The project directory comes from
-    /// [`keke_core::project_dir`]; the session id is only known once a session
-    /// exists, so the full path resolves at the first turn.
+    /// `<home>/plans/<session-id>/plan.md`. The session id is only known once a
+    /// session exists, so the full path resolves at the first turn. Keeping
+    /// plans under the harness home prevents plan-mode writes from becoming
+    /// project files.
     SessionDir(PathBuf),
     /// An exact path. For a caller that already knows one — a test, or a
     /// deployment placing the plan somewhere of its own.
@@ -91,10 +92,19 @@ pub enum PlanLocation {
 }
 
 impl PlanLocation {
-    /// Plans live under `project`, one directory per session.
+    /// Plans live under the supplied root, one directory per session. The CLI
+    /// uses [`Self::under_home`] so the root is `$KEKE_HOME/plans`.
     #[must_use]
     pub fn under_project(project: impl Into<PathBuf>) -> Self {
         Self::SessionDir(project.into())
+    }
+
+    /// Plans live below the harness home, rather than in the project being
+    /// edited. A session-specific directory keeps concurrent sessions from
+    /// overwriting one another while preserving a single plans catalog.
+    #[must_use]
+    pub fn under_home(home: impl Into<PathBuf>) -> Self {
+        Self::SessionDir(home.into().join("plans"))
     }
 
     #[must_use]

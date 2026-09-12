@@ -392,17 +392,18 @@ pub(crate) struct PlanSetup {
 }
 
 impl PlanSetup {
-    /// Plan files live in the session's own directory, beside the rollout log
-    /// that records the turn that wrote them.
+    /// Plan files live in `$KEKE_HOME/plans`, never in the project being edited.
+    /// The session id is appended by `PlanLocation` so concurrent sessions do
+    /// not overwrite one another.
     pub(crate) fn for_session(
         home: &keke_paths::AbsPath,
-        cwd: &std::path::Path,
+        _cwd: &std::path::Path,
         mode: Arc<keke_core::SessionModeSwitch>,
         require_exit_approval: bool,
     ) -> Self {
         Self {
             mode,
-            location: keke_plan::PlanLocation::under_project(keke_core::project_dir(home, cwd)),
+            location: keke_plan::PlanLocation::under_home(home.as_path()),
             require_exit_approval,
         }
     }

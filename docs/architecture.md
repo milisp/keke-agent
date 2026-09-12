@@ -218,6 +218,10 @@ toggle and the extension's own transitions are one fact rather than two that can
 disagree. A deployment wanting a different planning discipline replaces the
 crate and changes no engine code.
 
+Plan files are kept under `$KEKE_HOME/plans`, not in the project being edited.
+Each session gets its own directory there, so plan-mode writes do not pollute the
+working tree and concurrent sessions cannot overwrite one another.
+
 Two consequences are deliberate. Plan mode blocks the *edit* tools and not
 `bash`, because a planning agent still has to run `cargo check` and `git log` to
 write a plan worth approving. And the guard passes a write to the plan file
