@@ -189,6 +189,14 @@ impl ModelProvider for GrokProvider {
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }
 
+    fn cached_models(&self) -> Vec<ModelInfo> {
+        self.cache
+            .as_ref()
+            .and_then(|cache| cache.load(self.info.route.as_str()))
+            .map(|cached| cached.models)
+            .unwrap_or_default()
+    }
+
     fn web_search(&self) -> Option<keke_provider_api::ArcWebSearch> {
         self.search
             .clone()

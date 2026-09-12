@@ -188,6 +188,14 @@ impl ModelProvider for CodexProvider {
         Box::pin(self.wire.stream(self.info.wire_api, request))
     }
 
+    fn cached_models(&self) -> Vec<ModelInfo> {
+        self.cache
+            .as_ref()
+            .and_then(|cache| cache.load(self.info.route.as_str()))
+            .map(|cached| cached.models)
+            .unwrap_or_default()
+    }
+
     /// What OpenAI serves, from the cache when it is current and from the
     /// vendor otherwise.
     ///

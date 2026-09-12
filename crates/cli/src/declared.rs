@@ -105,6 +105,14 @@ impl ModelProvider for DeclaredProvider {
         Box::pin(async move { self.client.stream(self.api, request).await })
     }
 
+    fn cached_models(&self) -> Vec<ModelInfo> {
+        self.cache
+            .as_ref()
+            .and_then(|cache| cache.load(self.info.route.as_str()))
+            .map(|cached| cached.models)
+            .unwrap_or_default()
+    }
+
     fn list_models(&self) -> ProviderFuture<'_, Result<Vec<ModelInfo>, ProviderError>> {
         Box::pin(async move {
             let route = self.info.route.as_str();

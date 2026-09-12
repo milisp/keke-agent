@@ -127,6 +127,14 @@ pub trait ModelProvider: Send + Sync + 'static {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    /// Return the locally stored catalog without making a network call.
+    ///
+    /// Surfaces use this to draw immediately; [`Self::list_models`] remains the
+    /// operation that may refresh the catalog from the provider.
+    fn cached_models(&self) -> Vec<ModelInfo> {
+        Vec::new()
+    }
+
     /// This provider's web search, when it has one *and* the deployment asked
     /// for it.
     ///

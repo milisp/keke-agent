@@ -8,8 +8,8 @@ use anyhow::bail;
 use keke_config::Config;
 use keke_paths::AbsPath;
 
-use super::models_for;
 use super::provider_choices;
+use super::provider_for;
 use super::session_builder;
 use super::slash_commands;
 use crate::cli::ResumeArgs;
@@ -184,12 +184,11 @@ pub(super) async fn tui(
             .snapshots(continued.snapshots);
     }
     let commands = slash_commands(&composed);
-    // Asked before the interface opens so `/model` can answer without a round
-    // trip mid-conversation. It costs at most one request, and usually none:
-    // the compiled-in vendors cache what they serve between runs.
-    crate::startup_trace::mark("models_for: start");
-    let models = models_for(&composed, &config.model.provider).await;
-    crate::startup_trace::mark("models_for: done");
+    // Draw from disk first. Discovery can involve a network round trip and must
+    // not delay the first TUI frame; the same provider is refreshed below after
+    // the interface has opened.
+    let provider = provider_for(&composed, &config.model.provider)?;
+    let models = provider.cached_models();
     let opened = keke_acp::local_with(
         builder,
         approvals,
@@ -225,6 +224,11 @@ pub(super) async fn tui(
         .map(|skill| skill.name.clone())
         .collect();
     let (conversation, updates) = (opened.conversation, opened.updates);
+    tokio::spawn(async move {
+        if let Err(error) = provider.list_models().await {
+            tracing::debug!(%error, "background model catalog refresh failed");
+        }
+    });
     let result = keke_tui::run(
         keke_tui::Attached {
             conversation,
