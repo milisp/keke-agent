@@ -61,6 +61,7 @@ use keke_tool::ToolOutput;
 struct ScriptedProvider {
     info: ProviderInfo,
     script: Mutex<Vec<Vec<StreamChunk>>>,
+    initial_errors: Mutex<Vec<ProviderError>>,
     /// Every request the engine made, so a test can assert what the model saw.
     seen: Arc<Mutex<Vec<ModelRequest>>>,
 }
@@ -78,9 +79,14 @@ impl ScriptedProvider {
                 env_key: None,
             },
             script: Mutex::new(script),
+            initial_errors: Mutex::new(Vec::new()),
             seen: Arc::clone(&seen),
         });
         (provider, seen)
+    }
+
+    fn fail_next(&self, error: ProviderError) {
+        self.initial_errors.lock().expect("lock").push(error);
     }
 }
 
@@ -95,6 +101,9 @@ impl ModelProvider for ScriptedProvider {
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
         Box::pin(async move {
             self.seen.lock().expect("lock").push(request);
+            if let Some(error) = self.initial_errors.lock().expect("lock").pop() {
+                return Err(error);
+            }
             let mut script = self.script.lock().expect("lock");
             if script.is_empty() {
                 return Err(ProviderError::Protocol("script exhausted".to_string()));
@@ -589,6 +598,33 @@ async fn an_unknown_tool_is_reported_to_the_model_rather_than_aborting() {
         2,
         "the model gets a chance to correct itself"
     );
+}
+
+#[tokio::test]
+async fn an_initial_rate_limit_is_retried_before_the_turn_fails() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![text_reply("after retry")]);
+    provider.fail_next(ProviderError::RateLimited {
+        retry_after_millis: Some(0),
+    });
+
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+
+    let outcome = session
+        .run_turn(Message::user("try it"))
+        .await
+        .expect("the bounded retry succeeds");
+
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("after retry")
+    );
+    assert_eq!(seen.lock().expect("lock").len(), 2);
 }
 
 #[tokio::test]

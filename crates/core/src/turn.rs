@@ -9,6 +9,7 @@
 //! exactly the one worth having.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use keke_plugin_api::ExtensionContext;
@@ -40,6 +41,12 @@ use crate::dispatch::dispatch;
 /// forever. This is a safety stop, not a budget: hitting it is a bug worth
 /// surfacing, and it is reported as such.
 const MAX_STEPS_PER_TURN: usize = 64;
+/// Initial provider failures are safe to retry before a stream has yielded any
+/// response. Keep this bounded: a model request must not turn a dead endpoint
+/// into an unending turn.
+const MAX_INITIAL_STREAM_RETRIES: u8 = 2;
+const INITIAL_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
+const MAX_STREAM_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 /// What one turn produced.
 #[derive(Clone, Debug)]
@@ -474,30 +481,57 @@ impl Session {
         )))
     }
 
-    /// Call the provider, refreshing credentials and retrying **once** on a 401.
+    /// Call the provider, refreshing credentials or retrying a transient
+    /// initial failure before any response has reached the surface.
     ///
-    /// Once, not repeatedly: a credential that fails immediately after a
-    /// successful refresh is not going to start working on the third attempt,
-    /// and retrying would turn a clear auth error into a hang.
+    /// Retrying only this boundary is important: once a stream has yielded
+    /// text or a tool call, replaying it would duplicate visible output or
+    /// repeat work. The retry budget is deliberately small, and a provider's
+    /// `retry-after` delay takes precedence over the local backoff.
     async fn stream_with_reauth(
         &self,
         request: ModelRequest,
     ) -> Result<keke_provider_api::StreamEvent, CoreError> {
-        match self.provider.stream(request.clone()).await {
-            Err(error) if error.needs_reauth() => {
-                let refreshed = match &self.auth {
-                    Some(auth) => auth.refresh_after_unauthorized().await,
-                    None => false,
-                };
-                if !refreshed {
-                    return Err(CoreError::Provider(error));
+        let mut retry_delay = INITIAL_STREAM_RETRY_DELAY;
+        let mut retries = 0;
+        loop {
+            match self.provider.stream(request.clone()).await {
+                Ok(stream) => return Ok(stream),
+                Err(error) if error.needs_reauth() => {
+                    let refreshed = match &self.auth {
+                        Some(auth) => auth.refresh_after_unauthorized().await,
+                        None => false,
+                    };
+                    if !refreshed {
+                        return Err(CoreError::Provider(error));
+                    }
+                    // A successful refresh gets exactly one follow-up request;
+                    // it must not also consume the transient retry budget.
+                    match self.provider.stream(request.clone()).await {
+                        Ok(stream) => return Ok(stream),
+                        Err(error) => return Err(CoreError::Provider(error)),
+                    }
                 }
-                self.provider
-                    .stream(request)
-                    .await
-                    .map_err(CoreError::Provider)
+                Err(error) if error.is_retryable() && retries < MAX_INITIAL_STREAM_RETRIES => {
+                    retries += 1;
+                    let delay = match &error {
+                        ProviderError::RateLimited {
+                            retry_after_millis: Some(millis),
+                        } => Duration::from_millis(*millis),
+                        _ => retry_delay,
+                    };
+                    tracing::warn!(
+                        retry = retries,
+                        max_retries = MAX_INITIAL_STREAM_RETRIES,
+                        ?delay,
+                        error = %error,
+                        "retrying initial provider request"
+                    );
+                    tokio::time::sleep(delay).await;
+                    retry_delay = retry_delay.saturating_mul(2).min(MAX_STREAM_RETRY_DELAY);
+                }
+                Err(error) => return Err(CoreError::Provider(error)),
             }
-            other => other.map_err(CoreError::Provider),
         }
     }
 }
