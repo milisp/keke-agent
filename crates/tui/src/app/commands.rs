@@ -308,7 +308,7 @@ impl App {
 
     fn help_text(&self) -> String {
         let mut text = String::from(
-            "keys:\n  ctrl-o — expand or collapse the newest thought or run of calls\n  \
+            "keys:\n  ctrl-o — open or close the full transcript\n  \
              ctrl-t — show or hide reasoning\n  \
              drag to select and copy; click a tool call to expand it\n\ncommands:",
         );

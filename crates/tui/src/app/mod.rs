@@ -183,6 +183,8 @@ pub struct App {
     /// transcript. Cells are only ever appended, so an index stays the cell it
     /// was; nothing a later turn adds can reopen something already closed.
     expanded: std::collections::HashSet<usize>,
+    /// Whether the full transcript view owns the main surface.
+    full_transcript: bool,
     /// Where this frame drew each expandable header, as `(row, cell index)`.
     toggles: Vec<(u16, usize)>,
     /// The subagents currently worth drawing, as the agent last reported them.
@@ -277,6 +279,7 @@ impl App {
                 mouse_capture: true,
                 follow_button: None,
                 expanded: std::collections::HashSet::new(),
+                full_transcript: false,
                 toggles: Vec::new(),
                 subagents: Vec::new(),
                 tasks: Vec::new(),
@@ -613,6 +616,20 @@ impl App {
     /// The cells the reader has opened.
     pub(crate) fn expanded(&self) -> &std::collections::HashSet<usize> {
         &self.expanded
+    }
+
+    pub(crate) fn full_transcript(&self) -> bool {
+        self.full_transcript
+    }
+
+    pub fn toggle_full_transcript(&mut self) {
+        self.full_transcript = !self.full_transcript;
+        self.scroll.follow();
+        self.set_flash(if self.full_transcript {
+            "full transcript on"
+        } else {
+            "full transcript off"
+        });
     }
 
     pub fn quit(&mut self) {

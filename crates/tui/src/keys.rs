@@ -87,7 +87,7 @@ impl App {
             KeyCode::Char('d') if control && self.input.is_empty() => self.quit(),
             KeyCode::Char('d') if control => self.input.delete(),
             KeyCode::Char('l') if control => self.scroll.follow(),
-            KeyCode::Char('o') if control => self.toggle_last_expandable(),
+            KeyCode::Char('o') if control => self.toggle_full_transcript(),
             KeyCode::PageUp => self.scroll.page_up(),
             KeyCode::PageDown => self.scroll.page_down(),
             // Shift+Enter is invisible to a terminal without the Kitty keyboard

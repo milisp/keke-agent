@@ -18,6 +18,7 @@ use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
+use ratatui::widgets::Clear;
 
 use crate::app::App;
 
@@ -76,6 +77,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     // composer's row and the keyboard: there is nothing to type, and the
     // status bar's turn state is exactly what the panel is already saying.
     let blocked = app.turn() == crate::app::Turn::AwaitingPermission;
+    let full_transcript = app.full_transcript();
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -85,22 +87,50 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // open together (one needs the line to start with `/`, the other
             // needs an `@` with no preceding word character), so they share
             // one row of layout.
-            Constraint::Length(menu::rows(app).max(file_search::rows(app))),
-            // The turn-status row appears above the composer only while a
-            // turn runs, and collapses to nothing when idle.
-            Constraint::Length(turn_status::rows(app)),
-            Constraint::Length(subagents::rows(app)),
-            Constraint::Length(tasks::rows(app)),
-            Constraint::Length(if (planning && !composing) || managing_mcp || blocked {
+            Constraint::Length(if full_transcript {
                 0
             } else {
-                input::rows(app, frame.area().width)
+                menu::rows(app).max(file_search::rows(app))
             }),
-            Constraint::Length(permission::rows(app)),
-            Constraint::Length(picker::rows(app, frame.area().height)),
-            Constraint::Length(rewind::rows(app, frame.area().height)),
-            Constraint::Length(plan::rows(app)),
-            Constraint::Length(u16::from(!planning && !managing_mcp && !blocked)),
+            // The turn-status row appears above the composer only while a
+            // turn runs, and collapses to nothing when idle.
+            Constraint::Length(if full_transcript {
+                0
+            } else {
+                turn_status::rows(app)
+            }),
+            Constraint::Length(if full_transcript {
+                0
+            } else {
+                subagents::rows(app)
+            }),
+            Constraint::Length(if full_transcript { 0 } else { tasks::rows(app) }),
+            Constraint::Length(
+                if full_transcript || (planning && !composing) || managing_mcp || blocked {
+                    0
+                } else {
+                    input::rows(app, frame.area().width)
+                },
+            ),
+            Constraint::Length(if full_transcript {
+                0
+            } else {
+                permission::rows(app)
+            }),
+            Constraint::Length(if full_transcript {
+                0
+            } else {
+                picker::rows(app, frame.area().height)
+            }),
+            Constraint::Length(if full_transcript {
+                0
+            } else {
+                rewind::rows(app, frame.area().height)
+            }),
+            Constraint::Length(if full_transcript { 0 } else { plan::rows(app) }),
+            Constraint::Length(u16::from(
+                full_transcript || (!planning && !managing_mcp && !blocked),
+            )),
         ])
         .split(frame.area());
 
@@ -122,7 +152,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         areas[9], areas[10], areas[11],
     );
 
-    let rendered = transcript::render(app.transcript.cells(), body.width, app.expanded());
+    let rendered = transcript::render(
+        app.transcript.cells(),
+        body.width,
+        app.expanded(),
+        full_transcript,
+    );
     app.scroll
         .measure(rendered.lines.len(), usize::from(body.height));
     // `/view-plan` scrolls the last plan's first line into view; the plan is
@@ -166,6 +201,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             app.selection.highlight(row, line)
         })
         .collect();
+    // Paragraph only paints the rows it receives. Clearing first matters when
+    // a long expanded tool run is collapsed: otherwise the terminal keeps
+    // the old rows (or their trailing characters) below the shorter header.
+    frame.render_widget(Clear, body);
     frame.render_widget(ratatui::widgets::Paragraph::new(visible), body);
     below(frame, body, app);
 

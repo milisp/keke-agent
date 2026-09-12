@@ -116,7 +116,12 @@ fn worst(status: ToolStatus, running: ToolStatus) -> ToolStatus {
     }
 }
 
-pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> Rendered {
+pub(crate) fn render(
+    cells: &[Cell],
+    width: u16,
+    expanded: &HashSet<usize>,
+    full_transcript: bool,
+) -> Rendered {
     let width = usize::from(width.max(8));
     let mut out = Rendered::default();
     let mut index = 0;
@@ -154,8 +159,12 @@ pub(crate) fn render(cells: &[Cell], width: u16, expanded: &HashSet<usize>) -> R
                     .map_or(cells.len(), |offset| index + 1 + offset);
                 out.toggles.push((out.lines.len(), index));
                 let group = &cells[index..end];
-                let open = default_open(group) ^ expanded.contains(&index);
-                out.lines.extend(group_lines(group, open, width));
+                // Full transcript mode is the escape hatch from the compact
+                // view: a group header must never hide its individual calls.
+                // Manual fold state belongs to the compact view only.
+                let open = full_transcript || default_open(group) ^ expanded.contains(&index);
+                out.lines
+                    .extend(group_lines(group, open, width, full_transcript));
                 index = end;
                 out.lines.push(Line::default());
                 continue;
@@ -212,7 +221,12 @@ fn header(marker: &str, title: &str, summary: &str, open: bool, style: Style) ->
 ///
 /// Collapsed, a lone call still names what it acted on — `Read src/app.rs` —
 /// because a count of one tells a reader nothing they did not already see.
-fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
+fn group_lines(
+    group: &[Cell],
+    open: bool,
+    width: usize,
+    full_transcript: bool,
+) -> Vec<Line<'static>> {
     let tools: Vec<&ToolCell> = group
         .iter()
         .filter_map(|cell| match cell {
@@ -263,7 +277,9 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
     };
 
     let mut lines = Vec::new();
-    lines.push(header(marker, title, &summary, open, style));
+    if !full_transcript {
+        lines.push(header(marker, title, &summary, open, style));
+    }
     if !open {
         return lines;
     }
@@ -303,7 +319,7 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
                     Span::styled(format!("{verb} "), Style::new().fg(THINKING)),
                     Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
                 ]));
-                push_tool_detail(&mut lines, tool, width);
+                push_tool_detail(&mut lines, tool, width, full_transcript);
                 index += 1;
             }
         }
@@ -311,16 +327,26 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
         // Each call's own output goes right under its own line — not after
         // the whole run — so a run of several commands never leaves a reader
         // matching stdout back up to the command it came from.
-        for tool in &tools {
+        for (index, tool) in tools.iter().enumerate() {
+            if full_transcript && index > 0 {
+                lines.push(Line::default());
+            }
             let (glyph, style) = self::marker(tool.state);
             lines.push(Line::from(vec![
                 Span::styled(format!("    {glyph} "), style),
                 Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
             ]));
-            push_tool_detail(&mut lines, tool, width);
+            push_tool_detail(&mut lines, tool, width, full_transcript);
         }
     } else {
-        push_tool_detail(&mut lines, first, width);
+        if full_transcript {
+            let (glyph, marker_style) = self::marker(first.state);
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {glyph} "), marker_style),
+                Span::styled(first.summary.clone(), Style::new().fg(THINKING)),
+            ]));
+        }
+        push_tool_detail(&mut lines, first, width, full_transcript);
     }
     lines
 }
@@ -333,7 +359,12 @@ fn group_lines(group: &[Cell], open: bool, width: usize) -> Vec<Line<'static>> {
 /// exploration call's headline already names the one thing that mattered
 /// (`path=...`, `pattern=...`); the raw `key=value` dump underneath it would
 /// just repeat that.
-fn push_tool_detail(lines: &mut Vec<Line<'static>>, tool: &ToolCell, width: usize) {
+fn push_tool_detail(
+    lines: &mut Vec<Line<'static>>,
+    tool: &ToolCell,
+    width: usize,
+    full_transcript: bool,
+) {
     if !tool.arguments.is_empty()
         && !crate::transcript::is_diff_tool(&tool.name)
         && !crate::transcript::is_exploration_tool(&tool.name)
@@ -349,9 +380,52 @@ fn push_tool_detail(lines: &mut Vec<Line<'static>>, tool: &ToolCell, width: usiz
     if let Some(detail) = &tool.detail {
         if crate::transcript::is_diff_tool(&tool.name) {
             push_diff_block(lines, "      ", detail, width);
+        } else if tool.name == "bash" && !full_transcript {
+            push_limited_block(lines, "      ", detail, Style::new().fg(THINKING), width);
         } else {
             push_block(lines, "      ", detail, Style::new().fg(THINKING), width);
         }
+    }
+}
+
+/// Limit command output in the normal view while retaining its beginning and
+/// end. The complete result remains on the tool cell for a full transcript.
+fn push_limited_block(
+    lines: &mut Vec<Line<'static>>,
+    prefix: &str,
+    text: &str,
+    style: Style,
+    width: usize,
+) {
+    const MAX_LINES: usize = 5;
+    let indent = " ".repeat(prefix.chars().count());
+    let body = width.saturating_sub(prefix.chars().count()).max(1);
+    let mut wrapped = Vec::new();
+    for paragraph in text.split('\n') {
+        wrapped.extend(wrap(paragraph, body));
+    }
+    if wrapped.len() <= MAX_LINES {
+        push_block(lines, prefix, text, style, width);
+        return;
+    }
+
+    let head = (MAX_LINES - 1) / 2;
+    let tail = MAX_LINES - 1 - head;
+    for chunk in wrapped.iter().take(head) {
+        lines.push(Line::from(vec![
+            Span::styled(prefix.to_string(), style),
+            Span::styled(chunk.clone(), style),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(prefix.to_string(), style),
+        Span::styled(format!("… +{} lines", wrapped.len() - head - tail), style),
+    ]));
+    for chunk in wrapped.iter().skip(wrapped.len() - tail) {
+        lines.push(Line::from(vec![
+            Span::styled(indent.clone(), style),
+            Span::styled(chunk.clone(), style),
+        ]));
     }
 }
 
@@ -538,7 +612,7 @@ mod grouping_tests {
             tool("c2", "edit", "b.rs"),
             tool("c3", "read_file", "c.rs"),
         ];
-        let rendered = render(&cells, 80, &HashSet::new());
+        let rendered = render(&cells, 80, &HashSet::new(), false);
         assert_eq!(
             rendered.toggles.len(),
             3,
@@ -553,7 +627,7 @@ mod grouping_tests {
             tool("c2", "list_dir", "src/"),
             tool("c3", "read_file", "b.rs"),
         ];
-        let rendered = render(&cells, 80, &HashSet::new());
+        let rendered = render(&cells, 80, &HashSet::new(), false);
         assert_eq!(rendered.toggles.len(), 1, "one collapsed run, not three");
         let titles = header_titles(&rendered);
         assert!(titles[0].contains("Explored"), "got {titles:?}");
@@ -563,7 +637,7 @@ mod grouping_tests {
     #[test]
     fn a_single_read_still_names_itself() {
         let cells = vec![tool("c1", "read_file", "a.rs")];
-        let rendered = render(&cells, 80, &HashSet::new());
+        let rendered = render(&cells, 80, &HashSet::new(), false);
         let titles = header_titles(&rendered);
         assert!(titles[0].contains("Read"), "got {titles:?}");
         assert!(titles[0].contains("a.rs"), "got {titles:?}");
@@ -575,7 +649,7 @@ mod grouping_tests {
             tool("c1", "read_file", "a.rs"),
             tool("c2", "read_file", "b.rs"),
         ];
-        let rendered = render(&cells, 80, &HashSet::new());
+        let rendered = render(&cells, 80, &HashSet::new(), false);
         assert_eq!(rendered.toggles.len(), 1);
         let titles = header_titles(&rendered);
         assert!(titles[0].contains("Read"), "got {titles:?}");
@@ -590,7 +664,7 @@ mod grouping_tests {
             tool("c3", "list_dir", "/repo/demo/src"),
             tool("c4", "read_file", "/repo/demo/b.rs"),
         ];
-        let rendered = render(&cells, 80, &HashSet::new());
+        let rendered = render(&cells, 80, &HashSet::new(), false);
         let body: String = rendered.lines[1..4]
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -603,7 +677,52 @@ mod grouping_tests {
     #[test]
     fn bash_does_not_join_an_exploration_run() {
         let cells = vec![tool("c1", "read_file", "a.rs"), tool("c2", "bash", "ls")];
-        let rendered = render(&cells, 80, &HashSet::new());
+        let rendered = render(&cells, 80, &HashSet::new(), false);
         assert_eq!(rendered.toggles.len(), 2, "bash stays its own group");
+    }
+
+    #[test]
+    fn an_expanded_command_output_keeps_the_head_and_tail() {
+        let mut command = tool("c1", "bash", "echo output");
+        let Cell::Tool(tool) = &mut command else {
+            unreachable!();
+        };
+        tool.detail = Some("one\ntwo\nthree\nfour\nfive\nsix\nseven".to_string());
+
+        let rendered = render(&[command], 80, &HashSet::from([0]), false);
+        let body: String = rendered.lines[1..]
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("one"), "got {body:?}");
+        assert!(body.contains("seven"), "got {body:?}");
+        assert!(body.contains("… +3 lines"), "got {body:?}");
+        assert!(!body.contains("three"), "got {body:?}");
+    }
+
+    #[test]
+    fn full_transcript_separates_commands_with_a_blank_line() {
+        let cells = vec![
+            tool("c1", "bash", "echo one"),
+            tool("c2", "bash", "echo two"),
+        ];
+        let rendered = render(&cells, 80, &HashSet::new(), true);
+        let lines: Vec<String> = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        let second = lines.iter().position(|line| line.contains("echo two"));
+        let Some(second) = second else {
+            panic!("got {lines:?}");
+        };
+        assert!(second > 0 && lines[second - 1].is_empty(), "got {lines:?}");
     }
 }

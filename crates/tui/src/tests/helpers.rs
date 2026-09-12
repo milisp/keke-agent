@@ -139,16 +139,21 @@ pub(super) fn status_bar(app: &App) -> String {
 
 /// Flatten a rendered transcript to plain strings.
 pub(super) fn rendered(app: &App) -> Vec<String> {
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded())
-        .lines
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect()
+    crate::draw::transcript::render(
+        app.transcript.cells(),
+        80,
+        app.expanded(),
+        app.full_transcript(),
+    )
+    .lines
+    .iter()
+    .map(|line| {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    })
+    .collect()
 }
 
 /// Run `count` reads through, each on its own path, all successful.

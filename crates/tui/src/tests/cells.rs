@@ -273,6 +273,50 @@ async fn copying_takes_the_last_reply_and_hands_it_over_once() {
     assert_eq!(app.take_pending_copy(), None);
 }
 
+#[test]
+fn ctrl_o_opens_the_full_transcript_view() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    app.apply(Update::ToolCallStarted(ToolCall {
+        id: ToolCallId::new("c1"),
+        name: "bash".to_string(),
+        arguments: serde_json::json!({"command": "printf output"}),
+    }));
+    app.apply(Update::ToolCallEnded(ToolResult::ok(
+        ToolCallId::new("c1"),
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven",
+    )));
+
+    app.handle_key(control('o'));
+
+    let lines = rendered(&app);
+    assert!(app.full_transcript());
+    assert!(lines.iter().any(|line| line.contains("one")));
+    assert!(lines.iter().any(|line| line.contains("seven")));
+    assert!(!lines.iter().any(|line| line.contains("… +3 lines")));
+}
+
+#[test]
+fn full_transcript_shows_each_command_in_a_run() {
+    let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
+    finished_commands(&mut app, 3);
+
+    app.handle_key(control('o'));
+
+    let lines = rendered(&app);
+    assert!(
+        lines.iter().any(|line| line.contains("echo 0")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("echo 1")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("echo 2")),
+        "{lines:?}"
+    );
+}
+
 #[tokio::test]
 async fn copying_says_so_in_the_status_bar_and_not_in_the_conversation() {
     let (mut app, _scripted, _updates, _local) = app_with_commands(Vec::new(), Vec::new());
@@ -511,7 +555,7 @@ fn expanded_arguments_keep_their_line_breaks() {
 #[test]
 fn wrapped_text_keeps_its_block_shape() {
     let cells = vec![Cell::User("a b c d e f g h i j".to_string())];
-    let lines = crate::draw::transcript::render(&cells, 12, &Default::default()).lines;
+    let lines = crate::draw::transcript::render(&cells, 12, &Default::default(), false).lines;
     let rendered: Vec<String> = lines
         .iter()
         .map(|line| {
@@ -584,7 +628,7 @@ fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_commands(&mut app, 3);
     // The map of what is on screen is a frame's, so draw one first.
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), false);
     app.toggle_last_expandable();
 
     let lines = rendered(&app);
@@ -633,7 +677,7 @@ fn a_successful_edit_shows_its_diff_without_expanding() {
 
     // GitHub tints the whole row, not just the text — a row's background,
     // not its foreground colour, is what says "this line changed".
-    let drawn = crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
+    let drawn = crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), false);
     let added_row = drawn
         .lines
         .iter()
@@ -716,11 +760,11 @@ fn a_clean_run_folds_away_once_it_finishes() {
 #[test]
 fn a_clean_exploration_run_stays_open() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    finished_reads(&mut app, 3);
+    finished_reads(&mut app, 4);
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("src/f2.rs")),
+        lines.iter().any(|line| line.contains("src/f3.rs")),
         "an exploration run stays open even on a clean finish, so what it read is visible without a click: {lines:?}"
     );
 }
@@ -735,7 +779,7 @@ fn toggling_a_run_that_errored_collapses_it() {
         content: Vec::new(),
         value: None,
     }));
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded());
+    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), false);
     app.toggle_last_expandable();
 
     let lines = rendered(&app);
