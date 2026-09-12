@@ -769,11 +769,12 @@ impl App {
         self.begin_turn();
 
         let conversation = Arc::clone(&self.conversation);
-        let local = self.local.clone();
         tokio::spawn(async move {
-            if let Err(error) = conversation.prompt(text).await {
-                let _ = local.send(Update::Failed(error.to_string()));
-            }
+            // `LocalConversation` publishes `Update::Failed` for model
+            // errors before resolving this future. Mirroring the returned
+            // error here would enqueue a second failure, which can arrive
+            // after the next turn has already started and end that turn too.
+            let _ = conversation.prompt(text).await;
         });
     }
 
