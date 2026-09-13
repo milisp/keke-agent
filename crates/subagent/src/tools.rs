@@ -141,7 +141,8 @@ impl Tool for SpawnAgent {
              of its own, so state the task completely. Up to {} run at once; further ones wait \
              their turn. Set `wait` to block for the result, or leave it off only when starting \
              several genuinely independent tasks that benefit from parallelism; otherwise wait \
-             for the result.",
+             for the result. Started ones are gathered with `collect_agent`, which returns \
+             whichever finishes first rather than blocking on the slowest.",
             self.host.limits().max_concurrent
         ))
     }
@@ -194,28 +195,41 @@ impl Tool for SpawnAgent {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CollectAgentArgs {
-    /// Which subagent to collect. Omit to wait for every one still outstanding.
+    /// Which subagent to collect. Omit to wait for whichever of the
+    /// outstanding ones finishes first.
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// How long to wait, in milliseconds, before the turn comes back with
+    /// whatever finished. Clamped to what this deployment allows.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CollectAgentOutput {
     pub agents: Vec<ReportedAgent>,
+    /// Subagents that were still running when the wait ended. They keep their
+    /// ids: collecting them again resumes the wait rather than restarting them.
+    pub pending: Vec<String>,
+    /// Whether the wait ended without anything to report.
+    pub timed_out: bool,
 }
 
 impl ToolOutput for CollectAgentOutput {
     fn render(&self) -> Vec<ContentBlock> {
-        if self.agents.is_empty() {
+        if self.agents.is_empty() && self.pending.is_empty() {
             return vec![ContentBlock::text("No subagents were outstanding.")];
         }
-        let text = self
-            .agents
-            .iter()
-            .map(render_one)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        vec![ContentBlock::text(text)]
+
+        let mut sections: Vec<String> = self.agents.iter().map(render_one).collect();
+        if !self.pending.is_empty() {
+            sections.push(format!(
+                "Still running: {}. Call `collect_agent` again to keep waiting, or do other work \
+                 first.",
+                self.pending.join(", ")
+            ));
+        }
+        vec![ContentBlock::text(sections.join("\n\n"))]
     }
 }
 
@@ -234,12 +248,20 @@ impl Tool for CollectAgent {
     }
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
-        ToolDescription::new(
-            "Wait for subagents started by `spawn_agent` and return their reports. Name one with \
-             `agent_id`, or omit it to wait for all outstanding ones at once — which is what you \
-             want after starting several. A subagent is reported once; collecting it again is an \
-             error, not a repeat.",
-        )
+        let limits = self.host.limits();
+        ToolDescription::new(format!(
+            "Wait for subagents started by `spawn_agent` and return the reports of those that \
+             finish. Name one with `agent_id`, or omit it to wait on every outstanding one at \
+             once — which is what you want after starting several, because whichever finishes \
+             first comes back without the slowest holding it up.\n\nThe wait is bounded: after \
+             `timeout_ms` (default {}ms, minimum {}ms, at most {}ms) you get your turn back with \
+             whatever is done, and anything still running is listed as pending under its own id. \
+             Call this again to keep waiting for those. A subagent is reported once; collecting a \
+             reported one again is an error, not a repeat.",
+            limits.collect_timeout_millis,
+            keke_config_types::SubagentLimits::MIN_COLLECT_TIMEOUT_MILLIS,
+            limits.timeout_millis,
+        ))
     }
 
     fn capabilities(&self) -> ToolCapabilities {
@@ -261,15 +283,25 @@ impl Tool for CollectAgent {
             Some(id) => vec![id],
             None => self.host.outstanding(),
         };
+        let window = self.host.limits().collect_window(args.timeout_ms);
 
-        let mut agents = Vec::with_capacity(wanted.len());
-        for id in wanted {
-            let report = self.host.collect(&id).await.map_err(tool_error)?;
+        let collected = self
+            .host
+            .collect_within(&wanted, window)
+            .await
+            .map_err(tool_error)?;
+
+        let mut agents = Vec::with_capacity(collected.reports.len());
+        for report in &collected.reports {
             if let Some(turn) = self.ctx.turn() {
-                self.ctx.record(crate::host::end_event(turn, &report));
+                self.ctx.record(crate::host::end_event(turn, report));
             }
-            agents.push(ReportedAgent::from(&report));
+            agents.push(ReportedAgent::from(report));
         }
-        Ok(CollectAgentOutput { agents })
+        Ok(CollectAgentOutput {
+            timed_out: agents.is_empty() && !collected.pending.is_empty(),
+            agents,
+            pending: collected.pending,
+        })
     }
 }

@@ -330,6 +330,11 @@ model_catalog_ttl_seconds = 21600  # 6 hours default
 [subagents]
 max_concurrent = 3        # How many run at once (1-16); further spawns queue
 timeout_millis = 600000   # Wall-clock ceiling per subagent (60000-3600000)
+collect_timeout_millis = 30000  # Default `collect_agent` wait window
+                                # (10000-3600000, capped by timeout_millis).
+                                # The parent gets its turn back after this with
+                                # whatever finished, rather than blocking for
+                                # the whole child budget.
 
 # There is no depth setting: a subagent is never offered `spawn_agent` at all,
 # so the tree is one level deep by construction rather than by configuration.

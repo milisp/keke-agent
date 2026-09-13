@@ -11,6 +11,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use futures::FutureExt;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use keke_config_types::SubagentLimits;
 use keke_core::SessionBuilder;
 use keke_protocol::Message;
@@ -58,6 +61,19 @@ pub struct AgentReport {
     pub log_path: String,
     /// The child's session, when it got far enough to have one.
     pub session: Option<SessionId>,
+}
+
+/// The outcome of one bounded wait.
+///
+/// `pending` is not a failure: it is the part of the batch the parent's model
+/// may now decide something about — keep waiting, steer it, or stop it — which
+/// is the whole reason the wait has a bound of its own.
+#[derive(Clone, Debug, Default)]
+pub struct Collected {
+    /// Subagents that finished within the wait, taken and reported once.
+    pub reports: Vec<AgentReport>,
+    /// Subagents still running, left outstanding for a later wait.
+    pub pending: Vec<AgentId>,
 }
 
 /// What a subagent is doing right now, for a surface to draw while it runs.
@@ -270,18 +286,17 @@ impl SubagentHost {
         }
     }
 
-    /// Wait for one subagent and take its report.
+    /// Wait for one subagent and take its report, however long it takes.
     ///
     /// Taking rather than reading: a report is delivered to the model once, and
     /// a handle that has been collected is gone. Asking again names the id that
     /// no longer exists instead of replaying an answer the model already has.
+    ///
+    /// Bounded only by the child's own budget, so this is for a caller that has
+    /// already decided to wait for exactly this one — `spawn_agent` with `wait`.
+    /// A model choosing what to do next wants [`Self::collect_within`].
     pub async fn collect(&self, id: &str) -> Result<AgentReport, SubagentError> {
-        let slot = self
-            .slots
-            .lock()
-            .ok()
-            .and_then(|mut slots| slots.remove(id))
-            .ok_or_else(|| SubagentError::Unknown(id.to_string()))?;
+        let slot = self.take_slot(id)?;
 
         let report = slot
             .handle
@@ -292,6 +307,76 @@ impl SubagentHost {
         // that only grows is one a person stops reading.
         self.update_progress(|rows| rows.retain(|row| row.id != id));
         report
+    }
+
+    /// Wait up to `budget` for any of `ids` to finish, and take the report of
+    /// every one that is done by then.
+    ///
+    /// First-wins, not all-or-nothing. Waiting for the slowest of a batch hides
+    /// the ones that already answered behind it, and a parent that cannot see a
+    /// partial result cannot decide to stop waiting for the rest. Once one
+    /// finishes, the others are taken only if they are ready in that same
+    /// instant; nothing extends the wait past the first answer.
+    ///
+    /// A subagent still running is left outstanding and named in
+    /// [`Collected::pending`], so waiting again resumes rather than restarts.
+    pub async fn collect_within(
+        &self,
+        ids: &[AgentId],
+        budget: std::time::Duration,
+    ) -> Result<Collected, SubagentError> {
+        // Taken up front so that a second waiter cannot be handed the same
+        // child, and so an unknown id fails before anyone waits on anything.
+        let mut held: Vec<(AgentId, Slot)> = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.take_slot(id) {
+                Ok(slot) => held.push((id.clone(), slot)),
+                Err(error) => {
+                    for (id, slot) in held {
+                        self.return_slot(id, slot);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let mut finished = wait_for_first(&mut held, budget).await;
+
+        let mut collected = Collected::default();
+        let mut lost = None;
+        for (id, slot) in held {
+            let Some(outcome) = finished.remove(&id) else {
+                collected.pending.push(id.clone());
+                self.return_slot(id, slot);
+                continue;
+            };
+            match outcome {
+                Ok(report) => collected.reports.push(report),
+                Err(error) => lost = Some(SubagentError::Lost(error)),
+            }
+            self.update_progress(|rows| rows.retain(|row| row.id != id));
+        }
+
+        match lost {
+            Some(error) => Err(error),
+            None => Ok(collected),
+        }
+    }
+
+    fn take_slot(&self, id: &str) -> Result<Slot, SubagentError> {
+        self.slots
+            .lock()
+            .ok()
+            .and_then(|mut slots| slots.remove(id))
+            .ok_or_else(|| SubagentError::Unknown(id.to_string()))
+    }
+
+    /// Put an uncollected subagent back. It never finished, so it keeps its
+    /// live row and can be waited on again under its own name.
+    fn return_slot(&self, id: AgentId, slot: Slot) {
+        if let Ok(mut slots) = self.slots.lock() {
+            slots.insert(id, slot);
+        }
     }
 
     /// Every subagent still outstanding, oldest handle first.
@@ -352,6 +437,50 @@ pub(crate) fn end_event(turn: TurnId, report: &AgentReport) -> SessionEvent {
         summary: report.summary.clone(),
         usage: report.usage,
     }
+}
+
+/// Wait for the first of `held` to finish, then take whatever else is already
+/// done in that same instant.
+///
+/// The handles are borrowed, not consumed: one that does not finish must go
+/// back into the slot map still joinable, or a subagent that merely ran long
+/// would be lost by the act of waiting for it.
+async fn wait_for_first(
+    held: &mut [(AgentId, Slot)],
+    budget: std::time::Duration,
+) -> HashMap<AgentId, Result<AgentReport, String>> {
+    let mut finished = HashMap::new();
+    if held.is_empty() {
+        return finished;
+    }
+
+    let mut running = FuturesUnordered::new();
+    for (id, slot) in held.iter_mut() {
+        let id = id.clone();
+        running.push(async move { (id, (&mut slot.handle).await) });
+    }
+
+    let deadline = tokio::time::Instant::now() + budget;
+    let first = match tokio::time::timeout_at(deadline, running.next()).await {
+        Ok(Some(first)) => first,
+        // Nothing finished in time, or there was nothing to finish.
+        Ok(None) | Err(_) => return finished,
+    };
+    let record = |finished: &mut HashMap<_, _>, (id, joined): (AgentId, _)| {
+        let outcome = match joined {
+            Ok(report) => Ok(report),
+            Err(error) => Err(format!("{error}")),
+        };
+        finished.insert(id, outcome);
+    };
+    record(&mut finished, first);
+
+    // Everything else that is ready now comes along; nothing that is not ready
+    // is waited for. `now_or_never` is what keeps that distinction honest.
+    while let Some(Some(ready)) = running.next().now_or_never() {
+        record(&mut finished, ready);
+    }
+    finished
 }
 
 /// How often the child checks whether the parent's turn was aborted.

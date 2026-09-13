@@ -949,6 +949,14 @@ pub struct SubagentLimits {
     /// The wall-clock ceiling for one subagent's turn. It is cancelled at the
     /// limit and reported as timed out, so the parent gets an answer either way.
     pub timeout_millis: u64,
+    /// How long `collect_agent` blocks by default before handing the parent's
+    /// model back its turn with whatever finished.
+    ///
+    /// Separate from `timeout_millis` because they bound different things: that
+    /// one is how long a child may run, this one is how long the parent agrees
+    /// to sit still. A parent that can only wait for the full child budget has
+    /// no way to react to a subagent that is going nowhere.
+    pub collect_timeout_millis: u64,
 }
 
 impl SubagentLimits {
@@ -964,6 +972,12 @@ impl SubagentLimits {
     /// An hour, for the same reason `PluginTimeouts` stops there: a longer
     /// budget is indistinguishable from none.
     pub const MAX_TIMEOUT_MILLIS: u64 = 3_600_000;
+    /// Ten seconds. A shorter wait is busy polling: the parent pays for a model
+    /// call to learn nothing has changed yet.
+    pub const MIN_COLLECT_TIMEOUT_MILLIS: u64 = 10_000;
+    /// The same ceiling as a subagent's own budget — waiting longer than a
+    /// child may live cannot observe anything a shorter wait would miss.
+    pub const MAX_COLLECT_TIMEOUT_MILLIS: u64 = Self::MAX_TIMEOUT_MILLIS;
 
     /// Validate a concurrency bound.
     pub fn check_concurrent(value: u8) -> Result<u8, String> {
@@ -991,21 +1005,49 @@ impl SubagentLimits {
         }
     }
 
+    /// Validate a default collect window, in milliseconds.
+    pub fn check_collect_timeout(value: u64) -> Result<u64, String> {
+        if (Self::MIN_COLLECT_TIMEOUT_MILLIS..=Self::MAX_COLLECT_TIMEOUT_MILLIS).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "subagents.collect_timeout_millis must be between {} and {} milliseconds, got {value}",
+                Self::MIN_COLLECT_TIMEOUT_MILLIS,
+                Self::MAX_COLLECT_TIMEOUT_MILLIS
+            ))
+        }
+    }
+
     #[must_use]
     pub fn timeout(self) -> std::time::Duration {
         std::time::Duration::from_millis(self.timeout_millis)
     }
+
+    /// Bring a model-requested collect window inside what this deployment
+    /// allows. Clamped rather than rejected: a wait that is merely too long is
+    /// not a mistake worth spending another model call to correct.
+    #[must_use]
+    pub fn collect_window(self, requested_millis: Option<u64>) -> std::time::Duration {
+        let ceiling = self.timeout_millis.max(Self::MIN_COLLECT_TIMEOUT_MILLIS);
+        let millis = requested_millis
+            .unwrap_or(self.collect_timeout_millis)
+            .clamp(Self::MIN_COLLECT_TIMEOUT_MILLIS, ceiling);
+        std::time::Duration::from_millis(millis)
+    }
 }
 
 impl Default for SubagentLimits {
-    /// Three at once, ten minutes each. Three is what fits a single screen of
-    /// reported results and what most vendors' concurrent-request allowances
-    /// tolerate without shaping; ten minutes is longer than any search-shaped
-    /// task and shorter than a person's patience.
+    /// Three at once, ten minutes each, collected in thirty-second windows.
+    /// Three is what fits a single screen of reported results and what most
+    /// vendors' concurrent-request allowances tolerate without shaping; ten
+    /// minutes is longer than any search-shaped task and shorter than a
+    /// person's patience. Thirty seconds is short enough that a parent notices
+    /// a stuck child while it still has turn left to do something about it.
     fn default() -> Self {
         Self {
             max_concurrent: 3,
             timeout_millis: 600_000,
+            collect_timeout_millis: 30_000,
         }
     }
 }

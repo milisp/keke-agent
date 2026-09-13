@@ -36,6 +36,7 @@ pub use host::AgentId;
 pub use host::AgentProgress;
 pub use host::AgentReport;
 pub use host::AgentStatus;
+pub use host::Collected;
 pub use host::SubagentError;
 pub use host::SubagentHost;
 pub use tools::CollectAgent;

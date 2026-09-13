@@ -198,6 +198,7 @@ pub struct SkillsFile {
 pub struct SubagentsFile {
     pub max_concurrent: Option<u8>,
     pub timeout_millis: Option<u64>,
+    pub collect_timeout_millis: Option<u64>,
 }
 
 /// The background-command section, separated for the same reason.
@@ -308,6 +309,9 @@ impl Config {
                 let base = merged.subagents.get_or_insert_with(SubagentsFile::default);
                 base.max_concurrent = subagents.max_concurrent.or(base.max_concurrent);
                 base.timeout_millis = subagents.timeout_millis.or(base.timeout_millis);
+                base.collect_timeout_millis = subagents
+                    .collect_timeout_millis
+                    .or(base.collect_timeout_millis);
             }
             // Declarations accumulate; a later layer redeclaring a route
             // replaces that one entry rather than the whole set.
@@ -434,6 +438,10 @@ impl Config {
             timeout_millis: match subagents_file.timeout_millis {
                 Some(value) => SubagentLimits::check_timeout(value).map_err(invalid)?,
                 None => subagent_defaults.timeout_millis,
+            },
+            collect_timeout_millis: match subagents_file.collect_timeout_millis {
+                Some(value) => SubagentLimits::check_collect_timeout(value).map_err(invalid)?,
+                None => subagent_defaults.collect_timeout_millis,
             },
         };
 
@@ -887,6 +895,27 @@ mod tests {
         // silently giving it 16 answers a question nobody asked.
         let layers = vec![layer("user", "[subagents]\nmax_concurrent = 64\n")];
         let error = Config::from_layers(home(), &layers).expect_err("too many");
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_deployment_can_bound_how_long_a_parent_waits_for_its_subagents() {
+        let layers = vec![layer(
+            "user",
+            "[subagents]\ncollect_timeout_millis = 120000\n",
+        )];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.subagents.collect_timeout_millis, 120_000);
+        // How long a child may run and how long the parent sits still are two
+        // settings; stating one must not move the other.
+        assert_eq!(
+            config.subagents.timeout_millis,
+            SubagentLimits::default().timeout_millis
+        );
+
+        // A wait shorter than the floor is busy polling dressed as a setting.
+        let layers = vec![layer("user", "[subagents]\ncollect_timeout_millis = 500\n")];
+        let error = Config::from_layers(home(), &layers).expect_err("too short");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
 

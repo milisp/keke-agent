@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+futures = { workspace = true }
 keke-config-types = { workspace = true }
 keke-core = { workspace = true }
 keke-plugin-api = { workspace = true }
@@ -21,7 +22,6 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-futures = { workspace = true }
 keke-paths = { workspace = true }
 keke-provider-api = { workspace = true }
 tempfile = { workspace = true }

@@ -201,6 +201,17 @@ async fn parent(
     limits: SubagentLimits,
     attach: bool,
 ) -> keke_core::Session {
+    parent_with_host(harness, provider, limits, attach).await.0
+}
+
+/// The same composition, keeping the host, for the tests that drive it
+/// directly rather than through a model's tool calls.
+async fn parent_with_host(
+    harness: &Harness,
+    provider: Arc<ScriptedProvider>,
+    limits: SubagentLimits,
+    attach: bool,
+) -> (keke_core::Session, Arc<keke_subagent::SubagentHost>) {
     let mut extensions = ExtensionRegistryBuilder::new();
     let host = keke_subagent::install(&mut extensions, limits);
 
@@ -212,7 +223,12 @@ async fn parent(
     if attach {
         host.attach(builder.clone());
     }
-    builder.build().await.expect("builds")
+    (builder.build().await.expect("builds"), host)
+}
+
+/// A parent turn that is not cancelled, for a direct `spawn`.
+fn never_cancelled() -> Arc<dyn Fn() -> bool + Send + Sync> {
+    Arc::new(|| false)
 }
 
 /// The tool names offered in each model request, in order.
@@ -500,4 +516,110 @@ async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
     );
     assert!(gone, "a collected subagent must leave the live rows");
     assert!(host.progress().is_empty());
+}
+
+#[tokio::test]
+async fn a_bounded_wait_returns_the_first_to_finish_without_the_slowest() {
+    let harness = harness();
+    // One permit, so the second subagent cannot finish alongside the first.
+    let (provider, _seen) = ScriptedProvider::new(250);
+    let (session, host) = parent_with_host(
+        &harness,
+        provider,
+        SubagentLimits {
+            max_concurrent: 1,
+            ..SubagentLimits::default()
+        },
+        true,
+    )
+    .await;
+
+    let first = host
+        .spawn(session.id(), "SUB one".to_string(), never_cancelled())
+        .expect("spawns");
+    let second = host
+        .spawn(session.id(), "SUB two".to_string(), never_cancelled())
+        .expect("spawns");
+
+    let collected = host
+        .collect_within(
+            &[first.clone(), second.clone()],
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("collects");
+
+    // Waiting for both would have cost the second's queued turn as well. The
+    // point of the bound is that the answer already in hand comes back now.
+    assert_eq!(collected.reports.len(), 1, "{collected:?}");
+    assert_eq!(collected.reports[0].id, first);
+    assert_eq!(collected.pending, vec![second.clone()]);
+    // The one that did not finish is still there to wait on again.
+    assert_eq!(host.outstanding(), vec![second.clone()]);
+
+    let rest = host
+        .collect_within(
+            std::slice::from_ref(&second),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("collects");
+    assert_eq!(rest.reports.len(), 1, "{rest:?}");
+    assert_eq!(rest.reports[0].id, second);
+    assert!(rest.pending.is_empty());
+}
+
+#[tokio::test]
+async fn a_wait_that_times_out_loses_nothing() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(500);
+    let (session, host) =
+        parent_with_host(&harness, provider, SubagentLimits::default(), true).await;
+
+    let id = host
+        .spawn(session.id(), "SUB slow".to_string(), never_cancelled())
+        .expect("spawns");
+
+    let collected = host
+        .collect_within(
+            std::slice::from_ref(&id),
+            std::time::Duration::from_millis(20),
+        )
+        .await
+        .expect("a wait that runs out is an answer, not an error");
+
+    assert!(collected.reports.is_empty(), "{collected:?}");
+    assert_eq!(collected.pending, vec![id.clone()]);
+    // A subagent must not be lost by the act of waiting too briefly for it.
+    assert_eq!(host.outstanding(), vec![id.clone()]);
+
+    let later = host
+        .collect_within(std::slice::from_ref(&id), std::time::Duration::from_secs(5))
+        .await
+        .expect("collects");
+    assert_eq!(later.reports.len(), 1, "{later:?}");
+    assert_eq!(later.reports[0].summary, "finished: SUB slow");
+}
+
+#[tokio::test]
+async fn a_collected_subagent_cannot_be_collected_twice() {
+    let harness = harness();
+    let (provider, _seen) = ScriptedProvider::new(0);
+    let (session, host) =
+        parent_with_host(&harness, provider, SubagentLimits::default(), true).await;
+
+    let id = host
+        .spawn(session.id(), "SUB once".to_string(), never_cancelled())
+        .expect("spawns");
+    host.collect_within(std::slice::from_ref(&id), std::time::Duration::from_secs(5))
+        .await
+        .expect("collects");
+
+    let again = host
+        .collect_within(std::slice::from_ref(&id), std::time::Duration::from_secs(5))
+        .await;
+    assert!(
+        matches!(again, Err(keke_subagent::SubagentError::Unknown(_))),
+        "collecting a reported subagent again must name the id, not replay it"
+    );
 }
