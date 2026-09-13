@@ -421,6 +421,8 @@ pub(crate) struct Settings<'a> {
     pub subagent_limits: keke_config_types::SubagentLimits,
     pub background_limits: keke_config_types::BackgroundLimits,
     pub skills: &'a keke_config_types::SkillSelection,
+    pub guardian: &'a keke_config_types::GuardianReviewConfig,
+    pub model: &'a keke_config_types::ModelSelection,
 }
 
 impl<'a> From<&'a keke_config::Config> for Settings<'a> {
@@ -431,6 +433,8 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             subagent_limits: config.subagents,
             background_limits: config.background,
             skills: &config.skills,
+            guardian: &config.guardian,
+            model: &config.model,
         }
     }
 }
@@ -488,6 +492,8 @@ impl Composed {
             subagent_limits,
             background_limits,
             skills,
+            guardian,
+            model,
         } = settings;
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -678,6 +684,14 @@ impl Composed {
             },
         );
         keke_hooks::install_with(&mut extensions, &plugins, timeouts);
+
+        // Before the surface's own bridge, so a person is only asked once the
+        // guardian itself could not answer. Its model is resolved against
+        // `providers` here, at composition time, so a guardian pointed at an
+        // unregistered route fails the build rather than denying every call
+        // it is later asked to review.
+        keke_guardian::install(&mut extensions, guardian.clone(), &providers, model)
+            .context("configuring the guardian reviewer")?;
 
         // The surface's approval bridge registers last so a plugin hook cannot
         // answer on a person's behalf. A hook may still deny — denial is

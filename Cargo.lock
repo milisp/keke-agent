@@ -1711,6 +1711,7 @@ dependencies = [
  "keke-config-types",
  "keke-core",
  "keke-credentials",
+ "keke-guardian",
  "keke-hooks",
  "keke-mcp",
  "keke-oauth",
@@ -1815,6 +1816,18 @@ dependencies = [
  "serde",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "keke-guardian"
+version = "0.1.24"
+dependencies = [
+ "futures",
+ "keke-config-types",
+ "keke-plugin-api",
+ "keke-protocol",
+ "keke-provider-api",
+ "tokio",
 ]
 
 [[package]]

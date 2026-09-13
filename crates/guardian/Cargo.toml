@@ -1,0 +1,21 @@
+[package]
+name = "keke-guardian"
+description = "A model-backed approval reviewer: answers ApprovalRequests by asking a configured model instead of a person."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-plugin-api = { workspace = true }
+keke-protocol = { workspace = true }
+keke-provider-api = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
