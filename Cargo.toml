@@ -12,6 +12,7 @@ members = [
     "crates/core",
     "crates/credentials",
     "crates/fuzzy-file-search",
+    "crates/guardian",
     "crates/hooks",
     "crates/mcp",
     "crates/oauth",
@@ -68,6 +69,7 @@ keke-workspace = { path = "crates/workspace" }
 
 # --- tier 2: plugins ---
 keke-auth-codex = { path = "crates/auth-codex" }
+keke-guardian = { path = "crates/guardian" }
 keke-hooks = { path = "crates/hooks" }
 keke-mcp = { path = "crates/mcp" }
 keke-plan = { path = "crates/plan" }

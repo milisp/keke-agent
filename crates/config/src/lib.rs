@@ -28,6 +28,7 @@ use keke_config_types::BackgroundLimits;
 use keke_config_types::CheckpointConfig;
 use keke_config_types::CompactionConfig;
 use keke_config_types::DirectoryOverride;
+use keke_config_types::GuardianReviewConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::ModelCatalogTtl;
@@ -96,6 +97,9 @@ pub struct Config {
     pub background: BackgroundLimits,
     /// Which plugin-contributed skills this deployment wants.
     pub skills: SkillSelection,
+    /// A model-backed approval reviewer, disabled unless a deployment names
+    /// one explicitly.
+    pub guardian: GuardianReviewConfig,
     /// How long a fetched model catalog stays usable before the vendor is
     /// asked again.
     pub model_catalog_ttl: ModelCatalogTtl,
@@ -134,6 +138,7 @@ pub struct ConfigFile {
     pub subagents: Option<SubagentsFile>,
     pub background: Option<BackgroundFile>,
     pub skills: Option<SkillsFile>,
+    pub guardian: Option<GuardianFile>,
     /// Seconds. `0` asks the vendor every time.
     pub model_catalog_ttl_seconds: Option<u64>,
     /// Extra endpoints, keyed by route: `[providers.nvidia]`. Accumulated
@@ -208,6 +213,23 @@ pub struct BackgroundFile {
     pub max_concurrent: Option<u8>,
     pub output_bytes: Option<u64>,
     pub kill_grace_millis: Option<u64>,
+}
+
+/// The guardian-review section: a model-backed approval reviewer.
+///
+/// `provider`/`model` name the reviewer's own model, separately from the
+/// session's — a deployment that wants a cheap model pre-screening a
+/// different, more capable session model names both here rather than the
+/// engine inferring one from the other.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct GuardianFile {
+    pub enabled: Option<bool>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// Read as a string for the same reason the top-level `reasoning_effort`
+    /// is: a misspelled level names itself in the error.
+    pub reasoning_effort: Option<String>,
 }
 
 /// Values applied when no layer states them.
@@ -312,6 +334,16 @@ impl Config {
                 base.collect_timeout_millis = subagents
                     .collect_timeout_millis
                     .or(base.collect_timeout_millis);
+            }
+            if let Some(guardian) = &layer.file.guardian {
+                let base = merged.guardian.get_or_insert_with(GuardianFile::default);
+                base.enabled = guardian.enabled.or(base.enabled);
+                base.provider = guardian.provider.clone().or(base.provider.clone());
+                base.model = guardian.model.clone().or(base.model.clone());
+                base.reasoning_effort = guardian
+                    .reasoning_effort
+                    .clone()
+                    .or(base.reasoning_effort.clone());
             }
             // Declarations accumulate; a later layer redeclaring a route
             // replaces that one entry rather than the whole set.
@@ -483,6 +515,29 @@ impl Config {
             None => None,
         };
 
+        let guardian_file = merged.guardian.unwrap_or_default();
+        let guardian = GuardianReviewConfig {
+            enabled: guardian_file.enabled.unwrap_or(false),
+            // Naming only one of `provider`/`model` leaves the reviewer
+            // without a model, which fails when it is asked to review rather
+            // than silently guessing the missing half.
+            model: match (guardian_file.provider, guardian_file.model) {
+                (None, None) => None,
+                (provider, model) => Some(ModelSelection {
+                    provider: provider.ok_or_else(|| {
+                        invalid("guardian.model is set without guardian.provider".to_string())
+                    })?,
+                    model: model.ok_or_else(|| {
+                        invalid("guardian.provider is set without guardian.model".to_string())
+                    })?,
+                }),
+            },
+            reasoning_effort: match guardian_file.reasoning_effort.as_deref() {
+                Some(value) => Some(ReasoningEffort::parse(value).map_err(invalid)?),
+                None => None,
+            },
+        };
+
         let mut model = ModelSelection {
             provider: merged
                 .provider
@@ -547,6 +602,7 @@ impl Config {
             subagents,
             background,
             skills,
+            guardian,
             model_catalog_ttl,
             providers: merged
                 .providers

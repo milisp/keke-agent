@@ -105,6 +105,28 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
     },
+    /// A model-backed approval reviewer answered an [`ApprovalRequest`].
+    ///
+    /// The reviewer's verdict comes from its own model call, made outside the
+    /// conversation the transcript otherwise tells — without a line of its
+    /// own, that call and its answer would be model-visible policy input with
+    /// nowhere in the log to be reconstructed from, which invariant 6
+    /// forbids.
+    ///
+    /// [`ApprovalRequest`]: keke's approval seam (`keke-plugin-api`), not named
+    /// here because contract crates like this one do not depend upward.
+    GuardianReview {
+        turn: TurnId,
+        tool_name: String,
+        /// The model that answered, so a transcript can tell which reviewer
+        /// decided when the config later changes.
+        model: String,
+        /// `true` for an allow, `false` for a deny — a reviewer here may never
+        /// abort the turn outright, only answer the approval question.
+        allow: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// Model-visible text an extension put in front of the model.
     ///
     /// A `ContextContributor`'s fragment reaches the request inside the *system*

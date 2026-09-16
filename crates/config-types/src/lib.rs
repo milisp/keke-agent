@@ -133,6 +133,22 @@ pub struct ModelSelection {
     pub model: String,
 }
 
+/// Configuration for a model-backed approval reviewer.
+///
+/// Disabled by default: a deployment opts in and names the model itself
+/// rather than the engine picking one, per the no-hidden-constant rule this
+/// module documents at the top.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GuardianReviewConfig {
+    pub enabled: bool,
+    /// Falls back to the session's own model when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
 /// A provider route declared from configuration rather than compiled in.
 ///
 /// The three wire formats are implemented once, so most vendors are a base URL,
