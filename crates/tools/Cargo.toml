@@ -15,6 +15,7 @@ keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-tasks = { workspace = true }
 keke-tool = { workspace = true }
+dirs = { workspace = true }
 regex = { workspace = true }
 ignore = { workspace = true }
 schemars = { workspace = true }

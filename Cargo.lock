@@ -2104,6 +2104,7 @@ dependencies = [
 name = "keke-tools"
 version = "0.1.26"
 dependencies = [
+ "dirs",
  "ignore",
  "keke-config-types",
  "keke-paths",

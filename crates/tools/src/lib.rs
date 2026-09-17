@@ -11,6 +11,7 @@ mod grep;
 mod list_dir;
 mod prompt;
 mod read_file;
+mod secrets;
 mod support;
 mod web_search;
 mod write_file;
@@ -88,6 +89,9 @@ pub fn install(
 ) {
     registry.tool_contributor(Arc::new(BuiltinTools { background }));
     registry.context_contributor(Arc::new(prompt::BuiltinToolGuidance));
+    // Guards subtract only, so this one is registered unconditionally: there is
+    // no composition in which reading a private key is what the person meant.
+    registry.tool_guard(Box::new(secrets::denial));
 }
 
 #[cfg(test)]
@@ -188,6 +192,24 @@ mod tests {
         assert!(out.text.contains("three"));
         assert!(!out.text.contains("four"));
         assert!(rendered(&out).contains("continue with offset 4"));
+    }
+
+    #[test]
+    fn installing_the_pack_registers_the_credential_guard() {
+        let mut builder = keke_plugin_api::ExtensionRegistryBuilder::new();
+        install(&mut builder, None);
+        let registry = builder.build();
+
+        let denial = registry.first_denial(&keke_protocol::ToolCall {
+            id: ToolCallId::new("call-1"),
+            name: "read_file".into(),
+            arguments: serde_json::json!({ "path": "~/.ssh/id_rsa" }),
+        });
+
+        assert!(
+            denial.is_some(),
+            "reads are uncontained, so this is the gate"
+        );
     }
 
     #[tokio::test]
