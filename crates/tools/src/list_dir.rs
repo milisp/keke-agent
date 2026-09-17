@@ -64,7 +64,7 @@ impl Tool for ListDir {
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
         ToolDescription::new(
-            "List the immediate entries of a workspace directory, one per line, with a trailing \
+            "List the immediate entries of a directory, one per line, with a trailing \
              `/` on directories. Gitignored and hidden entries are omitted.",
         )
     }
@@ -75,7 +75,7 @@ impl Tool for ListDir {
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
         let target = match args.path.as_deref() {
-            Some(path) => support::resolve(&ctx, path)?,
+            Some(path) => support::resolve(&ctx, path, support::Access::Read)?,
             None => ctx.workspace_root.clone(),
         };
         let display = support::display(&ctx.workspace_root, &target);

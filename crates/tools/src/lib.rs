@@ -191,16 +191,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_path_outside_the_workspace_is_refused() {
+    async fn a_file_outside_the_workspace_can_be_read() {
         let (_dir, ctx) = workspace();
+        let outside = tempfile::tempdir().expect("tempdir");
+        let path = outside.path().join("sibling.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write");
 
-        let error = ReadFile
+        let out = ReadFile
             .run(
                 ctx,
                 ReadFileArgs {
-                    path: "../escape.txt".into(),
+                    path: path.to_string_lossy().into_owned(),
                     offset: None,
                     limit: None,
+                },
+            )
+            .await
+            .expect("a sibling checkout is ordinary code");
+
+        assert!(out.text.contains("fn main"));
+        assert!(
+            out.path.starts_with('/'),
+            "a path outside the root reads back absolute, got {}",
+            out.path
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_outside_the_workspace_is_refused() {
+        let (_dir, ctx) = workspace();
+
+        let error = WriteFile
+            .run(
+                ctx,
+                WriteFileArgs {
+                    path: "../escape.txt".into(),
+                    content: "no".into(),
                 },
             )
             .await

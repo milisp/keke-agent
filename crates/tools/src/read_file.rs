@@ -67,7 +67,8 @@ impl Tool for ReadFile {
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
         ToolDescription::new(
-            "Read a UTF-8 text file inside the workspace. Returns lines prefixed with their \
+            "Read a UTF-8 text file. Paths may be absolute or relative to the workspace root, \
+             and may point outside it. Returns lines prefixed with their \
              1-based numbers. Use `offset` and `limit` to page through a long file.",
         )
     }
@@ -77,7 +78,7 @@ impl Tool for ReadFile {
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
-        let path = support::resolve(&ctx, &args.path)?;
+        let path = support::resolve(&ctx, &args.path, support::Access::Read)?;
         let display = support::display(&ctx.workspace_root, &path);
 
         let mut file = tokio::fs::File::open(path.as_path())

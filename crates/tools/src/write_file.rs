@@ -74,7 +74,7 @@ impl Tool for WriteFile {
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
-        let path = support::resolve(&ctx, &args.path)?;
+        let path = support::resolve(&ctx, &args.path, support::Access::Write)?;
         let display = support::display(&ctx.workspace_root, &path);
         let created = !path.as_path().exists();
         let previous = if created {

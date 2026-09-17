@@ -366,7 +366,7 @@ struct Step {
 async fn plan(ctx: &ToolCallContext, section: Section) -> Result<Step, ToolError> {
     match section {
         Section::Add { path, contents } => {
-            let resolved = support::resolve(ctx, &path)?;
+            let resolved = support::resolve(ctx, &path, support::Access::Write)?;
             let display = support::display(&ctx.workspace_root, &resolved);
             if resolved.as_path().exists() {
                 return Err(bad_patch(format!("{display}: already exists")));
@@ -383,7 +383,7 @@ async fn plan(ctx: &ToolCallContext, section: Section) -> Result<Step, ToolError
             })
         }
         Section::Delete { path } => {
-            let resolved = support::resolve(ctx, &path)?;
+            let resolved = support::resolve(ctx, &path, support::Access::Write)?;
             let display = support::display(&ctx.workspace_root, &resolved);
             let previous = read(&resolved, &display).await?;
             Ok(Step {
@@ -402,14 +402,14 @@ async fn plan(ctx: &ToolCallContext, section: Section) -> Result<Step, ToolError
             move_to,
             hunks,
         } => {
-            let resolved = support::resolve(ctx, &path)?;
+            let resolved = support::resolve(ctx, &path, support::Access::Write)?;
             let display = support::display(&ctx.workspace_root, &resolved);
             let previous = read(&resolved, &display).await?;
             let updated = apply_hunks(&previous, &hunks, &display)?;
 
             let (target, moved_to) = match move_to {
                 Some(destination) => {
-                    let target = support::resolve(ctx, &destination)?;
+                    let target = support::resolve(ctx, &destination, support::Access::Write)?;
                     let shown = support::display(&ctx.workspace_root, &target);
                     if target != resolved && target.as_path().exists() {
                         return Err(bad_patch(format!("{shown}: already exists")));

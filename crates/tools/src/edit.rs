@@ -84,7 +84,7 @@ impl Tool for Edit {
             ));
         }
 
-        let path = support::resolve(&ctx, &args.path)?;
+        let path = support::resolve(&ctx, &args.path, support::Access::Write)?;
         let display = support::display(&ctx.workspace_root, &path);
 
         let contents =

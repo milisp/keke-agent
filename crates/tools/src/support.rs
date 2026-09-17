@@ -15,12 +15,34 @@ use std::path::PathBuf;
 /// turn.
 pub(crate) const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
-/// Resolve a model-supplied path against the workspace and refuse escapes.
+/// Where a resolved path is allowed to land.
+///
+/// Reads and writes are not the same risk, so they do not get the same rule.
+/// codex draws this line in its sandbox rather than its tools — every built-in
+/// profile, `read-only` included, grants read access to `/` and restricts only
+/// the writable roots — and a path-containment check in a read tool is the same
+/// decision made in the wrong place. A sibling crate in a monorepo and a
+/// dependency's source under `~/.cargo` are ordinary code the model has every
+/// reason to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Anywhere the process can read. Narrowing this is a `ToolGuard`'s job,
+    /// which keeps denial monotonic instead of scattering allow-lists.
+    Read,
+    /// Inside the workspace root, or not at all.
+    Write,
+}
+
+/// Resolve a model-supplied path against the workspace.
 ///
 /// Normalization is lexical: `..` is folded here rather than by the filesystem
 /// so a path pointing at something that does not exist yet (`write_file`) is
 /// checked by the same rule as one that does.
-pub(crate) fn resolve(ctx: &ToolCallContext, path: &str) -> Result<AbsPath, ToolError> {
+pub(crate) fn resolve(
+    ctx: &ToolCallContext,
+    path: &str,
+    access: Access,
+) -> Result<AbsPath, ToolError> {
     let raw = Path::new(path);
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
@@ -33,7 +55,7 @@ pub(crate) fn resolve(ctx: &ToolCallContext, path: &str) -> Result<AbsPath, Tool
     let normalized = AbsPath::new(lexically_normalize(&joined))
         .map_err(|error| ToolError::custom("bad_path", format!("{path}: {error}")))?;
 
-    if !normalized.is_contained_in(&ctx.workspace_root) {
+    if access == Access::Write && !normalized.is_contained_in(&ctx.workspace_root) {
         return Err(ToolError::denied(format!(
             "{path} resolves outside the workspace root {}",
             ctx.workspace_root

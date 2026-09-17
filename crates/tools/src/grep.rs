@@ -79,7 +79,7 @@ impl Tool for Grep {
 
     fn description(&self, ctx: &ListToolsContext) -> ToolDescription {
         let mut text = String::from(
-            "Search workspace files with a regular expression, skipping gitignored, binary, \
+            "Search files with a regular expression, skipping gitignored, binary, \
              and very large files. Returns `file:line:text` hits.",
         );
         if ctx.has("read_file") {
@@ -101,7 +101,7 @@ impl Tool for Grep {
         }
 
         let root = match args.path.as_deref() {
-            Some(path) => support::resolve(&ctx, path)?,
+            Some(path) => support::resolve(&ctx, path, support::Access::Read)?,
             None => ctx.workspace_root.clone(),
         };
         if !root.as_path().exists() {
