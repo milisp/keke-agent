@@ -48,6 +48,14 @@ const SECRET_EXTENSIONS: &[&str] = &["pem", "p12", "pfx", "keystore", "jks"];
 /// The harness's own store, which holds every vendor token this session uses.
 const KEKE_CREDENTIALS: &str = "credentials.json";
 
+/// Suffixes that make a `.env`-named file a template rather than a secret.
+///
+/// The whole point of `.env.example` is to be read — it is what a person
+/// commits so the next one knows which variables to set — so denying it would
+/// cost something real and protect nothing. Everything else named `.env` is
+/// assumed to hold the values that example describes.
+const ENV_TEMPLATE_SUFFIXES: &[&str] = &["example", "sample", "template", "dist", "defaults"];
+
 /// Why this call is refused, or `None` when nothing in it names a secret.
 pub(crate) fn denial(call: &ToolCall) -> Option<String> {
     let mut found = None;
@@ -91,6 +99,9 @@ fn sensitive(token: &str) -> Option<&'static str> {
         {
             return Some("a private key");
         }
+        if is_secret_env_file(name) {
+            return Some("an environment file, which holds configured secrets");
+        }
     }
 
     for directory in SECRET_DIRECTORIES {
@@ -118,6 +129,23 @@ fn sensitive(token: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+/// Whether `name` is a `.env` file holding values rather than describing them.
+///
+/// Both orders are in the wild — `.env.production` and `.env.local` as well as
+/// `production.env` — so the check is on either end. A name is a template only
+/// when the *whole* trailing segment says so: `.env.example` is a template,
+/// `.env.example-staging` is somebody's real staging file.
+fn is_secret_env_file(name: &str) -> bool {
+    let is_env = name == ".env"
+        || name.strip_prefix(".env.").is_some()
+        || name.strip_suffix(".env").is_some();
+    if !is_env {
+        return false;
+    }
+    let last_segment = name.rsplit('.').next().unwrap_or_default();
+    !ENV_TEMPLATE_SUFFIXES.contains(&last_segment)
 }
 
 /// `$KEKE_HOME`, else `~/.keke`.
@@ -239,6 +267,42 @@ mod tests {
         let denial = denial(&call("read_file", json!({ "path": "certs/server.pem" })));
 
         assert!(denial.is_some());
+    }
+
+    #[test]
+    fn an_env_file_in_the_workspace_is_denied() {
+        for path in [
+            ".env",
+            "services/api/.env",
+            ".env.production",
+            "staging.env",
+        ] {
+            let denial = denial(&call("read_file", json!({ "path": path })));
+
+            assert!(denial.is_some(), "{path} holds configured secrets");
+        }
+    }
+
+    #[test]
+    fn an_env_template_is_allowed() {
+        for path in [".env.example", ".env.sample", ".env.template", ".env.dist"] {
+            let denial = denial(&call("read_file", json!({ "path": path })));
+
+            assert!(
+                denial.is_none(),
+                "{path} is committed to be read: {denial:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_template_suffix_only_counts_as_the_whole_segment() {
+        let denial = denial(&call(
+            "read_file",
+            json!({ "path": ".env.example-staging" }),
+        ));
+
+        assert!(denial.is_some(), "that is somebody's real staging file");
     }
 
     #[test]
