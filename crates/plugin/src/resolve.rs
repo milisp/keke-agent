@@ -287,10 +287,10 @@ pub fn load_named(
         return Err(PluginError::InvalidName { name });
     }
 
-    let skills = read_skills(&root, &name, &manifest)?;
-    let commands = read_commands(&root, &name, &manifest)?;
-    let hooks = read_hooks(&root, &name, &manifest)?;
-    let mcp_servers = read_mcp_servers(&root, &name, &manifest)?;
+    let skills = read_skills(&root, &name, &manifest, scope)?;
+    let commands = read_commands(&root, &name, &manifest, scope)?;
+    let hooks = read_hooks(&root, &name, &manifest, scope)?;
+    let mcp_servers = read_mcp_servers(&root, &name, &manifest, scope)?;
 
     Ok(ResolvedPlugin {
         name,
@@ -353,6 +353,7 @@ fn read_skills(
     root: &AbsPath,
     plugin: &str,
     manifest: &PluginManifest,
+    scope: PluginScope,
 ) -> Result<Vec<ResolvedSkill>, PluginError> {
     let mut skills = Vec::new();
     for dir in source_dirs(root, manifest.skills.as_ref(), SKILLS_DIR) {
@@ -369,7 +370,7 @@ fn read_skills(
             if !file.is_file() {
                 continue;
             }
-            let path = contained(root, &file, plugin)?;
+            let path = contained(root, &file, plugin, scope)?;
             let text =
                 std::fs::read_to_string(path.as_path()).map_err(|source| PluginError::Read {
                     path: path.to_string(),
@@ -402,6 +403,7 @@ fn read_commands(
     root: &AbsPath,
     plugin: &str,
     manifest: &PluginManifest,
+    scope: PluginScope,
 ) -> Result<Vec<ResolvedCommand>, PluginError> {
     let mut commands = Vec::new();
     for dir in source_dirs(root, manifest.commands.as_ref(), COMMANDS_DIR) {
@@ -409,7 +411,7 @@ fn read_commands(
             if entry.extension().is_none_or(|ext| ext != "md") {
                 continue;
             }
-            let path = contained(root, &entry, plugin)?;
+            let path = contained(root, &entry, plugin, scope)?;
             let text =
                 std::fs::read_to_string(path.as_path()).map_err(|source| PluginError::Read {
                     path: path.to_string(),
@@ -433,11 +435,13 @@ fn read_hooks(
     root: &AbsPath,
     plugin: &str,
     manifest: &PluginManifest,
+    scope: PluginScope,
 ) -> Result<Vec<ResolvedHook>, PluginError> {
-    let file: HooksFile = match read_component(root, manifest.hooks.as_ref(), HOOKS_FILE, plugin)? {
-        Some(value) => serde_json::from_value(value).unwrap_or_default(),
-        None => return Ok(Vec::new()),
-    };
+    let file: HooksFile =
+        match read_component(root, manifest.hooks.as_ref(), HOOKS_FILE, plugin, scope)? {
+            Some(value) => serde_json::from_value(value).unwrap_or_default(),
+            None => return Ok(Vec::new()),
+        };
 
     let mut hooks = Vec::new();
     for (event, matchers) in file.hooks {
@@ -486,8 +490,10 @@ fn read_mcp_servers(
     root: &AbsPath,
     plugin: &str,
     manifest: &PluginManifest,
+    scope: PluginScope,
 ) -> Result<Vec<ResolvedMcpServer>, PluginError> {
-    let value = match read_component(root, manifest.mcp_servers.as_ref(), MCP_FILE, plugin)? {
+    let value = match read_component(root, manifest.mcp_servers.as_ref(), MCP_FILE, plugin, scope)?
+    {
         Some(value) => value,
         None => return Ok(Vec::new()),
     };
@@ -510,6 +516,7 @@ fn read_component(
     declared: Option<&PathOrInline>,
     fallback: &str,
     plugin: &str,
+    scope: PluginScope,
 ) -> Result<Option<serde_json::Value>, PluginError> {
     let path = match declared {
         Some(PathOrInline::Inline(value)) => return Ok(Some(value.clone())),
@@ -519,7 +526,7 @@ fn read_component(
     if !path.is_file() {
         return Ok(None);
     }
-    let path = contained(root, &path, plugin)?;
+    let path = contained(root, &path, plugin, scope)?;
     let text = std::fs::read_to_string(path.as_path()).map_err(|source| PluginError::Read {
         path: path.to_string(),
         source,
@@ -533,7 +540,20 @@ fn read_component(
 }
 
 /// Canonicalize `path` and verify it stays inside `root`.
-fn contained(root: &AbsPath, path: &Path, plugin: &str) -> Result<AbsPath, PluginError> {
+///
+/// A project-scoped plugin is content the repository controls, so a symlink
+/// leading outside its package is exactly the escape invariant 13 guards
+/// against and must be rejected. A user-scoped plugin is content the person
+/// installed for themselves — a symlink there (dotfile managers keep skills
+/// in one real directory and link them into `~/.claude/skills` all the time)
+/// points to something the same person already owns, so containment is not a
+/// trust boundary for it.
+fn contained(
+    root: &AbsPath,
+    path: &Path,
+    plugin: &str,
+    scope: PluginScope,
+) -> Result<AbsPath, PluginError> {
     let resolved = std::fs::canonicalize(path).map_err(|source| PluginError::Read {
         path: path.display().to_string(),
         source,
@@ -542,7 +562,7 @@ fn contained(root: &AbsPath, path: &Path, plugin: &str) -> Result<AbsPath, Plugi
         plugin: plugin.to_string(),
         path: resolved.display().to_string(),
     })?;
-    if resolved.is_contained_in(root) {
+    if scope == PluginScope::User || resolved.is_contained_in(root) {
         Ok(resolved)
     } else {
         Err(PluginError::Escape {

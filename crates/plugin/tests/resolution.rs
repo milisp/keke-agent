@@ -196,7 +196,7 @@ fn a_resource_outside_the_package_root_is_refused() {
     );
 
     assert!(matches!(
-        load(&dir, PluginScope::User, true),
+        load(&dir, PluginScope::Project, true),
         Err(PluginError::Escape { .. })
     ));
 }
@@ -218,9 +218,31 @@ fn a_symlink_out_of_the_package_root_is_refused() {
     // A textual prefix check passes here. Containment is checked against the
     // canonical path for exactly this case.
     assert!(matches!(
-        load(&dir, PluginScope::User, true),
+        load(&dir, PluginScope::Project, true),
         Err(PluginError::Escape { .. })
     ));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_user_scoped_symlink_out_of_the_package_root_is_followed() {
+    // A person's own `~/.claude/skills/foo` commonly symlinks into a
+    // directory they manage elsewhere (dotfile tooling, a synced skills
+    // repo). That is not the repository-controlled content invariant 13
+    // guards against, so user scope does not treat it as an escape.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write(
+        &tmp.path().join("outside/SKILL.md"),
+        "---\ndescription: real skill\n---\n",
+    );
+    let dir = tmp.path().join("linker");
+    write(&dir.join("plugin.json"), r#"{"name": "linker"}"#);
+    std::fs::create_dir_all(dir.join("skills")).expect("mkdir");
+    std::os::unix::fs::symlink(tmp.path().join("outside"), dir.join("skills/linked"))
+        .expect("symlink");
+
+    let plugin = load(&dir, PluginScope::User, true).expect("loads");
+    assert_eq!(plugin.skills.len(), 1);
 }
 
 #[test]
