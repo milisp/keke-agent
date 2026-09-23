@@ -218,6 +218,39 @@ fn provider_choices(composed: &Composed) -> Vec<keke_tui::ProviderChoice> {
         .collect()
 }
 
+/// Each registered route's stored model list, for `/provider` to offer after
+/// a switch.
+///
+/// Held as the providers themselves rather than their lists read up front:
+/// only a route someone switches to is read, so a large catalog for a route
+/// nobody picks costs nothing at startup.
+struct StoredCatalogs(Vec<(String, keke_provider_api::ArcProvider)>);
+
+impl StoredCatalogs {
+    fn new(composed: &Composed) -> Self {
+        let routes: Vec<String> = composed.providers.routes().map(str::to_string).collect();
+        Self(
+            routes
+                .into_iter()
+                .filter_map(|route| {
+                    let provider = composed.providers.get(&route).ok()?;
+                    Some((route, provider))
+                })
+                .collect(),
+        )
+    }
+}
+
+impl keke_tui::ModelCatalog for StoredCatalogs {
+    fn stored(&self, route: &str) -> Vec<keke_provider_api::ModelInfo> {
+        self.0
+            .iter()
+            .find(|(candidate, _)| candidate == route)
+            .map(|(_, provider)| provider.cached_models())
+            .unwrap_or_default()
+    }
+}
+
 /// The command list a person completes against, wherever the interface is.
 ///
 /// Built once here so the TUI's own completion and the list an ACP client is

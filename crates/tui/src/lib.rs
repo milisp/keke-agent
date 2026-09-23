@@ -72,12 +72,26 @@ pub use transcript::PermissionCell;
 pub use transcript::ToolCell;
 pub use transcript::Transcript;
 
+/// The model lists the host already has on hand, by route.
+///
+/// `/provider` points the next session at another route, and `/model` should
+/// then offer what *that* route serves rather than an empty picker. A trait
+/// because the catalogs belong to the host: the interface cannot ask a
+/// provider anything, and should not learn how.
+///
+/// Implementers answer from what is stored locally and never make a network
+/// call — this runs on the interface's thread while a person waits. A route
+/// with nothing stored answers empty, which the surface reports as such.
+pub trait ModelCatalog: Send + Sync + 'static {
+    fn stored(&self, route: &str) -> Vec<keke_provider_api::ModelInfo>;
+}
+
 /// Which model a session is asking, and what its provider serves.
 ///
 /// A value rather than two arguments because the two are only ever meaningful
 /// together: a current model with no list means "no choice to offer", and a
 /// list without a current one has nothing to mark.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Models {
     /// The route serving `current`. Held alongside it because `/model` can
     /// only switch within this route, so persisting the model means
@@ -94,6 +108,9 @@ pub struct Models {
     /// subscription login beside an API key — which is precisely why choosing
     /// between them belongs on a list rather than in a launch flag.
     pub routes: Vec<ProviderChoice>,
+    /// Where `/provider` finds the list for a route it switches to. `None`
+    /// leaves the list empty after a switch.
+    pub catalog: Option<Arc<dyn ModelCatalog>>,
 }
 
 /// What a resumed session hands the interface: what was said and what it
@@ -218,6 +235,7 @@ pub async fn run(
         .with_service_tier(defaults.service_tier)
         .with_models(models.provider, models.current, models.available)
         .with_provider_routes(models.routes)
+        .with_model_catalog(models.catalog)
         .with_prompt_history(history)
         .with_schedules(schedules)
         .with_config_home(defaults.config_home);

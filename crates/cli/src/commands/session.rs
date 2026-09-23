@@ -8,6 +8,7 @@ use anyhow::bail;
 use keke_config::Config;
 use keke_paths::AbsPath;
 
+use super::StoredCatalogs;
 use super::provider_choices;
 use super::provider_for;
 use super::session_builder;
@@ -253,6 +254,7 @@ pub(super) async fn tui(
             current: opened.model,
             available: models,
             routes: provider_choices(&composed),
+            catalog: Some(Arc::new(StoredCatalogs::new(&composed))),
         },
         seed,
         keke_tui::Mcp {

@@ -241,11 +241,15 @@ impl App {
         }
         let previous = self.provider.replace(wanted.to_string());
         // A model id belongs to the provider that serves it, so one carried
-        // across is a pair no run ever used. The list goes with it: what this
-        // session knows is what the *old* route published, and keeping it would
-        // have `/model` refuse names the new route does serve.
+        // across is a pair no run ever used. The list is replaced rather than
+        // kept: the old route's would have `/model` refuse names the new route
+        // does serve, and an empty one would leave nothing to pick from.
         self.model.clear();
-        self.models.clear();
+        self.models = self
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.stored(wanted))
+            .unwrap_or_default();
         let route = wanted.to_string();
         self.persist_override(move |file| {
             file.provider = Some(route);
@@ -261,19 +265,23 @@ impl App {
         notice.push_str(
             ".\nThe model is unset, since an id from the old provider need not exist on this one.",
         );
+        if !self.models.is_empty() {
+            notice.push_str(" /model lists what it serves.");
+        }
         self.transcript.push(Cell::Notice(notice));
     }
     /// What `/model` says when there is no list to open.
     pub(super) fn model_list(&self) -> String {
         if self.models.is_empty() {
             return format!(
-                "model: {}\n\nThis provider published no model list, so there is nothing to \n\
+                "model: {}\n\nNo model list is on hand for {}, so there is nothing to \n\
                  choose between here. `/model <id>` still switches to whatever you name.",
                 if self.model.is_empty() {
                     "(unset)"
                 } else {
                     &self.model
-                }
+                },
+                self.provider.as_deref().unwrap_or("this provider"),
             );
         }
         let mut text = String::from("models:");

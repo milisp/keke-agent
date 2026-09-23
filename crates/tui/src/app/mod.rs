@@ -148,6 +148,7 @@ pub struct App {
     /// and then nothing is refused — keke has no grounds to.
     routes: Vec<crate::picker::ProviderChoice>,
     models: Vec<keke_provider_api::ModelInfo>,
+    catalog: Option<std::sync::Arc<dyn crate::ModelCatalog>>,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
     /// held because the status bar keeps showing the duration after the turn
@@ -269,6 +270,7 @@ impl App {
                 launched_provider: None,
                 routes: Vec::new(),
                 models: Vec::new(),
+                catalog: None,
                 turn: Turn::Idle,
                 started: None,
                 last_turn: None,
@@ -432,6 +434,16 @@ impl App {
     #[must_use]
     pub fn with_provider_routes(mut self, routes: Vec<crate::picker::ProviderChoice>) -> Self {
         self.routes = routes;
+        self
+    }
+
+    /// Where a `/provider` switch finds the new route's model list.
+    #[must_use]
+    pub fn with_model_catalog(
+        mut self,
+        catalog: Option<std::sync::Arc<dyn crate::ModelCatalog>>,
+    ) -> Self {
+        self.catalog = catalog;
         self
     }
 

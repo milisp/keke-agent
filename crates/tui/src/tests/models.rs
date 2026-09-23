@@ -145,7 +145,7 @@ async fn the_model_command_without_a_list_says_so() {
     let Some(Cell::Notice(text)) = app.transcript.last() else {
         panic!("expected a notice, got {:?}", app.transcript.last());
     };
-    assert!(text.contains("published no model list"), "{text}");
+    assert!(text.contains("No model list is on hand"), "{text}");
 }
 
 #[tokio::test]
@@ -266,6 +266,33 @@ async fn switching_provider_unsets_the_model_the_old_one_served() {
     // And the old route's list goes with it: keeping it would have `/model`
     // refuse names the new route does serve.
     assert!(app.models().is_empty());
+}
+
+/// What the host has stored for each route, as `/provider` would ask it.
+struct Stored;
+
+impl crate::ModelCatalog for Stored {
+    fn stored(&self, route: &str) -> Vec<keke_provider_api::ModelInfo> {
+        match route {
+            "xai" => vec![served("grok-4.7", "Grok 4.7", &[])],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A switch offers what the new route serves rather than an empty picker, so
+/// the next session's model can be chosen before restarting into it.
+#[tokio::test]
+async fn switching_provider_offers_the_new_routes_stored_models() {
+    let (app, _scripted, _updates, _local) = app_with_providers();
+    let mut app = app.with_model_catalog(Some(Arc::new(Stored)));
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+
+    let ids: Vec<&str> = app.models().iter().map(|model| model.id.as_str()).collect();
+    assert_eq!(ids, vec!["grok-4.7"]);
+    assert_eq!(app.model(), "", "listed, not chosen");
 }
 
 /// Invariant 8: a route nothing is registered under is refused by name, here,
