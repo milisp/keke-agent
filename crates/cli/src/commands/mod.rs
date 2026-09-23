@@ -347,15 +347,7 @@ async fn session_builder(
     let model = match config.model.model.trim() {
         "" => match declared_default_model(config, &route) {
             Some(model) => model,
-            None => match provider.list_models().await {
-                Ok(models) if !models.is_empty() => models[0].id.clone(),
-                Ok(_) => bail!(
-                    "no model set and `{route}` publishes no model list — set `model` in config.toml or pass --model"
-                ),
-                Err(error) => {
-                    bail!("no model set and `{route}` could not be asked for one: {error}")
-                }
-            },
+            None => first_listed_model(provider.as_ref()).await?,
         },
         chosen => chosen.to_string(),
     };
@@ -419,6 +411,28 @@ fn declared_service_tier(config: &Config, route: &str) -> Option<keke_config_typ
         .and_then(|declared| declared.service_tier)
 }
 
+/// The model heading `provider`'s list, for a session nothing chose one for.
+///
+/// The stored catalog answers first, stale or not: this runs before the
+/// interface draws, and a stale entry still names a model the route served
+/// recently, while re-asking the vendor here can hold the first frame for
+/// seconds. The surface refreshes the catalog in the background once it is
+/// open, so the next start reads a current list. Only a route never listed on
+/// this machine waits on the network.
+async fn first_listed_model(provider: &dyn keke_provider_api::ModelProvider) -> Result<String> {
+    if let Some(model) = provider.cached_models().into_iter().next() {
+        return Ok(model.id);
+    }
+    let route = &provider.info().route;
+    match provider.list_models().await {
+        Ok(models) if !models.is_empty() => Ok(models[0].id.clone()),
+        Ok(_) => bail!(
+            "no model set and `{route}` publishes no model list — set `model` in config.toml or pass --model"
+        ),
+        Err(error) => bail!("no model set and `{route}` could not be asked for one: {error}"),
+    }
+}
+
 fn declared_default_model(config: &Config, route: &str) -> Option<String> {
     config
         .providers
@@ -450,6 +464,102 @@ mod tests {
             &[layer],
         )
         .expect("merges")
+    }
+
+    /// A provider whose network listing never answers, so a test that
+    /// finishes proves the listing was never awaited.
+    struct Stalled {
+        info: keke_provider_api::ProviderInfo,
+        stored: Vec<keke_provider_api::ModelInfo>,
+        live: Vec<keke_provider_api::ModelInfo>,
+        hangs: bool,
+    }
+
+    impl Stalled {
+        fn new(stored: &[&str], live: &[&str], hangs: bool) -> Self {
+            let models = |ids: &[&str]| {
+                ids.iter()
+                    .map(|id| keke_provider_api::ModelInfo::new(*id))
+                    .collect()
+            };
+            Self {
+                info: keke_provider_api::ProviderInfo {
+                    route: "grok".to_string(),
+                    display_name: "Grok".to_string(),
+                    base_url: "https://api.example/v1".to_string(),
+                    wire_api: keke_provider_api::WireApi::Responses,
+                    auth_id: None,
+                    env_key: None,
+                },
+                stored: models(stored),
+                live: models(live),
+                hangs,
+            }
+        }
+    }
+
+    impl keke_provider_api::ModelProvider for Stalled {
+        fn info(&self) -> &keke_provider_api::ProviderInfo {
+            &self.info
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _request: keke_provider_api::ModelRequest,
+        ) -> keke_provider_api::ProviderFuture<
+            'a,
+            Result<keke_provider_api::StreamEvent, keke_provider_api::ProviderError>,
+        > {
+            Box::pin(futures::future::pending())
+        }
+
+        fn list_models(
+            &self,
+        ) -> keke_provider_api::ProviderFuture<
+            '_,
+            Result<Vec<keke_provider_api::ModelInfo>, keke_provider_api::ProviderError>,
+        > {
+            let live = self.live.clone();
+            let hangs = self.hangs;
+            Box::pin(async move {
+                if hangs {
+                    futures::future::pending::<()>().await;
+                }
+                Ok(live)
+            })
+        }
+
+        fn cached_models(&self) -> Vec<keke_provider_api::ModelInfo> {
+            self.stored.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_catalog_picks_the_model_without_waiting_on_the_vendor() {
+        let provider = Stalled::new(&["stored-first", "stored-second"], &[], true);
+        let model = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            first_listed_model(&provider),
+        )
+        .await
+        .expect("answered from the store, not the network")
+        .expect("a model");
+        assert_eq!(model, "stored-first");
+    }
+
+    #[tokio::test]
+    async fn a_route_never_listed_here_asks_the_vendor() {
+        let provider = Stalled::new(&[], &["listed-first"], false);
+        assert_eq!(
+            first_listed_model(&provider).await.expect("a model"),
+            "listed-first"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_route_that_lists_nothing_is_an_error_not_an_empty_model() {
+        let provider = Stalled::new(&[], &[], false);
+        assert!(first_listed_model(&provider).await.is_err());
     }
 
     #[test]
