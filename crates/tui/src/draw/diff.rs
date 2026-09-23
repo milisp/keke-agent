@@ -31,24 +31,42 @@ impl Theme {
     ///
     /// `KEKE_THEME` wins outright, since detection is a heuristic and a
     /// person who has already fought with it once should never have to
-    /// fight with it again. Failing that, [`terminal_light::luma`] queries
-    /// the terminal's own reported background over the `OSC 11` escape
-    /// sequence (falling back to `COLORFGBG` where that query goes
-    /// unanswered) — this is the same probe codex's TUI uses, and unlike a
+    /// fight with it again. Failing that, [`terminal_light::background_color`]
+    /// queries the terminal's own reported background over the `OSC 11`
+    /// escape sequence (falling back to `COLORFGBG` where that query goes
+    /// unanswered). Unlike a
     /// name- or env-based guess it reads the actual colour, so it gets
     /// terminals like macOS Terminal.app right without special-casing them.
     pub(crate) fn detect() -> Theme {
         static THEME: OnceLock<Theme> = OnceLock::new();
         *THEME.get_or_init(|| {
             env_override().unwrap_or_else(|| {
-                match terminal_light::luma() {
+                match terminal_background() {
                     // 0.6 is terminal-light's own suggested pivot between a
                     // "rather dark" and "rather light" background.
-                    Ok(luma) if luma > 0.6 => Theme::Light,
+                    Some((_, luma)) if luma > 0.6 => Theme::Light,
                     _ => Theme::Dark,
                 }
             })
         })
+    }
+
+    /// Background tint for a user message in the transcript.
+    pub(crate) fn user_bg(self) -> Color {
+        let ((r, g, b), tint, alpha) = match self {
+            Theme::Dark => (
+                terminal_background().map_or((0, 0, 0), |(rgb, _)| rgb),
+                255.0,
+                0.12,
+            ),
+            Theme::Light => (
+                terminal_background().map_or((255, 255, 255), |(rgb, _)| rgb),
+                0.0,
+                0.04,
+            ),
+        };
+        let blend = |channel: u8| (f32::from(channel) * (1.0 - alpha) + tint * alpha) as u8;
+        Color::Rgb(blend(r), blend(g), blend(b))
     }
 
     /// Background tint for an added line.
@@ -70,6 +88,16 @@ impl Theme {
             Theme::Light => Color::Rgb(255, 235, 233),
         }
     }
+}
+
+fn terminal_background() -> Option<((u8, u8, u8), f32)> {
+    static BACKGROUND: OnceLock<Option<((u8, u8, u8), f32)>> = OnceLock::new();
+    *BACKGROUND.get_or_init(|| {
+        terminal_light::background_color().ok().map(|color| {
+            let rgb = color.rgb();
+            ((rgb.r, rgb.g, rgb.b), color.luma())
+        })
+    })
 }
 
 /// Explicit override for when detection guesses wrong or a terminal cannot

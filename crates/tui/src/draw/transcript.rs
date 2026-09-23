@@ -14,6 +14,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+use super::diff::Theme;
 use super::diff::push_diff_block;
 use super::markdown;
 use crate::transcript::CallState;
@@ -21,7 +22,6 @@ use crate::transcript::Cell;
 use crate::transcript::ToolCell;
 use crate::transcript::verb;
 
-const USER: Color = Color::Cyan;
 pub(super) const THINKING: Color = Color::DarkGray;
 const NOTICE: Color = Color::Blue;
 pub(super) const FAILURE: Color = Color::Red;
@@ -132,7 +132,14 @@ pub(crate) fn render(
                 plan_lines(&mut out, plan_cell, width);
             }
             Cell::User(text) => {
-                push_block(&mut out.lines, "› ", text, Style::new().fg(USER), width);
+                let theme = Theme::detect();
+                push_block(
+                    &mut out.lines,
+                    "› ",
+                    text,
+                    Style::new().bg(theme.user_bg()),
+                    width,
+                );
             }
             // Prose that follows reasoning usually starts with the blank line
             // that separated the two on the wire. That separator is not part
@@ -523,9 +530,14 @@ fn push_block(
     for paragraph in text.split('\n') {
         for chunk in wrap(paragraph, body) {
             let lead = if first { prefix } else { indent.as_str() };
+            let content = if style.bg.is_some() {
+                format!("{chunk:<body$}")
+            } else {
+                chunk
+            };
             lines.push(Line::from(vec![
                 Span::styled(lead.to_string(), style),
-                Span::styled(chunk, style),
+                Span::styled(content, style),
             ]));
             first = false;
         }
