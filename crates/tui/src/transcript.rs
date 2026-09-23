@@ -183,6 +183,18 @@ impl Transcript {
         self.sealed = true;
     }
 
+    /// Redraw the startup banner with lines that became known after it was
+    /// first shown. Not a push: the banner stays the first cell either way.
+    pub fn replace_banner(&mut self, lines: Vec<String>) {
+        if let Some(Cell::Banner(banner)) = self
+            .cells
+            .iter_mut()
+            .find(|cell| matches!(cell, Cell::Banner(_)))
+        {
+            *banner = lines;
+        }
+    }
+
     pub fn push(&mut self, cell: Cell) {
         self.cells.push(cell);
         self.sealed = true;

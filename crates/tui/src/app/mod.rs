@@ -54,12 +54,22 @@ impl Turn {
     }
 }
 
+struct BannerInputs {
+    startup: Option<std::time::Duration>,
+    tools: Vec<String>,
+    skills: Vec<String>,
+}
+
 pub struct App {
     conversation: Arc<dyn Conversation>,
     /// Updates the surface generates for itself — a prompt that never left, a
     /// login notice. Merged with the agent's stream so the draw loop has one
     /// source of truth.
     local: UnboundedSender<Update>,
+    /// What the banner was built from, kept so it can be rebuilt once the
+    /// workspace's diff stat arrives from [`Self::take_banner_diff`].
+    banner: Option<BannerInputs>,
+    banner_diff: Option<tokio::sync::oneshot::Receiver<Option<(u64, u64)>>>,
     pub transcript: Transcript,
     pub input: InputBox,
     pub scroll: Scrollback,
@@ -251,6 +261,8 @@ impl App {
             Self {
                 conversation,
                 local,
+                banner: None,
+                banner_diff: None,
                 transcript,
                 input: InputBox::default(),
                 scroll: Scrollback::default(),
@@ -370,9 +382,45 @@ impl App {
         tools: Vec<String>,
         skills: Vec<String>,
     ) -> Self {
-        let lines = crate::banner::startup(self.cwd(), startup, &tools, &skills);
+        let lines = crate::banner::startup(self.cwd(), startup, None, &tools, &skills);
         self.transcript.push(Cell::Banner(lines));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cwd = self.cwd().to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::banner::diff_stat(&cwd));
+        });
+        self.banner = Some(BannerInputs {
+            startup,
+            tools,
+            skills,
+        });
+        self.banner_diff = Some(rx);
         self
+    }
+
+    /// The workspace's diff stat, still being measured when the first frame
+    /// is drawn. The event loop owns the wait, so it takes the receiver.
+    pub(crate) fn take_banner_diff(
+        &mut self,
+    ) -> Option<tokio::sync::oneshot::Receiver<Option<(u64, u64)>>> {
+        self.banner_diff.take()
+    }
+
+    pub(crate) fn apply_banner_diff(&mut self, diff: Option<(u64, u64)>) {
+        let Some(inputs) = &self.banner else {
+            return;
+        };
+        if diff.is_none() {
+            return;
+        }
+        let lines = crate::banner::startup(
+            self.cwd(),
+            inputs.startup,
+            diff,
+            &inputs.tools,
+            &inputs.skills,
+        );
+        self.transcript.replace_banner(lines);
     }
 
     /// Where `$KEKE_HOME` is, so a typed `/model` or `/effort`, or the

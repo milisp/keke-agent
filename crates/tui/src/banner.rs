@@ -24,6 +24,11 @@ fn colored_face() -> String {
 /// person can see how long the launch took without setting
 /// `KEKE_STARTUP_TRACE`.
 ///
+/// `diff` is the workspace's unstaged `(insertions, deletions)`, which the
+/// caller measures with [`diff_stat`] off the startup path: `git diff` costs
+/// milliseconds in a small repository and far more in a large one, and the
+/// first frame must not wait on it.
+///
 /// `tools` and `skills`, when either is non-empty, sit as counts right after
 /// the workspace line — `<cwd>  Tools (15)  Skills (71)` — rather than the
 /// names themselves. What is available to a session is worth a glance at
@@ -32,11 +37,12 @@ fn colored_face() -> String {
 pub(crate) fn startup(
     cwd: &Path,
     startup: Option<Duration>,
+    diff: Option<(u64, u64)>,
     tools: &[String],
     skills: &[String],
 ) -> Vec<String> {
     let mut display = crate::draw::header::tilde(cwd);
-    if let Some((added, removed)) = diff_stat(cwd) {
+    if let Some((added, removed)) = diff {
         display = format!("{display}  +{added} -{removed}");
     }
 
@@ -76,9 +82,12 @@ pub(crate) fn startup(
 /// there is no `git` on `PATH`, `dir` is not inside a work tree, or there are
 /// no unstaged changes — all three collapse to the same "say nothing"
 /// outcome, since an empty right side says more than a pair of zeros would.
-fn diff_stat(dir: &Path) -> Option<(u64, u64)> {
+pub(crate) fn diff_stat(dir: &Path) -> Option<(u64, u64)> {
     let output = Command::new("git")
         .args(["diff", "--shortstat"])
+        // Runs beside the session, whose own git work (checkpoints) must not
+        // lose a race for `index.lock` to a banner decoration.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .current_dir(dir)
         .output()
         .ok()?;
@@ -137,7 +146,7 @@ mod tests {
 
     #[test]
     fn all_three_lines_share_the_icon_width() {
-        let lines = startup(Path::new("/tmp"), None, &[], &[]);
+        let lines = startup(Path::new("/tmp"), None, None, &[], &[]);
         assert_eq!(lines.len(), 3);
         for line in &lines {
             assert!(
@@ -153,7 +162,7 @@ mod tests {
     fn tools_and_skills_show_as_counts_after_the_workspace_line() {
         let tools: Vec<String> = (0..15).map(|n| format!("tool-{n}")).collect();
         let skills: Vec<String> = (0..71).map(|n| format!("skill-{n}")).collect();
-        let lines = startup(Path::new("/tmp"), None, &tools, &skills);
+        let lines = startup(Path::new("/tmp"), None, None, &tools, &skills);
         assert_eq!(lines.len(), 3);
         assert!(lines[2].contains("Tools (15)"));
         assert!(lines[2].contains("Skills (71)"));

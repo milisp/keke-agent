@@ -355,6 +355,7 @@ async fn event_loop(
 ) -> anyhow::Result<()> {
     let mut input = EventStream::new();
     let mut capturing = app.mouse_capture();
+    let mut banner_diff = app.take_banner_diff();
     terminal.draw(|frame| draw::draw(frame, &mut app))?;
     if std::env::var_os("KEKE_STARTUP_TRACE").is_some() {
         eprintln!("[startup] first frame drawn");
@@ -387,6 +388,18 @@ async fn event_loop(
             Some(update) = updates.recv() => app.apply(update),
             Some(update) = local.recv() => app.apply(update),
             Some(notice) = notices.recv() => app.apply_notice(notice),
+            diff = async {
+                match &mut banner_diff {
+                    Some(diff) => diff.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // Once only: a finished oneshot must not be polled again.
+                banner_diff = None;
+                if let Ok(diff) = diff {
+                    app.apply_banner_diff(diff);
+                }
+            }
             event = input.next() => match event {
                 Some(Ok(Event::Key(key))) => app.handle_key(key),
                 Some(Ok(Event::Mouse(mouse))) => app.handle_mouse(mouse),
