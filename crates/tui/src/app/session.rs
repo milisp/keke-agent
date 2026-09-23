@@ -290,10 +290,16 @@ impl App {
             .map(|catalog| catalog.stored(&route))
             .unwrap_or_default();
         let notice = format!("provider is now {route}, on {model}");
-        let (persisted_route, persisted_model) = (route, model);
+        // Written as `/provider` always wrote it: the route, and the model only
+        // when a person named it. A model the route chose for itself stays out
+        // of config.toml, where it would read as the person's own choice.
+        let named = self
+            .requested_model
+            .take()
+            .filter(|requested| *requested == model);
         self.persist_override(move |file| {
-            file.provider = Some(persisted_route);
-            file.model = Some(persisted_model);
+            file.provider = Some(route);
+            file.model = named;
         });
         self.transcript.push(Cell::Notice(notice));
     }

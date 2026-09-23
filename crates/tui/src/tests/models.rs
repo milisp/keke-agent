@@ -484,3 +484,44 @@ async fn new_after_a_pending_switch_starts_on_the_new_route() {
     assert_eq!(app.provider(), Some("xai"));
     assert_eq!(app.model(), "grok-4.7");
 }
+
+/// A model the route picked for itself is not the person's choice, and must
+/// not be written over whatever config.toml says they chose.
+#[tokio::test]
+async fn a_model_the_route_picked_itself_is_not_written_to_config() {
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
+    let (app, _scripted, mut updates, _local) = app_with_providers();
+    let mut app = app.with_config_home(home.clone());
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+    deliver(&mut app, &mut updates, 2).await;
+
+    assert_eq!(app.model(), "xai-default");
+    let written = std::fs::read_to_string(home.as_path().join("config.toml"))
+        .expect("the switch was written");
+    assert!(written.contains("provider = \"xai\""), "{written}");
+    assert!(!written.contains("model = "), "{written}");
+}
+
+/// A model a person named for the new route is theirs, and is kept.
+#[tokio::test]
+async fn a_model_named_for_the_new_route_is_written_to_config() {
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
+    let (app, _scripted, mut updates, _local) = app_in_conversation();
+    let mut app = app.with_config_home(home.clone());
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "/model grok-4.7");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "/new");
+    app.handle_key(key(KeyCode::Enter));
+    deliver(&mut app, &mut updates, 2).await;
+
+    let written = std::fs::read_to_string(home.as_path().join("config.toml"))
+        .expect("the switch was written");
+    assert!(written.contains("model = \"grok-4.7\""), "{written}");
+}

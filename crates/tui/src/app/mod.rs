@@ -153,6 +153,11 @@ pub struct App {
     /// only while it has not: a fresh session on the new route loses nothing,
     /// while one with history would be answered half by each vendor.
     talked: bool,
+    /// The model a pending [`Self::start_session_on`] was asked for by name,
+    /// if any. Only a model a person named is written to config.toml: one the
+    /// route picked for itself is a guess, and persisting it would replace
+    /// the person's own choice with that guess on every later launch.
+    requested_model: Option<String>,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
     /// held because the status bar keeps showing the duration after the turn
@@ -276,6 +281,7 @@ impl App {
                 models: Vec::new(),
                 catalog: None,
                 talked: false,
+                requested_model: None,
                 turn: Turn::Idle,
                 started: None,
                 last_turn: None,
@@ -846,6 +852,7 @@ impl App {
     /// [`Update::ProviderChanged`]: a route that turns out to be unusable
     /// must leave the surface showing the session that is still running.
     pub(super) fn start_session_on(&mut self, route: String, model: Option<String>) {
+        self.requested_model.clone_from(&model);
         let conversation = Arc::clone(&self.conversation);
         let local = self.local.clone();
         tokio::spawn(async move {
