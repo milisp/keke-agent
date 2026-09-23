@@ -108,9 +108,20 @@ pub(super) async fn resume(
                 .id
         }
         None => {
-            bail!(
-                "specify a session id, `--last` for this directory's most recent session, or `--list` to see what there is"
-            );
+            let choices = sessions
+                .into_iter()
+                .map(|session| keke_tui::ResumeChoice {
+                    id: session.id,
+                    updated_at: session.updated_at,
+                    turns: session.turns,
+                    cwd: session.cwd,
+                    summary: session.summary,
+                })
+                .collect();
+            let Some(id) = keke_tui::pick_session(choices, cwd_str, args.all).await? else {
+                return Ok(());
+            };
+            id
         }
     };
 

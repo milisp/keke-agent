@@ -22,6 +22,7 @@ mod ported;
 pub mod rewind;
 mod scroll;
 mod selection;
+mod session_picker;
 pub mod slash;
 mod transcript;
 
@@ -57,6 +58,7 @@ pub use keke_schedule::Schedules;
 pub use login::Notice;
 pub use picker::ProviderChoice;
 pub use rewind::Rewind;
+pub use session_picker::ResumeChoice;
 
 pub use login::TuiLoginUi;
 pub use mcp::McpManage;
@@ -71,6 +73,16 @@ pub use transcript::Cell;
 pub use transcript::PermissionCell;
 pub use transcript::ToolCell;
 pub use transcript::Transcript;
+
+/// Let a person choose one locally stored conversation before a chat session is
+/// opened. `None` means they dismissed the picker rather than choosing one.
+pub async fn pick_session(
+    sessions: Vec<ResumeChoice>,
+    cwd: String,
+    show_all: bool,
+) -> anyhow::Result<Option<keke_protocol::SessionId>> {
+    session_picker::run(sessions, cwd, show_all).await
+}
 
 /// The model lists the host already has on hand, by route.
 ///
