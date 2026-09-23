@@ -45,10 +45,16 @@ pub struct Cached {
 struct Entry {
     /// Seconds since the epoch, at the moment the vendor answered.
     fetched_at: u64,
-    /// Which keke wrote it. An entry from another build is a miss: the shape
-    /// of [`ModelInfo`] is this crate's to change, and a field added since
-    /// would silently read back as its default.
-    version: String,
+    /// The shape of this entry, not the build that wrote it. An entry in
+    /// another format is a miss, because a field added since would read back
+    /// as its default and look like something the vendor said. Keyed to the
+    /// format rather than to the crate version so a release that changes
+    /// nothing here does not throw away every stored catalog.
+    ///
+    /// Entries from before this field existed carry the format they were
+    /// written in, which is the first one.
+    #[serde(default = "first_format")]
+    format: u32,
     models: Vec<ModelInfo>,
 }
 
@@ -72,7 +78,7 @@ impl CatalogCache {
     /// Whatever is stored for `route`, fresh or not.
     ///
     /// Returns `None` for a miss, for an unreadable or undecodable file, and
-    /// for an entry another build wrote — all of which mean the same thing to
+    /// for an entry in another format — all of which mean the same thing to
     /// the caller: ask the vendor.
     #[must_use]
     pub fn load(&self, route: &str) -> Option<Cached> {
@@ -83,7 +89,7 @@ impl CatalogCache {
                 tracing::debug!(%route, %error, "discarding an undecodable model cache");
             })
             .ok()?;
-        if entry.version != version() {
+        if entry.format != FORMAT {
             return None;
         }
         Some(Cached {
@@ -106,7 +112,7 @@ impl CatalogCache {
         }
         let entry = Entry {
             fetched_at: now(),
-            version: version().to_string(),
+            format: FORMAT,
             models: models.to_vec(),
         };
         if let Err(error) = self.write(route, &entry) {
@@ -160,8 +166,12 @@ fn file_stem(route: &str) -> String {
     }
 }
 
-fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+/// Raise this when [`Entry`] or [`ModelInfo`] changes in a way an older entry
+/// would misread — not on every release.
+const FORMAT: u32 = 1;
+
+fn first_format() -> u32 {
+    1
 }
 
 fn now() -> u64 {
@@ -300,6 +310,32 @@ mod tests {
         cache.store("grok", &models());
         std::fs::write(cache.path("grok"), b"{not json").expect("write");
         assert!(cache.load("grok").is_none());
+    }
+
+    #[test]
+    fn a_catalog_written_by_an_older_release_is_still_read() {
+        let (_home, cache) = cache(Duration::from_secs(3600));
+        cache.store("nvidia", &models());
+        // What a release before the format field wrote: its own version
+        // string in place of a format number.
+        let raw = std::fs::read_to_string(cache.path("nvidia")).expect("read");
+        let mut entry: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        let object = entry.as_object_mut().expect("object");
+        object.remove("format");
+        object.insert("version".to_string(), "0.1.23".into());
+        std::fs::write(cache.path("nvidia"), entry.to_string()).expect("write");
+        assert_eq!(cache.load("nvidia").expect("kept").models, models());
+    }
+
+    #[test]
+    fn an_entry_in_another_format_is_a_miss() {
+        let (_home, cache) = cache(Duration::from_secs(3600));
+        cache.store("nvidia", &models());
+        let raw = std::fs::read_to_string(cache.path("nvidia")).expect("read");
+        let mut entry: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        entry["format"] = (FORMAT + 1).into();
+        std::fs::write(cache.path("nvidia"), entry.to_string()).expect("write");
+        assert!(cache.load("nvidia").is_none());
     }
 
     #[test]
