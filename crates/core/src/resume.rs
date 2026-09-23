@@ -318,6 +318,16 @@ pub fn list_recent(home: &AbsPath, limit: usize) -> Result<Vec<SessionSummary>, 
         .collect())
 }
 
+/// One session's summary, found by id.
+///
+/// For a caller that already knows which session it means: going through
+/// [`list_sessions`] opens every log on disk to answer about one, and a
+/// person with thousands of sessions paid for that on every exit.
+pub fn session_summary(home: &AbsPath, id: SessionId) -> Result<SessionSummary, RolloutError> {
+    let path = session_path(home, id)?;
+    summarize(&LogPath { id, path })
+}
+
 /// The most recent session that actually holds a conversation.
 ///
 /// Sessions with no turns are skipped. Opening the interface writes a log

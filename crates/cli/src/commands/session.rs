@@ -336,9 +336,7 @@ pub(super) async fn tui(
     // `keke resume --list` (and the disk) don't carry an entry for a
     // conversation that never happened.
     if let Some(id) = session_id {
-        let turns = keke_core::list_sessions(&config.home.home)
-            .ok()
-            .and_then(|sessions| sessions.into_iter().find(|session| session.id == id))
+        let turns = keke_core::session_summary(&config.home.home, id)
             .map(|session| session.turns)
             .unwrap_or(0);
         if turns == 0 {
