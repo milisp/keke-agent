@@ -188,6 +188,7 @@ impl App {
         // bare `keke`.
         if let Some(provider) = &self.provider {
             let provider = provider.clone();
+            self.remember_model(&provider, wanted);
             self.persist_override(move |file| {
                 file.provider = Some(provider);
                 file.model = Some(wanted.to_string());
@@ -289,6 +290,7 @@ impl App {
             .as_ref()
             .map(|catalog| catalog.stored(&route))
             .unwrap_or_default();
+        self.remember_model(&route, &model);
         let notice = format!("provider is now {route}, on {model}");
         // Written as `/provider` always wrote it: the route, and the model only
         // when a person named it. A model the route chose for itself stays out
@@ -302,6 +304,18 @@ impl App {
             file.model = named;
         });
         self.transcript.push(Cell::Notice(notice));
+    }
+
+    /// Record `model` as what `route` was last used with, so coming back to
+    /// the route later starts there rather than at the head of its catalog.
+    /// Best-effort for the reason `persist_override` is.
+    fn remember_model(&self, route: &str, model: &str) {
+        let Some(home) = &self.config_home else {
+            return;
+        };
+        if let Err(error) = keke_config::remember_model(home, route, model) {
+            tracing::warn!(%error, "could not remember the model for this provider");
+        }
     }
 
     /// What `/model` says when there is no list to open.

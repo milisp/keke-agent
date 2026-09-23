@@ -14,10 +14,13 @@
 //! late.
 
 mod layer;
+mod remembered;
 mod resolve;
 
 pub use layer::ConfigLayer;
 pub use layer::LayerSource;
+pub use remembered::remember_model;
+pub use remembered::remembered_model;
 pub use resolve::keke_home;
 pub use resolve::resolve_workspace_root;
 

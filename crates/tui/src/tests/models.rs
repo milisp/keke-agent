@@ -525,3 +525,29 @@ async fn a_model_named_for_the_new_route_is_written_to_config() {
         .expect("the switch was written");
     assert!(written.contains("model = \"grok-4.7\""), "{written}");
 }
+
+/// Choosing a model for a route is remembered for that route, so leaving it
+/// and coming back — which drops `model` from config.toml — lands there again.
+#[tokio::test]
+async fn a_chosen_model_is_remembered_for_its_route() {
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
+    let (app, _scripted, _updates, _local) = app_in_conversation();
+    let mut app = app.with_config_home(home.clone());
+
+    type_text(&mut app, "/model gpt-5.2");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "/model grok-4.6");
+    app.handle_key(key(KeyCode::Enter));
+
+    assert_eq!(
+        keke_config::remembered_model(&home, "test-provider").as_deref(),
+        Some("gpt-5.2")
+    );
+    assert_eq!(
+        keke_config::remembered_model(&home, "xai").as_deref(),
+        Some("grok-4.6")
+    );
+}

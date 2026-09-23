@@ -374,11 +374,13 @@ async fn session_builder(
     // asked what it serves rather than a constant being guessed at. A vendor
     // that publishes no list leaves nothing to fall back on, and saying so
     // here beats sending an empty model id and reading the vendor's rejection.
-    // Before asking the vendor, honor what this deployment already decided:
-    // a declared provider's `default_model` is the person's own answer to "what
-    // should this route serve", so it beats whatever heads the model list.
+    // Before asking the vendor, honor what is already known about this
+    // route: the model it was last used with here is the most specific
+    // answer there is, and a declared `default_model` is the deployment's own
+    // answer to "what should this route serve". Either beats whatever heads
+    // the model list, which for an aggregator is effectively arbitrary.
     let model = match config.model.model.trim() {
-        "" => match declared_default_model(config, &route) {
+        "" => match known_model(config, &route) {
             Some(model) => model,
             None => first_listed_model(provider.as_ref()).await?,
         },
@@ -464,6 +466,14 @@ async fn first_listed_model(provider: &dyn keke_provider_api::ModelProvider) -> 
         ),
         Err(error) => bail!("no model set and `{route}` could not be asked for one: {error}"),
     }
+}
+
+/// What `route` should run when nothing on the command line or in the
+/// `model` field chose: the model it was last used with here, then its
+/// declared `default_model`.
+fn known_model(config: &Config, route: &str) -> Option<String> {
+    keke_config::remembered_model(&config.home.home, route)
+        .or_else(|| declared_default_model(config, route))
 }
 
 fn declared_default_model(config: &Config, route: &str) -> Option<String> {
@@ -593,6 +603,42 @@ mod tests {
     async fn a_route_that_lists_nothing_is_an_error_not_an_empty_model() {
         let provider = Stalled::new(&[], &[], false);
         assert!(first_listed_model(&provider).await.is_err());
+    }
+
+    /// The model a route was last used with outranks its declared default:
+    /// a person who moved off the default on that route meant to.
+    #[test]
+    fn a_routes_last_model_beats_its_declared_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_with("nvidia", Some("nvidia/default"));
+        config.home.home = keke_paths::AbsPath::new(dir.path()).expect("abs");
+
+        assert_eq!(
+            known_model(&config, "nvidia").as_deref(),
+            Some("nvidia/default"),
+            "nothing remembered yet"
+        );
+        keke_config::remember_model(&config.home.home, "nvidia", "nvidia/chosen").expect("stored");
+        assert_eq!(
+            known_model(&config, "nvidia").as_deref(),
+            Some("nvidia/chosen")
+        );
+    }
+
+    /// A route with neither — codex, with no `[providers.codex]` — is
+    /// answered by what it was last used with, not by its catalog's head.
+    #[test]
+    fn a_route_without_a_declared_default_uses_its_last_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_with("nvidia", None);
+        config.home.home = keke_paths::AbsPath::new(dir.path()).expect("abs");
+
+        assert_eq!(known_model(&config, "codex"), None);
+        keke_config::remember_model(&config.home.home, "codex", "gpt-5.6-luna").expect("stored");
+        assert_eq!(
+            known_model(&config, "codex").as_deref(),
+            Some("gpt-5.6-luna")
+        );
     }
 
     #[test]

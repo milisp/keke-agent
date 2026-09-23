@@ -242,6 +242,13 @@ pub(super) async fn tui(
     )
     .await?;
     crate::startup_trace::mark("local_with: done");
+    // What this route is now being used with, so leaving it and coming back
+    // later — which drops `model` from config.toml — lands here again.
+    if let Err(error) =
+        keke_config::remember_model(&config.home.home, &config.model.provider, &opened.model)
+    {
+        tracing::debug!(%error, "could not remember the model for this provider");
+    }
     // Read only once the session has an id: a fresh session's id is minted
     // inside `session_builder`/`local`, and every recorded prompt should carry
     // the session it was actually typed in, not none at all.
