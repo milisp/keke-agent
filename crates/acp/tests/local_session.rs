@@ -177,25 +177,24 @@ struct Started {
     _dir: tempfile::TempDir,
 }
 
-async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Started {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
-    let root = AbsPath::new(root).expect("absolute");
-
-    let (approvals, requests) = keke_acp::approvals();
-    let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.tool_contributor(Arc::new(Pack));
-    keke_acp::install(&mut extensions, Arc::clone(&approvals));
-
-    let builder = SessionBuilder::new()
+/// A session recipe on `route`, asking `model`, answered by `provider`.
+fn recipe(
+    route: &str,
+    model: &str,
+    provider: Arc<dyn ModelProvider>,
+    root: &AbsPath,
+    extensions: keke_plugin_api::ExtensionRegistry,
+    approval: ApprovalPolicy,
+) -> SessionBuilder {
+    SessionBuilder::new()
         .config(keke_core::SessionConfig {
             model: ModelSelection {
-                provider: "scripted".to_string(),
-                model: "test".to_string(),
+                provider: route.to_string(),
+                model: model.to_string(),
             },
             home: HomeLayout {
                 home: root.clone(),
-                workspace_root: root,
+                workspace_root: root.clone(),
             },
             max_output_tokens: MaxOutputTokens::default(),
             reasoning_effort: None,
@@ -205,12 +204,85 @@ async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Start
             instructions: None,
             approval,
         })
-        .provider(Arc::new(Scripted::new(script)))
-        .extensions(extensions.build());
+        .provider(provider)
+        .extensions(extensions)
+}
 
-    let opened = keke_acp::local(builder, approvals, requests)
-        .await
-        .expect("a session");
+/// What the host would hand over: `other` is a usable route answered by its
+/// own script, `broken` is one with no credential.
+struct Routes {
+    root: AbsPath,
+    extensions: keke_plugin_api::ExtensionRegistry,
+    other: Arc<dyn ModelProvider>,
+}
+
+impl keke_acp::RouteRecipes for Routes {
+    fn recipe(
+        &self,
+        route: String,
+        model: Option<String>,
+    ) -> keke_acp::ConversationFuture<'_, Result<SessionBuilder, String>> {
+        Box::pin(async move {
+            match route.as_str() {
+                "other" => Ok(recipe(
+                    "other",
+                    model.as_deref().unwrap_or("other-default"),
+                    Arc::clone(&self.other),
+                    &self.root,
+                    self.extensions.clone(),
+                    ApprovalPolicy::Never,
+                )),
+                _ => Err(format!("not signed in to `{route}`")),
+            }
+        })
+    }
+}
+
+async fn start(script: Vec<Vec<StreamChunk>>, approval: ApprovalPolicy) -> Started {
+    start_with_routes(script, Vec::new(), approval).await
+}
+
+/// [`start`], able to start over on the `other` route, which answers with
+/// `other_script`.
+async fn start_with_routes(
+    script: Vec<Vec<StreamChunk>>,
+    other_script: Vec<Vec<StreamChunk>>,
+    approval: ApprovalPolicy,
+) -> Started {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let root = AbsPath::new(root).expect("absolute");
+
+    let (approvals, requests) = keke_acp::approvals();
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(Pack));
+    keke_acp::install(&mut extensions, Arc::clone(&approvals));
+    let extensions = extensions.build();
+
+    let builder = recipe(
+        "scripted",
+        "test",
+        Arc::new(Scripted::new(script)),
+        &root,
+        extensions.clone(),
+        approval,
+    );
+    let routes = Routes {
+        root,
+        extensions,
+        other: Arc::new(Scripted::new(other_script)),
+    };
+
+    let opened = keke_acp::local_with(
+        builder,
+        approvals,
+        requests,
+        None,
+        None,
+        Some(Arc::new(routes)),
+    )
+    .await
+    .expect("a session");
     let (conversation, updates) = (opened.conversation, opened.updates);
     Started {
         conversation,
@@ -362,5 +434,126 @@ async fn cancelling_releases_a_turn_blocked_on_a_prompt() {
         rest.iter()
             .any(|update| matches!(update, Update::TurnEnded(StopReason::Cancelled))),
         "{rest:?}"
+    );
+}
+
+/// Everything the text deltas said, in order.
+fn said(updates: &[Update]) -> String {
+    updates
+        .iter()
+        .filter_map(|update| match update {
+            Update::TextDelta(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Starting over on another route resets the surface, then says where the
+/// fresh session is, and the next turn is answered there.
+#[tokio::test]
+async fn a_fresh_session_on_another_route_answers_through_it() {
+    let mut started = start_with_routes(
+        vec![text_turn("from scripted")],
+        vec![text_turn("from other")],
+        ApprovalPolicy::Never,
+    )
+    .await;
+
+    started
+        .conversation
+        .new_session_on("other".to_string(), None)
+        .await
+        .expect("switched");
+    let mut announced = Vec::new();
+    while let Ok(update) = started.updates.try_recv() {
+        announced.push(update);
+    }
+    let reset = announced
+        .iter()
+        .position(|update| *update == Update::SessionReset)
+        .expect("reset");
+    let changed = announced
+        .iter()
+        .position(|update| {
+            *update
+                == Update::ProviderChanged {
+                    route: "other".to_string(),
+                    model: "other-default".to_string(),
+                }
+        })
+        .expect("the new route and its default model");
+    assert!(reset < changed, "reset first, then what it is now on");
+
+    started
+        .conversation
+        .prompt("hi".to_string())
+        .await
+        .expect("prompt");
+    assert_eq!(
+        said(&until_turn_end(&mut started.updates).await),
+        "from other"
+    );
+}
+
+/// A route that cannot be used is refused before anything is replaced: the
+/// running session is exactly as it was.
+#[tokio::test]
+async fn a_route_that_cannot_be_used_leaves_the_session_running() {
+    let mut started = start_with_routes(
+        vec![text_turn("still here")],
+        Vec::new(),
+        ApprovalPolicy::Never,
+    )
+    .await;
+
+    let error = started
+        .conversation
+        .new_session_on("broken".to_string(), None)
+        .await
+        .expect_err("refused");
+    assert!(error.to_string().contains("not signed in"), "{error}");
+    assert!(
+        started.updates.try_recv().is_err(),
+        "nothing was reset or announced"
+    );
+
+    started
+        .conversation
+        .prompt("hi".to_string())
+        .await
+        .expect("prompt");
+    assert_eq!(
+        said(&until_turn_end(&mut started.updates).await),
+        "still here"
+    );
+}
+
+/// Once a session has moved route, `/new` starts over on that route rather
+/// than on the one the process was launched with.
+#[tokio::test]
+async fn starting_over_after_a_switch_stays_on_the_new_route() {
+    let mut started = start_with_routes(
+        vec![text_turn("from scripted")],
+        vec![text_turn("from other")],
+        ApprovalPolicy::Never,
+    )
+    .await;
+
+    started
+        .conversation
+        .new_session_on("other".to_string(), Some("other-large".to_string()))
+        .await
+        .expect("switched");
+    started.conversation.new_session().await.expect("fresh");
+    while started.updates.try_recv().is_ok() {}
+
+    started
+        .conversation
+        .prompt("hi".to_string())
+        .await
+        .expect("prompt");
+    assert_eq!(
+        said(&until_turn_end(&mut started.updates).await),
+        "from other"
     );
 }

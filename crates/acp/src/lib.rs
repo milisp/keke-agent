@@ -22,6 +22,7 @@ pub use conversation::Update;
 pub use local::ApprovalRequests;
 pub use local::Approvals;
 pub use local::LocalConversation;
+pub use local::RouteRecipes;
 pub use local::approvals;
 pub use local::install;
 pub use local::local;

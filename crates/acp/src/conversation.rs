@@ -100,6 +100,13 @@ pub enum Update {
     /// [`Conversation::new_session`] finished: history and usage are gone,
     /// and whatever the surface shows for either should go back to nothing.
     SessionReset,
+    /// [`Conversation::new_session_on`] finished: the fresh session answers
+    /// through `route`, asking `model`. Sent after [`Update::SessionReset`],
+    /// so a surface resets first and then draws what it is now on.
+    ProviderChanged {
+        route: String,
+        model: String,
+    },
     /// The answer to [`Conversation::rewind_points`]: where the conversation
     /// can be wound back to.
     ///
@@ -352,6 +359,32 @@ pub trait Conversation: Send + Sync {
     /// rather than left to a surface to fake by discarding what it drew.
     fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>>;
 
+    /// [`Self::new_session`], answered through another provider route: with
+    /// `model`, or the route's own default when `None`.
+    ///
+    /// Only ever a fresh session. A conversation carried across vendors
+    /// would be half answered by each, and whether its history even replays
+    /// on the new wire is the kind of failure that surfaces a turn later,
+    /// away from the switch that caused it — so a surface offers this where
+    /// there is nothing to carry.
+    ///
+    /// When the new route cannot be used — no credential, no model — the
+    /// running session carries on untouched and the error says why. A
+    /// conversation that cannot rebuild itself at all refuses by default
+    /// rather than pretending the switch happened.
+    fn new_session_on(
+        &self,
+        route: String,
+        model: Option<String>,
+    ) -> ConversationFuture<'_, Result<(), ConversationError>> {
+        let _ = model;
+        Box::pin(async move {
+            Err(ConversationError::Agent(format!(
+                "this agent cannot switch to provider `{route}` in place"
+            )))
+        })
+    }
+
     /// Where this conversation can be wound back to, oldest first.
     ///
     /// Asked rather than assembled from what a surface has drawn: only the
@@ -436,6 +469,8 @@ pub struct ScriptedConversation {
     models: Arc<Mutex<Vec<String>>>,
     modes: Arc<Mutex<Vec<SessionMode>>>,
     new_sessions: Arc<Mutex<usize>>,
+    /// Every `new_session_on` asked for, as `(route, model)`.
+    routes: Arc<Mutex<Vec<(String, Option<String>)>>>,
     rewinds: Arc<Mutex<Vec<(usize, RewindScope)>>>,
     /// What a scripted agent pretends its snapshots hold: every turn carries
     /// one, and a restore would put these files back.
@@ -460,6 +495,7 @@ impl ScriptedConversation {
                 models: Arc::new(Mutex::new(Vec::new())),
                 modes: Arc::new(Mutex::new(Vec::new())),
                 new_sessions: Arc::new(Mutex::new(0)),
+                routes: Arc::new(Mutex::new(Vec::new())),
                 rewinds: Arc::new(Mutex::new(Vec::new())),
                 snapshot_files: Arc::new(Mutex::new(Vec::new())),
             },
@@ -528,6 +564,16 @@ impl ScriptedConversation {
     #[must_use]
     pub fn policies(&self) -> Vec<ApprovalPolicy> {
         self.policies
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every provider route the surface has started over on, with the model
+    /// it named, in order.
+    #[must_use]
+    pub fn routes(&self) -> Vec<(String, Option<String>)> {
+        self.routes
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -647,6 +693,24 @@ impl Conversation for ScriptedConversation {
                 *count += 1;
             }
             let _ = self.updates.send(Update::SessionReset);
+            Ok(())
+        })
+    }
+
+    /// Always succeeds, on `model` or on `"<route>-default"`, so a test can
+    /// tell a named model from the route's own choice.
+    fn new_session_on(
+        &self,
+        route: String,
+        model: Option<String>,
+    ) -> ConversationFuture<'_, Result<(), ConversationError>> {
+        Box::pin(async move {
+            if let Ok(mut seen) = self.routes.lock() {
+                seen.push((route.clone(), model.clone()));
+            }
+            let model = model.unwrap_or_else(|| format!("{route}-default"));
+            let _ = self.updates.send(Update::SessionReset);
+            let _ = self.updates.send(Update::ProviderChanged { route, model });
             Ok(())
         })
     }

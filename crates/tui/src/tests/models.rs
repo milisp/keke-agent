@@ -219,6 +219,36 @@ fn app_with_providers() -> (
     )
 }
 
+/// [`app_with_providers`], partway through a conversation: a `/provider`
+/// now waits for the next fresh session rather than taking effect at once.
+fn app_in_conversation() -> (
+    App,
+    Arc<ScriptedConversation>,
+    UnboundedReceiver<Update>,
+    UnboundedReceiver<Update>,
+) {
+    let (app, scripted, updates, local) = app_with_providers();
+    let history = [
+        keke_protocol::Message::user("hi"),
+        keke_protocol::Message::assistant("hello"),
+    ];
+    (
+        app.with_history(&history, keke_protocol::Usage::default(), 0),
+        scripted,
+        updates,
+        local,
+    )
+}
+
+/// Hand the surface whatever the agent has published so far, waiting for
+/// `count` updates.
+async fn deliver(app: &mut App, updates: &mut UnboundedReceiver<Update>, count: usize) {
+    for _ in 0..count {
+        let update = updates.recv().await.expect("an update");
+        app.apply(update);
+    }
+}
+
 /// The same question `/model` answers, about a different list: bare
 /// `/provider` is somebody asking what there is, so it opens on the route in
 /// force rather than printing a paragraph that scrolls away.
@@ -244,7 +274,7 @@ async fn the_provider_command_opens_a_picker_over_the_registered_routes() {
 /// A name typed in full is an instruction, not a question: nothing opens.
 #[tokio::test]
 async fn a_named_provider_switches_without_opening_anything() {
-    let (mut app, _scripted, _updates, _local) = app_with_providers();
+    let (mut app, _scripted, _updates, _local) = app_in_conversation();
 
     type_text(&mut app, "/provider xai");
     app.handle_key(key(KeyCode::Enter));
@@ -257,7 +287,7 @@ async fn a_named_provider_switches_without_opening_anything() {
 /// a pair no run ever used.
 #[tokio::test]
 async fn switching_provider_unsets_the_model_the_old_one_served() {
-    let (mut app, _scripted, _updates, _local) = app_with_providers();
+    let (mut app, _scripted, _updates, _local) = app_in_conversation();
 
     type_text(&mut app, "/provider xai");
     app.handle_key(key(KeyCode::Enter));
@@ -281,10 +311,10 @@ impl crate::ModelCatalog for Stored {
 }
 
 /// A switch offers what the new route serves rather than an empty picker, so
-/// the next session's model can be chosen before restarting into it.
+/// the next session's model can be chosen before starting it.
 #[tokio::test]
 async fn switching_provider_offers_the_new_routes_stored_models() {
-    let (app, _scripted, _updates, _local) = app_with_providers();
+    let (app, _scripted, _updates, _local) = app_in_conversation();
     let mut app = app.with_model_catalog(Some(Arc::new(Stored)));
 
     type_text(&mut app, "/provider xai");
@@ -319,7 +349,7 @@ async fn a_provider_no_route_is_registered_for_is_refused() {
 async fn the_chosen_provider_is_written_to_the_user_config() {
     let home = tempfile::tempdir().expect("a temporary directory");
     let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
-    let (app, _scripted, _updates, _local) = app_with_providers();
+    let (app, _scripted, _updates, _local) = app_in_conversation();
     let mut app = app.with_config_home(home.clone());
 
     type_text(&mut app, "/provider xai");
@@ -387,7 +417,7 @@ async fn switching_to_a_model_without_the_current_level_drops_it() {
 async fn model_after_a_pending_provider_switch_is_written_but_not_sent_live() {
     let home = tempfile::tempdir().expect("a temporary directory");
     let home = keke_paths::AbsPath::new(home.path()).expect("an absolute home");
-    let (app, scripted, _updates, _local) = app_with_providers();
+    let (app, scripted, _updates, _local) = app_in_conversation();
     let mut app = app.with_config_home(home.clone());
 
     type_text(&mut app, "/provider xai");
@@ -405,4 +435,52 @@ async fn model_after_a_pending_provider_switch_is_written_but_not_sent_live() {
         scripted.models().is_empty(),
         "the still-live conversation is on the old provider and must not be told about a model that belongs to the new one"
     );
+}
+
+/// Nothing said yet means nothing to lose: the fresh session starts on the
+/// new route at once, on the model that route defaults to, and `/model` then
+/// switches the live session because that session is on the new route.
+#[tokio::test]
+async fn before_anything_is_said_provider_starts_a_fresh_session_on_it() {
+    let (app, scripted, mut updates, _local) = app_with_providers();
+    let mut app = app.with_model_catalog(Some(Arc::new(Stored)));
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+    deliver(&mut app, &mut updates, 2).await;
+
+    assert_eq!(scripted.routes(), vec![("xai".to_string(), None)]);
+    assert_eq!(app.provider(), Some("xai"));
+    assert_eq!(app.model(), "xai-default");
+    let ids: Vec<&str> = app.models().iter().map(|model| model.id.as_str()).collect();
+    assert_eq!(ids, vec!["grok-4.7"]);
+
+    type_text(&mut app, "/model grok-4.7");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(scripted.models(), vec!["grok-4.7".to_string()]);
+}
+
+/// A switch made mid-conversation is what the next fresh session is for:
+/// `/new` starts it on the new route, with the model chosen for it.
+#[tokio::test]
+async fn new_after_a_pending_switch_starts_on_the_new_route() {
+    let (app, scripted, mut updates, _local) = app_in_conversation();
+    let mut app = app.with_model_catalog(Some(Arc::new(Stored)));
+
+    type_text(&mut app, "/provider xai");
+    app.handle_key(key(KeyCode::Enter));
+    assert!(scripted.routes().is_empty(), "the conversation stays put");
+
+    type_text(&mut app, "/model grok-4.7");
+    app.handle_key(key(KeyCode::Enter));
+    type_text(&mut app, "/new");
+    app.handle_key(key(KeyCode::Enter));
+    deliver(&mut app, &mut updates, 2).await;
+
+    assert_eq!(
+        scripted.routes(),
+        vec![("xai".to_string(), Some("grok-4.7".to_string()))]
+    );
+    assert_eq!(app.provider(), Some("xai"));
+    assert_eq!(app.model(), "grok-4.7");
 }

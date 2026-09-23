@@ -239,6 +239,14 @@ impl App {
                 .push(Cell::Notice(format!("already on provider {wanted}")));
             return;
         }
+        // Nothing said yet means nothing to carry: start the fresh session on
+        // the new route now rather than asking for a restart that would lose
+        // nothing either. A loop waiting to fire counts as something said —
+        // it was typed against this session.
+        if !self.talked && !self.turn.is_busy() && self.schedule.is_empty() {
+            self.start_session_on(wanted.to_string(), None);
+            return;
+        }
         let previous = self.provider.replace(wanted.to_string());
         // A model id belongs to the provider that serves it, so one carried
         // across is a pair no run ever used. The list is replaced rather than
@@ -259,7 +267,7 @@ impl App {
         let mut notice = format!("provider is now {wanted}");
         if let Some(previous) = previous {
             notice.push_str(&format!(
-                " — this session keeps talking to {previous}; restart keke to use it"
+                " — this conversation stays on {previous}; /new or a restart starts one on {wanted}"
             ));
         }
         notice.push_str(
@@ -270,6 +278,26 @@ impl App {
         }
         self.transcript.push(Cell::Notice(notice));
     }
+    /// The agent has started over on `route`: draw it, and remember it the
+    /// way a `/provider` for the next launch would be remembered.
+    pub(super) fn adopt_provider(&mut self, route: String, model: String) {
+        self.provider = Some(route.clone());
+        self.launched_provider = Some(route.clone());
+        self.model = model.clone();
+        self.models = self
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.stored(&route))
+            .unwrap_or_default();
+        let notice = format!("provider is now {route}, on {model}");
+        let (persisted_route, persisted_model) = (route, model);
+        self.persist_override(move |file| {
+            file.provider = Some(persisted_route);
+            file.model = Some(persisted_model);
+        });
+        self.transcript.push(Cell::Notice(notice));
+    }
+
     /// What `/model` says when there is no list to open.
     pub(super) fn model_list(&self) -> String {
         if self.models.is_empty() {

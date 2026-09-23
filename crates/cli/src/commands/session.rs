@@ -163,6 +163,42 @@ pub(super) struct Continued {
     pub(super) snapshots: std::collections::BTreeMap<usize, String>,
 }
 
+/// How the interface starts over on another provider route.
+///
+/// The same `session_builder` a launch goes through, with the route swapped
+/// in, so a switch checks the credential, honors a declared `default_model`
+/// and falls back to the stored catalog exactly as `keke --provider` would —
+/// there is no second way to decide what a route's session looks like.
+struct Routes {
+    config: Config,
+    composed: Arc<Composed>,
+    cwd: std::path::PathBuf,
+}
+
+impl keke_acp::RouteRecipes for Routes {
+    fn recipe(
+        &self,
+        route: String,
+        model: Option<String>,
+    ) -> keke_acp::ConversationFuture<'_, Result<keke_core::SessionBuilder, String>> {
+        Box::pin(async move {
+            let mut config = self.config.clone();
+            config.model.provider = route;
+            // An empty model is "nothing chose one", which `session_builder`
+            // answers the way a bare `keke --provider <route>` would.
+            config.model.model = model.unwrap_or_default();
+            session_builder(
+                &config,
+                &self.composed,
+                self.cwd.clone(),
+                config.approval_policy,
+            )
+            .await
+            .map_err(|error| format!("{error:#}"))
+        })
+    }
+}
+
 /// Open the interactive interface.
 pub(super) async fn tui(
     config: Config,
@@ -176,8 +212,10 @@ pub(super) async fn tui(
     // The directory the typing history belongs to: for a resumed session, the
     // one it was started in rather than wherever keke was invoked.
     let history_cwd = cwd.clone();
+    let composed = Arc::new(composed);
     crate::startup_trace::mark("session_builder: start");
-    let mut builder = session_builder(&config, &composed, cwd, config.approval_policy).await?;
+    let mut builder =
+        session_builder(&config, &composed, cwd.clone(), config.approval_policy).await?;
     crate::startup_trace::mark("session_builder: done");
     if let Some(continued) = resume {
         builder = builder
@@ -196,6 +234,11 @@ pub(super) async fn tui(
         requests,
         Some(subagent_views(&composed.subagents)),
         Some(task_views(&composed.background)),
+        Some(Arc::new(Routes {
+            config: config.clone(),
+            composed: Arc::clone(&composed),
+            cwd,
+        })),
     )
     .await?;
     crate::startup_trace::mark("local_with: done");

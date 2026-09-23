@@ -149,6 +149,10 @@ pub struct App {
     routes: Vec<crate::picker::ProviderChoice>,
     models: Vec<keke_provider_api::ModelInfo>,
     catalog: Option<std::sync::Arc<dyn crate::ModelCatalog>>,
+    /// Whether this session has held a turn. `/provider` switches in place
+    /// only while it has not: a fresh session on the new route loses nothing,
+    /// while one with history would be answered half by each vendor.
+    talked: bool,
     turn: Turn,
     /// When the running turn started, and how long the last one took. Both are
     /// held because the status bar keeps showing the duration after the turn
@@ -271,6 +275,7 @@ impl App {
                 routes: Vec::new(),
                 models: Vec::new(),
                 catalog: None,
+                talked: false,
                 turn: Turn::Idle,
                 started: None,
                 last_turn: None,
@@ -461,6 +466,7 @@ impl App {
         context_input: u64,
     ) -> Self {
         self.transcript.replay(history);
+        self.talked = !history.is_empty();
         self.usage = usage;
         self.context_input = context_input;
         self
@@ -733,7 +739,9 @@ impl App {
                 self.thinking = false;
                 self.usage = Usage::default();
                 self.context_input = 0;
+                self.talked = false;
             }
+            Update::ProviderChanged { route, model } => self.adopt_provider(route, model),
         }
     }
 
@@ -810,11 +818,41 @@ impl App {
                 .push(Cell::Notice("loops stopped with the session".to_string()));
             self.schedule.clear();
         }
+        // A `/provider` made while this session had history is waiting for
+        // the next fresh one, and this is it.
+        let pending = self
+            .provider
+            .clone()
+            .filter(|route| self.launched_provider.as_deref() != Some(route.as_str()));
+        match pending {
+            Some(route) => {
+                let model = (!self.model.is_empty()).then(|| self.model.clone());
+                self.start_session_on(route, model);
+            }
+            None => {
+                let conversation = Arc::clone(&self.conversation);
+                let local = self.local.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = conversation.new_session().await {
+                        let _ = local.send(Update::Failed(error.to_string()));
+                    }
+                });
+            }
+        }
+    }
+
+    /// Start over on `route`, spawned for the reason `/new` is. Nothing here
+    /// changes until the agent reports the switch with
+    /// [`Update::ProviderChanged`]: a route that turns out to be unusable
+    /// must leave the surface showing the session that is still running.
+    pub(super) fn start_session_on(&mut self, route: String, model: Option<String>) {
         let conversation = Arc::clone(&self.conversation);
         let local = self.local.clone();
         tokio::spawn(async move {
-            if let Err(error) = conversation.new_session().await {
-                let _ = local.send(Update::Failed(error.to_string()));
+            if let Err(error) = conversation.new_session_on(route.clone(), model).await {
+                let _ = local.send(Update::Failed(format!(
+                    "could not switch to provider {route}: {error}"
+                )));
             }
         });
     }
@@ -847,6 +885,7 @@ impl App {
     /// than how long since the last token.
     fn begin_turn(&mut self) {
         self.turn = Turn::Running;
+        self.talked = true;
         if self.started.is_none() {
             self.started = Some(Instant::now());
         }

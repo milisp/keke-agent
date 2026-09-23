@@ -606,6 +606,9 @@ async fn pump(
             // gives it a session with nothing in it; this is only a signal an
             // in-process surface uses to reset what it has drawn.
             Update::SessionReset => {}
+            // Switching route in place is keke's own `/provider`; an ACP
+            // client picks its agent's configuration when it opens a session.
+            Update::ProviderChanged { .. } => {}
             // The rewind overlay is keke's own surface: an ACP client asks
             // for these through its own session methods, and there is no
             // notification in the protocol that carries them.

@@ -18,6 +18,7 @@ use keke_core::CoreError;
 use keke_core::EffortSwitch;
 use keke_core::ModelSwitch;
 use keke_core::ServiceTierSwitch;
+use keke_core::Session;
 use keke_core::SessionBuilder;
 use keke_core::SessionModeSwitch;
 use keke_core::TurnUpdate;
@@ -155,6 +156,24 @@ impl ApprovalReviewContributor for Approvals {
     }
 }
 
+/// What a session on another provider route is built from.
+///
+/// Supplied by the composition root, which alone knows how a route becomes a
+/// provider, a credential and a default model; this crate only swaps in the
+/// session it is handed. Implementers return a recipe as complete as the one
+/// [`local_with`] was started with — the same extensions, approval bridge
+/// included — or say why the route cannot be used, which the surface shows
+/// while the running session carries on.
+pub trait RouteRecipes: Send + Sync + 'static {
+    /// The recipe for a fresh session on `route`, asking `model` or, when
+    /// `None`, whatever the route defaults to.
+    fn recipe(
+        &self,
+        route: String,
+        model: Option<String>,
+    ) -> ConversationFuture<'_, Result<SessionBuilder, String>>;
+}
+
 /// What the session task is asked to do.
 enum Command {
     Prompt {
@@ -163,6 +182,13 @@ enum Command {
     },
     /// Replace the running session with a fresh one built from `recipe`.
     NewSession {
+        done: oneshot::Sender<Result<Switches, String>>,
+    },
+    /// Replace the running session with a fresh one on another route, and
+    /// build every later `NewSession` from that route's recipe.
+    NewSessionOn {
+        route: String,
+        model: Option<String>,
         done: oneshot::Sender<Result<Switches, String>>,
     },
     /// Wind the session back to just before its `nth` user turn.
@@ -237,7 +263,7 @@ pub async fn local(
     approvals: Arc<Approvals>,
     requests: ApprovalRequests,
 ) -> Result<Opened, CoreError> {
-    local_with(builder, approvals, requests, None, None).await
+    local_with(builder, approvals, requests, None, None, None).await
 }
 
 /// [`local`], plus a stream of subagent snapshots to relay to the surface.
@@ -246,19 +272,23 @@ pub async fn local(
 /// crate does not know that subagents exist beyond the shape of a row, which is
 /// what keeps the same `Update` stream honest when the surface is across a pipe
 /// and there is nothing in this process to poll.
+///
+/// `routes` is what lets [`Conversation::new_session_on`] start over on
+/// another provider; without it that call is refused.
 pub async fn local_with(
     builder: SessionBuilder,
     approvals: Arc<Approvals>,
     requests: ApprovalRequests,
     subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
     tasks: Option<UnboundedReceiver<Vec<TaskView>>>,
+    routes: Option<Arc<dyn RouteRecipes>>,
 ) -> Result<Opened, CoreError> {
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
-    let with_updates = builder.updates(turn_tx);
+    let with_updates = builder.updates(turn_tx.clone());
     // Cloned before the resume this build may carry is consumed: `new_session`
     // rebuilds from this recipe, and a session started fresh must not silently
     // resume the log the first one did.
-    let recipe = with_updates.clone().fresh();
+    let mut recipe = with_updates.clone().fresh();
     let trace = std::env::var_os("KEKE_STARTUP_TRACE").is_some();
     let build_start = std::time::Instant::now();
     let mut session = with_updates.build().await?;
@@ -344,32 +374,48 @@ pub async fn local_with(
                 }
                 Command::NewSession { done } => match recipe.clone().build().await {
                     Ok(fresh) => {
-                        let switches = Switches {
-                            cancel: Box::new(fresh.canceller()),
-                            approval: fresh.approval_switch(),
-                            effort: fresh.effort_switch(),
-                            tier: fresh.service_tier_switch(),
-                            model: fresh.model_switch(),
-                            mode: fresh.mode_switch(),
-                        };
-                        // A rebuild shares the recipe's switch, so a session
-                        // that was planning would come back planning. Starting
-                        // over means starting over: the mode goes back to what
-                        // a fresh launch has, and the surface is told, because
-                        // nothing else would tell it.
-                        fresh.mode_switch().set(SessionMode::default());
-                        let _ = updates.send(Update::ModeChanged(SessionMode::default()));
+                        let switches = start_over(&fresh, &updates);
                         session = fresh;
-                        // `new_session` only swaps what a surface writes
-                        // through; without this, nothing ever tells it the
-                        // swap happened, so what it draws never changes.
-                        let _ = updates.send(Update::SessionReset);
                         let _ = done.send(Ok(switches));
                     }
                     Err(error) => {
                         let _ = done.send(Err(error.to_string()));
                     }
                 },
+                Command::NewSessionOn { route, model, done } => {
+                    let Some(routes) = &routes else {
+                        let _ = done.send(Err(format!(
+                            "this session cannot switch to provider `{route}` in place"
+                        )));
+                        continue;
+                    };
+                    // Built in full before anything is replaced, so a route
+                    // that cannot be used leaves the running session as it
+                    // was rather than half switched.
+                    let built = match routes.recipe(route.clone(), model).await {
+                        Ok(builder) => {
+                            let next = builder.updates(turn_tx.clone()).fresh();
+                            match next.clone().build().await {
+                                Ok(fresh) => Ok((next, fresh)),
+                                Err(error) => Err(error.to_string()),
+                            }
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match built {
+                        Ok((next, fresh)) => {
+                            let switches = start_over(&fresh, &updates);
+                            let model = fresh.model().to_string();
+                            session = fresh;
+                            recipe = next;
+                            let _ = updates.send(Update::ProviderChanged { route, model });
+                            let _ = done.send(Ok(switches));
+                        }
+                        Err(error) => {
+                            let _ = done.send(Err(error));
+                        }
+                    }
+                }
             }
         }
     });
@@ -403,6 +449,30 @@ pub async fn local_with(
         // contributed, `local` only starts the session.
         commands: Vec::new(),
     })
+}
+
+/// Take over from the running session with `fresh`, telling the surface so.
+///
+/// Returns the switches a [`LocalConversation`] must repoint at `fresh`.
+fn start_over(fresh: &Session, updates: &UnboundedSender<Update>) -> Switches {
+    let switches = Switches {
+        cancel: Box::new(fresh.canceller()),
+        approval: fresh.approval_switch(),
+        effort: fresh.effort_switch(),
+        tier: fresh.service_tier_switch(),
+        model: fresh.model_switch(),
+        mode: fresh.mode_switch(),
+    };
+    // A rebuild shares the recipe's switch, so a session that was planning
+    // would come back planning. Starting over means starting over: the mode
+    // goes back to what a fresh launch has, and the surface is told, because
+    // nothing else would tell it.
+    fresh.mode_switch().set(SessionMode::default());
+    let _ = updates.send(Update::ModeChanged(SessionMode::default()));
+    // `new_session` only swaps what a surface writes through; without this,
+    // nothing ever tells it the swap happened, so what it draws never changes.
+    let _ = updates.send(Update::SessionReset);
+    switches
 }
 
 /// Merge the engine's turn updates with the approval prompts.
@@ -594,35 +664,60 @@ impl Conversation for LocalConversation {
             self.commands
                 .send(Command::NewSession { done })
                 .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
-            let switches = answer
-                .await
-                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
-                .map_err(ConversationError::Agent)?;
-            // A turn that was still running against the old session is now
-            // parked on a prompt or a cancel flag nobody will ever check
-            // again — withdraw it before this conversation starts pointing at
-            // a different session entirely.
-            self.approvals.withdraw_all();
-            if let Ok(mut cancel) = self.cancel.lock() {
-                *cancel = switches.cancel;
-            }
-            if let Ok(mut approval) = self.approval.lock() {
-                *approval = switches.approval;
-            }
-            if let Ok(mut effort) = self.effort.lock() {
-                *effort = switches.effort;
-            }
-            if let Ok(mut tier) = self.tier.lock() {
-                *tier = switches.tier;
-            }
-            if let Ok(mut model) = self.model.lock() {
-                *model = switches.model;
-            }
-            if let Ok(mut mode) = self.mode.lock() {
-                *mode = switches.mode;
-            }
-            Ok(())
+            self.adopt(answer).await
         })
+    }
+
+    fn new_session_on(
+        &self,
+        route: String,
+        model: Option<String>,
+    ) -> ConversationFuture<'_, Result<(), ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::NewSessionOn { route, model, done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            self.adopt(answer).await
+        })
+    }
+}
+
+impl LocalConversation {
+    /// Point every handle at the session that replaced the old one, once the
+    /// session task says it has.
+    async fn adopt(
+        &self,
+        answer: oneshot::Receiver<Result<Switches, String>>,
+    ) -> Result<(), ConversationError> {
+        let switches = answer
+            .await
+            .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
+            .map_err(ConversationError::Agent)?;
+        // A turn that was still running against the old session is now
+        // parked on a prompt or a cancel flag nobody will ever check
+        // again — withdraw it before this conversation starts pointing at
+        // a different session entirely.
+        self.approvals.withdraw_all();
+        if let Ok(mut cancel) = self.cancel.lock() {
+            *cancel = switches.cancel;
+        }
+        if let Ok(mut approval) = self.approval.lock() {
+            *approval = switches.approval;
+        }
+        if let Ok(mut effort) = self.effort.lock() {
+            *effort = switches.effort;
+        }
+        if let Ok(mut tier) = self.tier.lock() {
+            *tier = switches.tier;
+        }
+        if let Ok(mut model) = self.model.lock() {
+            *model = switches.model;
+        }
+        if let Ok(mut mode) = self.mode.lock() {
+            *mode = switches.mode;
+        }
+        Ok(())
     }
 }
 
