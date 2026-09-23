@@ -124,6 +124,9 @@ pub(crate) fn render(
 ) -> Rendered {
     let width = usize::from(width.max(8));
     let mut out = Rendered::default();
+    let latest_command = cells
+        .iter()
+        .rposition(|cell| matches!(cell, Cell::Tool(tool) if tool.name == "bash"));
     let mut index = 0;
     while index < cells.len() {
         let cell = &cells[index];
@@ -169,7 +172,9 @@ pub(crate) fn render(
                 // Full transcript mode is the escape hatch from the compact
                 // view: a group header must never hide its individual calls.
                 // Manual fold state belongs to the compact view only.
-                let open = full_transcript || default_open(group) ^ expanded.contains(&index);
+                let open = full_transcript
+                    || default_open(group, latest_command == Some(index))
+                        ^ expanded.contains(&index);
                 out.lines
                     .extend(group_lines(group, open, width, full_transcript));
                 index = end;
@@ -491,17 +496,23 @@ fn runs_with(cell: &Cell, anchor: &str) -> bool {
 
 /// Whether a run should be open before any manual toggle is applied.
 ///
-/// A run still in flight is shown as it happens rather than behind a fold a
-/// person has to know to open. One that finished cleanly folds away, since by
-/// then it is confirmed and re-reading it adds nothing; one that ended in an
-/// error or a denial stays open, because that is exactly the case a person
-/// needs to see without hunting for it. An exploration run (`read_file`,
-/// `list_dir`, `grep`) always stays open, clean or not: it names what it
+/// Only the latest command stays open while more commands arrive; a direct
+/// `git` command stays open for review. Other running calls and failures stay
+/// open, while clean completed non-command calls may fold away. An exploration
+/// run (`read_file`, `list_dir`, `grep`) always stays open, clean or not: it names what it
 /// looked at, not what it changed, so folding it away on success would hide
 /// the one thing worth knowing — what the agent actually read — behind a
 /// click nobody has reason to make.
-fn default_open(group: &[Cell]) -> bool {
+fn default_open(group: &[Cell], latest_command: bool) -> bool {
     group.iter().any(|cell| match cell {
+        Cell::Tool(tool) if tool.name == "bash" => {
+            latest_command
+                || is_git_command(&tool.summary)
+                || matches!(
+                    tool.state,
+                    CallState::Finished(ToolStatus::Error | ToolStatus::Denied)
+                )
+        }
         Cell::Tool(tool) => match tool.state {
             CallState::Running => true,
             CallState::Finished(ToolStatus::Error | ToolStatus::Denied) => true,
@@ -513,6 +524,13 @@ fn default_open(group: &[Cell]) -> bool {
         },
         _ => false,
     })
+}
+
+fn is_git_command(summary: &str) -> bool {
+    summary
+        .trim_start()
+        .strip_prefix("git")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
 /// Wrap `text` to `width`, prefixing the first line and indenting the rest so
@@ -694,6 +712,74 @@ mod grouping_tests {
     }
 
     #[test]
+    fn ten_commands_keep_ten_independent_headers_and_one_open_result() {
+        let cells: Vec<_> = (0..10)
+            .map(|index| {
+                let mut cell = tool(&format!("c{index}"), "bash", &format!("echo {index}"));
+                let Cell::Tool(tool) = &mut cell else {
+                    unreachable!()
+                };
+                tool.detail = Some(format!("output {index}"));
+                cell
+            })
+            .collect();
+        let rendered = render(&cells, 80, &HashSet::new(), false);
+        let lines: Vec<_> = rendered.lines.iter().map(|line| line.to_string()).collect();
+        assert_eq!(rendered.toggles.len(), 10);
+        assert_eq!(
+            lines.iter().filter(|line| line.contains("output ")).count(),
+            1
+        );
+        assert!(lines.iter().any(|line| line.contains("output 9")));
+        assert!(lines.iter().any(|line| line.contains("Ran echo 0")));
+    }
+
+    #[test]
+    fn git_command_remains_open_when_new_commands_arrive() {
+        let mut git = tool("c0", "bash", "git status --short");
+        let Cell::Tool(git_call) = &mut git else {
+            unreachable!()
+        };
+        git_call.detail = Some(" M src/lib.rs".to_string());
+        let rendered = render(
+            &[git, tool("c1", "bash", "echo later")],
+            80,
+            &HashSet::new(),
+            false,
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("M src/lib.rs"))
+        );
+        assert!(!is_git_command("github status"));
+        assert!(is_git_command("git"));
+    }
+
+    #[test]
+    fn failed_command_remains_open_when_new_commands_arrive() {
+        let mut failed = tool("c0", "bash", "cargo test");
+        let Cell::Tool(call) = &mut failed else {
+            unreachable!()
+        };
+        call.state = CallState::Finished(ToolStatus::Error);
+        call.detail = Some("test failed".to_string());
+        let rendered = render(
+            &[failed, tool("c1", "bash", "echo later")],
+            80,
+            &HashSet::new(),
+            false,
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("test failed"))
+        );
+    }
+
+    #[test]
     fn an_expanded_command_output_keeps_the_head_and_tail() {
         let mut command = tool("c1", "bash", "echo output");
         let Cell::Tool(tool) = &mut command else {
@@ -701,7 +787,7 @@ mod grouping_tests {
         };
         tool.detail = Some("one\ntwo\nthree\nfour\nfive\nsix\nseven".to_string());
 
-        let rendered = render(&[command], 80, &HashSet::from([0]), false);
+        let rendered = render(&[command], 80, &HashSet::new(), false);
         let body: String = rendered.lines[1..]
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -720,7 +806,7 @@ mod grouping_tests {
             tool("c1", "bash", "echo one"),
             tool("c2", "bash", "echo two"),
         ];
-        for (expanded, full_transcript) in [(HashSet::from([0]), false), (HashSet::new(), true)] {
+        for (expanded, full_transcript) in [(HashSet::new(), false), (HashSet::new(), true)] {
             let rendered = render(&cells, 80, &expanded, full_transcript);
             let lines: Vec<String> = rendered
                 .lines

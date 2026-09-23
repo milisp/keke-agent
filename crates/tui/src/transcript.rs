@@ -375,8 +375,7 @@ impl Transcript {
 
     /// The newest thing on screen that can be opened, if there is one.
     ///
-    /// The keyboard's answer to a click: after a run of calls scrolls past,
-    /// what a person reaches for is that run — not one picked from a list.
+    /// The keyboard's answer to a click: the newest finished call or run.
     pub fn last_expandable(&self) -> Option<usize> {
         self.cells
             .iter()
@@ -384,6 +383,9 @@ impl Transcript {
             .rev()
             .find_map(|(index, cell)| match cell {
                 Cell::Tool(tool) if !matches!(tool.state, CallState::Running) => {
+                    if tool.name == "bash" {
+                        return Some(index);
+                    }
                     // Only the first call of a run carries the header.
                     match index.checked_sub(1).map(|before| &self.cells[before]) {
                         Some(before) if groups_with(before, &tool.name) => None,
@@ -430,13 +432,12 @@ pub(crate) fn is_exploration_tool(name: &str) -> bool {
 /// A diff tool (`edit`, `write_file`) never groups, not even with itself: its
 /// diff is the one thing a person needs to see to trust the change, and two
 /// diffs sharing one header with no label between them are indistinguishable.
-/// Anything else (`bash`, ...) groups with itself, since a header naming the
-/// tool once is enough when the calls carry no per-call payload worth telling
-/// apart.
+/// Commands never group: each command and its output must be independently
+/// visible and toggleable. Other tools group with themselves.
 pub(crate) fn same_run(a: &str, b: &str) -> bool {
     if is_exploration_tool(a) && is_exploration_tool(b) {
         true
-    } else if is_diff_tool(a) || is_diff_tool(b) {
+    } else if is_diff_tool(a) || is_diff_tool(b) || a == "bash" || b == "bash" {
         false
     } else {
         a == b

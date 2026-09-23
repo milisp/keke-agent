@@ -608,38 +608,45 @@ fn a_call_is_named_by_what_it_acted_on_not_by_its_argument_names() {
 }
 
 #[test]
-fn a_run_of_finished_calls_collapses_to_one_countable_line() {
+fn commands_have_independent_headers_and_only_latest_output_is_open() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_commands(&mut app, 3);
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("Ran 3 commands")),
+        lines.iter().any(|line| line.contains("Ran echo 0"))
+            && lines.iter().any(|line| line.contains("Ran echo 1"))
+            && lines.iter().any(|line| line.contains("Ran echo 2")),
         "{lines:?}"
     );
     assert!(
-        !lines.iter().any(|line| line.contains("echo 1")),
-        "a collapsed run must not still list its calls: {lines:?}"
+        !lines.iter().any(|line| line.contains("Ran 3 commands")),
+        "commands must not be grouped: {lines:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("12 lines"))
+            .count(),
+        1
     );
 }
 
 #[test]
-fn expanding_a_run_shows_every_call_in_it_and_collapsing_hides_them_again() {
+fn toggling_the_last_command_does_not_expand_older_commands() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_commands(&mut app, 3);
-    // The map of what is on screen is a frame's, so draw one first.
-    crate::draw::transcript::render(app.transcript.cells(), 80, app.expanded(), false);
     app.toggle_last_expandable();
 
     let lines = rendered(&app);
     assert!(
-        lines.iter().any(|line| line.contains("echo 2")),
+        !lines.iter().any(|line| line.contains("12 lines")),
         "{lines:?}"
     );
     app.toggle_last_expandable();
     assert!(
-        !rendered(&app).iter().any(|line| line.contains("echo 2")),
-        "expanding must be reversible"
+        rendered(&app).iter().any(|line| line.contains("12 lines")),
+        "the last command alone reopens"
     );
 }
 
@@ -746,14 +753,21 @@ fn a_run_that_errored_stays_open_after_it_finishes() {
 }
 
 #[test]
-fn a_clean_run_folds_away_once_it_finishes() {
+fn a_new_command_folds_the_previous_output_not_its_header() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_commands(&mut app, 3);
 
     let lines = rendered(&app);
     assert!(
-        !lines.iter().any(|line| line.contains("echo 2")),
-        "a run that finished cleanly folds away without a manual collapse: {lines:?}"
+        lines.iter().any(|line| line.contains("Ran echo 2")),
+        "the newest command stays visible: {lines:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("12 lines"))
+            .count(),
+        1
     );
 }
 
