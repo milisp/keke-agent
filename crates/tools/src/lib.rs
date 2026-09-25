@@ -7,6 +7,7 @@
 mod apply_patch;
 mod bash;
 mod edit;
+mod escalate;
 mod grep;
 mod list_dir;
 mod prompt;
@@ -28,6 +29,9 @@ pub use bash::BashOutput;
 pub use edit::Edit;
 pub use edit::EditArgs;
 pub use edit::EditOutput;
+pub use escalate::BashUnsandboxed;
+pub use escalate::BashUnsandboxedArgs;
+use escalate::PersonDecides;
 pub use grep::Grep;
 pub use grep::GrepArgs;
 pub use grep::GrepOutput;
@@ -51,25 +55,27 @@ use keke_config_types::SandboxMode;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_plugin_api::ToolContributor;
-use keke_protocol::ToolCall;
 use keke_sandbox::Sandbox;
 use keke_tool::ArcTool;
-
-/// The tools that write from inside keke's own process rather than from a
-/// child, and so are not confined by the sandbox a shell command runs in.
-const WRITING_TOOLS: &[&str] = &["write_file", "edit", "apply_patch"];
 
 /// Every tool in this pack, in the order they are advertised.
 ///
 /// `sandbox` confines what `bash` runs. `background` is where a backgrounded
 /// shell command goes; `None` builds a pack whose `bash` can only run in the
 /// foreground.
+///
+/// Two tools depend on the sandbox. `bash_unsandboxed` is offered only where
+/// there is a sandbox to step outside of. And under `read_only` the edit
+/// tools ask a person every time: they write from this process, where no
+/// sandbox reaches, so asking is how the mode's promise is kept for them.
 #[must_use]
 pub fn builtin_tools(
     sandbox: Arc<Sandbox>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) -> Vec<ArcTool> {
-    vec![
+    let read_only = sandbox.policy().mode == SandboxMode::ReadOnly;
+    let confines = sandbox.confines();
+    let mut tools: Vec<ArcTool> = vec![
         Arc::new(ReadFile),
         Arc::new(ListDir),
         Arc::new(Grep),
@@ -77,10 +83,20 @@ pub fn builtin_tools(
             sandbox,
             background,
         }),
-        Arc::new(WriteFile),
-        Arc::new(Edit),
-        Arc::new(ApplyPatch),
-    ]
+    ];
+    if confines {
+        tools.push(Arc::new(BashUnsandboxed::new()));
+    }
+    if read_only {
+        tools.push(Arc::new(PersonDecides(WriteFile)));
+        tools.push(Arc::new(PersonDecides(Edit)));
+        tools.push(Arc::new(PersonDecides(ApplyPatch)));
+    } else {
+        tools.push(Arc::new(WriteFile));
+        tools.push(Arc::new(Edit));
+        tools.push(Arc::new(ApplyPatch));
+    }
+    tools
 }
 
 struct BuiltinTools {
@@ -104,7 +120,6 @@ pub fn install(
     sandbox: Arc<Sandbox>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) {
-    let read_only = sandbox.policy().mode == SandboxMode::ReadOnly;
     registry.tool_contributor(Arc::new(BuiltinTools {
         sandbox,
         background,
@@ -113,19 +128,6 @@ pub fn install(
     // Guards subtract only, so this one is registered unconditionally: there is
     // no composition in which reading a private key is what the person meant.
     registry.tool_guard(Box::new(secrets::denial));
-    // The edit tools write from this process, where the sandbox does not
-    // reach, so `read_only` would stop `bash` from writing a file and let
-    // `write_file` write it anyway. A guard closes that, and a guard can only
-    // deny, so nothing registered later reopens it.
-    if read_only {
-        registry.tool_guard(Box::new(read_only_denial));
-    }
-}
-
-fn read_only_denial(call: &ToolCall) -> Option<String> {
-    WRITING_TOOLS
-        .contains(&call.name.as_str())
-        .then(|| "sandbox_mode is read_only, so no tool may write files".to_string())
 }
 
 #[cfg(test)]
@@ -250,33 +252,83 @@ mod tests {
         );
     }
 
-    /// `read_only` is a promise about the files, not about `bash`: a mode
-    /// that confined the shell and let `write_file` through would be keeping
-    /// half of it.
-    #[test]
-    fn read_only_refuses_every_tool_that_writes_from_this_process() {
-        let call = |name: &str| keke_protocol::ToolCall {
-            id: ToolCallId::new("call-1"),
-            name: name.into(),
-            arguments: serde_json::json!({ "path": "notes.md" }),
+    fn sandbox(mode: SandboxMode) -> Arc<Sandbox> {
+        let policy = keke_config_types::SandboxPolicy {
+            mode,
+            ..Default::default()
         };
-        let offered: Vec<String> = builtin_tools(unconfined(), None)
+        Arc::new(
+            Sandbox::new(policy, Some(std::path::PathBuf::from("/proc/self/exe")))
+                .expect("this machine must be able to build the sandbox"),
+        )
+    }
+
+    fn approvals(tools: &[ArcTool]) -> Vec<(String, keke_tool::ApprovalRequirement)> {
+        tools
             .iter()
-            .map(|tool| tool.id().to_string())
-            .collect();
-        for name in WRITING_TOOLS {
-            // A renamed tool would otherwise walk past the guard unnoticed.
-            assert!(offered.iter().any(|id| id == name), "{name} is not a tool");
+            .map(|tool| (tool.id().to_string(), tool.capabilities().approval))
+            .collect()
+    }
+
+    /// `read_only` is a promise about the files, not about `bash`: the edit
+    /// tools write from this process, where no sandbox reaches, so a person
+    /// answers for each of them — as codex asks rather than refuses.
+    #[test]
+    fn read_only_puts_every_in_process_write_in_front_of_a_person() {
+        use keke_tool::ApprovalRequirement::Always;
+        use keke_tool::ApprovalRequirement::ByPolicy;
+
+        let tools = approvals(&builtin_tools(sandbox(SandboxMode::ReadOnly), None));
+        for name in ["write_file", "edit", "apply_patch"] {
             assert!(
-                read_only_denial(&call(name)).is_some(),
-                "{name} got through"
+                tools.contains(&(name.to_string(), Always)),
+                "{name}: {tools:?}"
             );
         }
-        assert!(read_only_denial(&call("read_file")).is_none());
-        assert!(
-            read_only_denial(&call("bash")).is_none(),
-            "the sandbox confines bash"
-        );
+        assert!(tools.contains(&("read_file".to_string(), ByPolicy)));
+
+        let tools = approvals(&builtin_tools(sandbox(SandboxMode::WorkspaceWrite), None));
+        assert!(tools.contains(&("write_file".to_string(), ByPolicy)));
+    }
+
+    /// Stepping outside the sandbox is offered where there is one, and asks
+    /// every time; with nothing confined there is nothing to step outside of.
+    #[test]
+    fn stepping_outside_the_sandbox_is_offered_only_where_there_is_one() {
+        let offered = |sandbox: Arc<Sandbox>| {
+            approvals(&builtin_tools(sandbox, None))
+                .into_iter()
+                .find(|(id, _)| id == "bash_unsandboxed")
+        };
+        assert_eq!(offered(unconfined()), None);
+        let confining = sandbox(SandboxMode::WorkspaceWrite);
+        if confining.confines() {
+            assert_eq!(
+                offered(confining),
+                Some((
+                    "bash_unsandboxed".to_string(),
+                    keke_tool::ApprovalRequirement::Always
+                ))
+            );
+        } else {
+            assert_eq!(offered(confining), None, "no sandbox to step outside of");
+        }
+    }
+
+    /// Where no sandbox exists, a person stands in for it on every command.
+    #[test]
+    fn bash_asks_every_time_where_the_sandbox_is_not_enforced() {
+        let confining = sandbox(SandboxMode::WorkspaceWrite);
+        let bash = Bash {
+            sandbox: Arc::clone(&confining),
+            background: None,
+        };
+        let expected = if confining.is_enforced() {
+            keke_tool::ApprovalRequirement::ByPolicy
+        } else {
+            keke_tool::ApprovalRequirement::Always
+        };
+        assert_eq!(bash.capabilities().approval, expected);
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+use keke_config_types::SandboxMode;
 use keke_protocol::ContentBlock;
 use keke_sandbox::Sandbox;
 use keke_tasks::BackgroundTasks;
@@ -104,6 +105,28 @@ pub struct Bash {
     pub background: Option<Arc<BackgroundTasks>>,
 }
 
+/// What a confined command cannot do, in words a model can act on. `None`
+/// when commands are not confined.
+fn sandbox_limits(sandbox: &Sandbox) -> Option<String> {
+    if !sandbox.confines() {
+        return None;
+    }
+    let policy = sandbox.policy();
+    let writes = match policy.mode {
+        SandboxMode::ReadOnly => "nothing may be written",
+        _ => {
+            "writes are allowed only inside the workspace and the temporary directory, and \
+              `.git` is read-only"
+        }
+    };
+    let network = if policy.mode == SandboxMode::WorkspaceWrite && policy.network_access {
+        ""
+    } else {
+        "; there is no network access"
+    };
+    Some(format!("{writes}{network}"))
+}
+
 impl Tool for Bash {
     type Args = BashArgs;
     type Output = BashOutput;
@@ -113,18 +136,38 @@ impl Tool for Bash {
     }
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
-        ToolDescription::new(
+        let mut text = String::from(
             "Run a shell command from the workspace root. Returns stdout and stderr combined, \
              plus the exit code when it is non-zero. Long output is truncated, so pipe through \
              `head` when you expect a lot. Set `background` for anything long-lived — a dev \
              server, a watch, a long build — to get a task id back immediately instead of \
              blocking the turn.",
-        )
+        );
+        // The model cannot tell a sandbox denial from any other failure unless
+        // it knows the sandbox is there, and would otherwise retry the same
+        // command or give up on a task a person would happily approve.
+        if let Some(limits) = sandbox_limits(&self.sandbox) {
+            text.push_str(&format!(
+                "\n\nCommands run in a sandbox: {limits}. When a command fails because of \
+                 that — \"Operation not permitted\", \"Permission denied\", or a network error \
+                 — and it genuinely needs more, rerun it with `bash_unsandboxed`, which asks \
+                 the person first."
+            ));
+        }
+        ToolDescription::new(text)
     }
 
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities {
-            approval: ApprovalRequirement::ByPolicy,
+            // Where the configured sandbox does not exist, a person stands in
+            // for it on every command — including the ones a standing "allow
+            // always" or a permissive policy would have waved through, since
+            // both assumed the command would be confined.
+            approval: if self.sandbox.is_enforced() {
+                ApprovalRequirement::ByPolicy
+            } else {
+                ApprovalRequirement::Always
+            },
             kind: ToolKind::Execute,
             // A shell command can touch anything the other calls in the step
             // are touching, so it never runs beside a sibling.
