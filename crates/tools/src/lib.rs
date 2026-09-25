@@ -7,6 +7,7 @@
 mod apply_patch;
 mod bash;
 mod edit;
+mod escalate;
 mod grep;
 mod list_dir;
 mod prompt;
@@ -28,6 +29,9 @@ pub use bash::BashOutput;
 pub use edit::Edit;
 pub use edit::EditArgs;
 pub use edit::EditOutput;
+pub use escalate::BashUnsandboxed;
+pub use escalate::BashUnsandboxedArgs;
+use escalate::PersonDecides;
 pub use grep::Grep;
 pub use grep::GrepArgs;
 pub use grep::GrepOutput;
@@ -47,47 +51,79 @@ pub use write_file::WriteFileOutput;
 
 use std::sync::Arc;
 
+use keke_config_types::SandboxMode;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_plugin_api::ToolContributor;
+use keke_sandbox::Sandbox;
 use keke_tool::ArcTool;
 
 /// Every tool in this pack, in the order they are advertised.
 ///
-/// `background` is where a backgrounded shell command goes. `None` builds a
-/// pack whose `bash` can only run in the foreground.
+/// `sandbox` confines what `bash` runs. `background` is where a backgrounded
+/// shell command goes; `None` builds a pack whose `bash` can only run in the
+/// foreground.
+///
+/// Two tools depend on the sandbox. `bash_unsandboxed` is offered only where
+/// there is a sandbox to step outside of. And under `read_only` the edit
+/// tools ask a person every time: they write from this process, where no
+/// sandbox reaches, so asking is how the mode's promise is kept for them.
 #[must_use]
-pub fn builtin_tools(background: Option<Arc<keke_tasks::BackgroundTasks>>) -> Vec<ArcTool> {
-    vec![
+pub fn builtin_tools(
+    sandbox: Arc<Sandbox>,
+    background: Option<Arc<keke_tasks::BackgroundTasks>>,
+) -> Vec<ArcTool> {
+    let read_only = sandbox.policy().mode == SandboxMode::ReadOnly;
+    let confines = sandbox.confines();
+    let mut tools: Vec<ArcTool> = vec![
         Arc::new(ReadFile),
         Arc::new(ListDir),
         Arc::new(Grep),
-        Arc::new(Bash { background }),
-        Arc::new(WriteFile),
-        Arc::new(Edit),
-        Arc::new(ApplyPatch),
-    ]
+        Arc::new(Bash {
+            sandbox,
+            background,
+        }),
+    ];
+    if confines {
+        tools.push(Arc::new(BashUnsandboxed::new()));
+    }
+    if read_only {
+        tools.push(Arc::new(PersonDecides(WriteFile)));
+        tools.push(Arc::new(PersonDecides(Edit)));
+        tools.push(Arc::new(PersonDecides(ApplyPatch)));
+    } else {
+        tools.push(Arc::new(WriteFile));
+        tools.push(Arc::new(Edit));
+        tools.push(Arc::new(ApplyPatch));
+    }
+    tools
 }
 
 struct BuiltinTools {
+    sandbox: Arc<Sandbox>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 }
 
 impl ToolContributor for BuiltinTools {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        builtin_tools(self.background.clone())
+        builtin_tools(Arc::clone(&self.sandbox), self.background.clone())
     }
 }
 
 /// Register the built-in tool pack, and the turn context it needs.
 ///
-/// Pass the background registry to let `bash` start commands that outlive the
-/// turn; pass `None` for a composition that has none.
+/// `sandbox` confines every shell command the pack runs. Pass the background
+/// registry to let `bash` start commands that outlive the turn; pass `None`
+/// for a composition that has none.
 pub fn install(
     registry: &mut ExtensionRegistryBuilder,
+    sandbox: Arc<Sandbox>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) {
-    registry.tool_contributor(Arc::new(BuiltinTools { background }));
+    registry.tool_contributor(Arc::new(BuiltinTools {
+        sandbox,
+        background,
+    }));
     registry.context_contributor(Arc::new(prompt::BuiltinToolGuidance));
     // Guards subtract only, so this one is registered unconditionally: there is
     // no composition in which reading a private key is what the person meant.
@@ -111,6 +147,10 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
+
+    fn unconfined() -> Arc<Sandbox> {
+        Arc::new(Sandbox::unconfined())
+    }
 
     fn workspace() -> (TempDir, ToolCallContext) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -197,7 +237,7 @@ mod tests {
     #[test]
     fn installing_the_pack_registers_the_credential_guard() {
         let mut builder = keke_plugin_api::ExtensionRegistryBuilder::new();
-        install(&mut builder, None);
+        install(&mut builder, unconfined(), None);
         let registry = builder.build();
 
         let denial = registry.first_denial(&keke_protocol::ToolCall {
@@ -210,6 +250,85 @@ mod tests {
             denial.is_some(),
             "reads are uncontained, so this is the gate"
         );
+    }
+
+    fn sandbox(mode: SandboxMode) -> Arc<Sandbox> {
+        let policy = keke_config_types::SandboxPolicy {
+            mode,
+            ..Default::default()
+        };
+        Arc::new(
+            Sandbox::new(policy, Some(std::path::PathBuf::from("/proc/self/exe")))
+                .expect("this machine must be able to build the sandbox"),
+        )
+    }
+
+    fn approvals(tools: &[ArcTool]) -> Vec<(String, keke_tool::ApprovalRequirement)> {
+        tools
+            .iter()
+            .map(|tool| (tool.id().to_string(), tool.capabilities().approval))
+            .collect()
+    }
+
+    /// `read_only` is a promise about the files, not about `bash`: the edit
+    /// tools write from this process, where no sandbox reaches, so a person
+    /// answers for each of them — as codex asks rather than refuses.
+    #[test]
+    fn read_only_puts_every_in_process_write_in_front_of_a_person() {
+        use keke_tool::ApprovalRequirement::Always;
+        use keke_tool::ApprovalRequirement::ByPolicy;
+
+        let tools = approvals(&builtin_tools(sandbox(SandboxMode::ReadOnly), None));
+        for name in ["write_file", "edit", "apply_patch"] {
+            assert!(
+                tools.contains(&(name.to_string(), Always)),
+                "{name}: {tools:?}"
+            );
+        }
+        assert!(tools.contains(&("read_file".to_string(), ByPolicy)));
+
+        let tools = approvals(&builtin_tools(sandbox(SandboxMode::WorkspaceWrite), None));
+        assert!(tools.contains(&("write_file".to_string(), ByPolicy)));
+    }
+
+    /// Stepping outside the sandbox is offered where there is one, and asks
+    /// every time; with nothing confined there is nothing to step outside of.
+    #[test]
+    fn stepping_outside_the_sandbox_is_offered_only_where_there_is_one() {
+        let offered = |sandbox: Arc<Sandbox>| {
+            approvals(&builtin_tools(sandbox, None))
+                .into_iter()
+                .find(|(id, _)| id == "bash_unsandboxed")
+        };
+        assert_eq!(offered(unconfined()), None);
+        let confining = sandbox(SandboxMode::WorkspaceWrite);
+        if confining.confines() {
+            assert_eq!(
+                offered(confining),
+                Some((
+                    "bash_unsandboxed".to_string(),
+                    keke_tool::ApprovalRequirement::Always
+                ))
+            );
+        } else {
+            assert_eq!(offered(confining), None, "no sandbox to step outside of");
+        }
+    }
+
+    /// Where no sandbox exists, a person stands in for it on every command.
+    #[test]
+    fn bash_asks_every_time_where_the_sandbox_is_not_enforced() {
+        let confining = sandbox(SandboxMode::WorkspaceWrite);
+        let bash = Bash {
+            sandbox: Arc::clone(&confining),
+            background: None,
+        };
+        let expected = if confining.is_enforced() {
+            keke_tool::ApprovalRequirement::ByPolicy
+        } else {
+            keke_tool::ApprovalRequirement::Always
+        };
+        assert_eq!(bash.capabilities().approval, expected);
     }
 
     #[tokio::test]
@@ -391,17 +510,20 @@ mod tests {
     async fn bash_captures_output_and_a_failing_exit_code() {
         let (_dir, ctx) = workspace();
 
-        let out = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "echo out; echo err >&2; exit 3".into(),
-                    background: false,
-                    timeout_ms: None,
-                },
-            )
-            .await
-            .expect("ran");
+        let out = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "echo out; echo err >&2; exit 3".into(),
+                background: false,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("ran");
 
         let BashOutput::Finished {
             exit_code, output, ..
@@ -420,17 +542,20 @@ mod tests {
     async fn bash_reports_a_timeout_as_a_timeout() {
         let (_dir, ctx) = workspace();
 
-        let error = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "sleep 5".into(),
-                    background: false,
-                    timeout_ms: Some(100),
-                },
-            )
-            .await
-            .expect_err("times out");
+        let error = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "sleep 5".into(),
+                background: false,
+                timeout_ms: Some(100),
+            },
+        )
+        .await
+        .expect_err("times out");
 
         assert!(
             matches!(error, ToolError::Timeout { millis } if millis == 100),
@@ -452,17 +577,20 @@ mod tests {
             abort.store(true, Ordering::SeqCst);
         });
 
-        let error = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "sleep 5".into(),
-                    background: false,
-                    timeout_ms: Some(30_000),
-                },
-            )
-            .await
-            .expect_err("cancelled");
+        let error = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "sleep 5".into(),
+                background: false,
+                timeout_ms: Some(30_000),
+            },
+        )
+        .await
+        .expect_err("cancelled");
 
         assert!(matches!(error, ToolError::Cancelled), "got {error:?}");
     }
@@ -640,9 +768,11 @@ mod tests {
         let (_dir, ctx) = workspace();
         let tasks = Arc::new(keke_tasks::BackgroundTasks::new(
             keke_config_types::BackgroundLimits::default(),
+            unconfined(),
         ));
 
         let out = Bash {
+            sandbox: unconfined(),
             background: Some(Arc::clone(&tasks)),
         }
         .run(
@@ -669,17 +799,20 @@ mod tests {
     #[tokio::test]
     async fn backgrounding_without_a_registry_is_an_error_not_a_silent_wait() {
         let (_dir, ctx) = workspace();
-        let error = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "true".into(),
-                    background: true,
-                    timeout_ms: None,
-                },
-            )
-            .await
-            .expect_err("no registry");
+        let error = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "true".into(),
+                background: true,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect_err("no registry");
 
         assert!(
             matches!(error, ToolError::Execution { ref code, .. } if code == "background_unavailable"),
@@ -690,7 +823,7 @@ mod tests {
     #[test]
     fn the_pack_installs_every_builtin_tool() {
         let mut builder = ExtensionRegistryBuilder::new();
-        install(&mut builder, None);
+        install(&mut builder, unconfined(), None);
         let registry = builder.build();
 
         let ctx = ExtensionContext::new(

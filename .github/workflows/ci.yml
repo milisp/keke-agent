@@ -46,6 +46,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Includes `crates/cli/tests/sandbox.rs`, which fails rather than skips
+      # when the runner's kernel cannot enforce Landlock and seccomp — a green
+      # run must mean the sandbox was exercised, not that it was absent.
       - name: Test
         run: cargo test --workspace
 
@@ -67,3 +70,29 @@ jobs:
             fi
           done
           exit $missing
+
+  # The Seatbelt half of the sandbox exists only on macOS, so only a macOS
+  # runner can say whether it confines anything.
+  sandbox-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Sandbox
+        run: |
+          cargo test -p keke-sandbox
+          cargo test -p keke-cli --test sandbox
+
+  # Windows has no sandbox; what must hold there is that the sandbox says so
+  # rather than posing as one that works.
+  sandbox-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Sandbox
+        run: cargo test -p keke-sandbox

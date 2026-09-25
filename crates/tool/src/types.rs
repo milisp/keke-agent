@@ -67,7 +67,10 @@ impl ToolKind {
 /// This is not a way to be stricter than the policy in general. It is a way for
 /// a tool to say that a policy answering on a person's behalf would make the
 /// call meaningless, which is a property of the tool rather than of the
-/// deployment.
+/// deployment. The other case is a tool that cannot provide the containment
+/// the policy was written assuming — a shell with no sandbox to run in, an
+/// edit under a mode that promised no writes — where a person is the only
+/// boundary left.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ApprovalRequirement {
     /// The policy and the tool's kind decide, as usual.

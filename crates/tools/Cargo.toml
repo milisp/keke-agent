@@ -13,6 +13,7 @@ keke-paths = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
+keke-sandbox = { workspace = true }
 keke-tasks = { workspace = true }
 keke-tool = { workspace = true }
 dirs = { workspace = true }

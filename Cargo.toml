@@ -25,6 +25,7 @@ members = [
     "crates/provider-codex",
     "crates/provider-grok",
     "crates/provider-ollama",
+    "crates/sandbox",
     "crates/schedule",
     "crates/skills",
     "crates/subagent",
@@ -58,6 +59,7 @@ keke-wire = { path = "crates/wire" }
 keke-catalog = { path = "crates/catalog" }
 keke-fuzzy-file-search = { path = "crates/fuzzy-file-search" }
 keke-oauth = { path = "crates/oauth" }
+keke-sandbox = { path = "crates/sandbox" }
 
 # --- tier 1: engine ---
 keke-acp = { path = "crates/acp" }
@@ -101,6 +103,12 @@ dirs = "6"
 eventsource-stream = "0.2"
 futures = "0.3"
 ignore = "0.4"
+# Linux-only, for `keke-sandbox`: the filesystem and syscall halves of the
+# confinement. Both are safe wrappers, which is what keeps the workspace-wide
+# `unsafe_code = "deny"` intact.
+landlock = "0.4"
+libc = "0.2"
+seccompiler = "0.5"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9"

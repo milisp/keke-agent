@@ -1,4 +1,6 @@
+use keke_config_types::SandboxMode;
 use keke_protocol::ContentBlock;
+use keke_sandbox::Sandbox;
 use keke_tasks::BackgroundTasks;
 use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
@@ -91,11 +93,38 @@ impl ToolOutput for BashOutput {
 /// outlives the turn cannot be owned by the call that started it, and
 /// `keke-tasks` is the one place that records what a task is doing.
 pub struct Bash {
+    /// What confines the command. Held here rather than consulted per call
+    /// because it was checked to be enforceable when it was built, and a
+    /// sandbox that could fail to build mid-turn would need a fallback — the
+    /// only one available being to run the command bare.
+    pub sandbox: Arc<Sandbox>,
     /// Where a backgrounded command goes. `None` in a composition with no task
     /// registry, which makes `background: true` an error rather than a silent
     /// foreground run — the model asked not to wait, and quietly waiting is a
     /// different answer to a different question (`AGENTS.md` invariant 8).
     pub background: Option<Arc<BackgroundTasks>>,
+}
+
+/// What a confined command cannot do, in words a model can act on. `None`
+/// when commands are not confined.
+fn sandbox_limits(sandbox: &Sandbox) -> Option<String> {
+    if !sandbox.confines() {
+        return None;
+    }
+    let policy = sandbox.policy();
+    let writes = match policy.mode {
+        SandboxMode::ReadOnly => "nothing may be written",
+        _ => {
+            "writes are allowed only inside the workspace and the temporary directory, and \
+              `.git` is read-only"
+        }
+    };
+    let network = if policy.mode == SandboxMode::WorkspaceWrite && policy.network_access {
+        ""
+    } else {
+        "; there is no network access"
+    };
+    Some(format!("{writes}{network}"))
 }
 
 impl Tool for Bash {
@@ -107,18 +136,38 @@ impl Tool for Bash {
     }
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
-        ToolDescription::new(
+        let mut text = String::from(
             "Run a shell command from the workspace root. Returns stdout and stderr combined, \
              plus the exit code when it is non-zero. Long output is truncated, so pipe through \
              `head` when you expect a lot. Set `background` for anything long-lived — a dev \
              server, a watch, a long build — to get a task id back immediately instead of \
              blocking the turn.",
-        )
+        );
+        // The model cannot tell a sandbox denial from any other failure unless
+        // it knows the sandbox is there, and would otherwise retry the same
+        // command or give up on a task a person would happily approve.
+        if let Some(limits) = sandbox_limits(&self.sandbox) {
+            text.push_str(&format!(
+                "\n\nCommands run in a sandbox: {limits}. When a command fails because of \
+                 that — \"Operation not permitted\", \"Permission denied\", or a network error \
+                 — and it genuinely needs more, rerun it with `bash_unsandboxed`, which asks \
+                 the person first."
+            ));
+        }
+        ToolDescription::new(text)
     }
 
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities {
-            approval: ApprovalRequirement::ByPolicy,
+            // Where the configured sandbox does not exist, a person stands in
+            // for it on every command — including the ones a standing "allow
+            // always" or a permissive policy would have waved through, since
+            // both assumed the command would be confined.
+            approval: if self.sandbox.is_enforced() {
+                ApprovalRequirement::ByPolicy
+            } else {
+                ApprovalRequirement::Always
+            },
             kind: ToolKind::Execute,
             // A shell command can touch anything the other calls in the step
             // are touching, so it never runs beside a sibling.
@@ -148,16 +197,7 @@ impl Tool for Bash {
         let millis = args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(ceiling);
         let deadline = Instant::now() + Duration::from_millis(millis);
 
-        let (program, flag) = if cfg!(windows) {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
-        let child = Command::new(program)
-            .arg(flag)
-            .arg(&args.command)
-            .current_dir(ctx.workspace_root.as_path())
+        let child = Command::from(self.sandbox.shell(&args.command, &ctx.workspace_root))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -165,7 +205,7 @@ impl Tool for Bash {
             // the timeout and cancellation paths drop it.
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| ToolError::custom("spawn_failed", format!("{program}: {error}")))?;
+            .map_err(|error| ToolError::custom("spawn_failed", error.to_string()))?;
 
         let wait = child.wait_with_output();
         tokio::pin!(wait);

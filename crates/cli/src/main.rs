@@ -35,6 +35,19 @@ fn log_file() -> Option<std::fs::File> {
 }
 
 fn main() -> Result<()> {
+    // Before anything else, and in particular before a runtime starts a
+    // thread: as the Linux sandbox launcher this process confines itself and
+    // becomes the command, and it must never fall through to being keke.
+    let mut args = std::env::args_os();
+    if args
+        .nth(1)
+        .is_some_and(|first| first == keke_sandbox::HELPER_ARG)
+    {
+        let error = keke_sandbox::run_helper(args);
+        eprintln!("keke: sandbox launcher: {error}");
+        std::process::exit(126);
+    }
+
     startup_trace::record_start();
     // Parsed before logging is wired: which surface is about to run decides
     // where a log line may go.

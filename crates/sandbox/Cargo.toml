@@ -1,0 +1,24 @@
+[package]
+name = "keke-sandbox"
+description = "Operating-system confinement for the commands a model runs: Seatbelt on macOS, Landlock and seccomp on Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-paths = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true }
+libc = { workspace = true }
+seccompiler = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

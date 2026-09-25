@@ -43,6 +43,10 @@ RANK = {
     # the vendor auth plugins *and* `keke-mcp`, which is the point — an MCP
     # server behind OAuth is not a vendor and cannot depend on one.
     "keke-oauth": 8,
+    # OS confinement for the commands a model runs. Above the contracts because
+    # it reads `SandboxPolicy`, below everything that spawns such a command —
+    # `keke-tasks` and the tool pack — and it knows nothing of either.
+    "keke-sandbox": 9,
     # tier 1 - engine
     "keke-config": 10,
     "keke-credentials": 10,
