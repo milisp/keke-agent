@@ -64,7 +64,7 @@ Provider 路由、API Key、本地模型、网关、按目录账户及其他设�
 
 ## 安全
 
-- **沙箱与审批** — shell 命令运行在操作系统级沙箱中（macOS 用 Seatbelt，Linux 用 Landlock + seccomp）：默认只能写入工作区，且不能访问网络。仓库自带的配置只能收紧、不能放宽沙箱。详见 [`docs/config.md`](docs/config.md#sandbox)。
+- **沙箱与审批** — shell 命令运行在操作系统级沙箱中（macOS 用 Seatbelt，Linux 用 Landlock + seccomp）：默认只能写入工作区、不能改动 `.git`、不能访问网络；需要越过沙箱时每次都会询问你。Windows 没有沙箱，每条命令都会先询问你。仓库自带的配置只能收紧、不能放宽沙箱。详见 [`docs/config.md`](docs/config.md#sandbox)。
 - **插件信任** — 仓库自带的插件（hooks、MCP servers）不会仅因 `git clone` 就执行；必须由人按**内容**（而非路径）批准。没有关闭该门禁的开关。
 
 ## 许可证

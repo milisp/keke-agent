@@ -84,3 +84,15 @@ jobs:
         run: |
           cargo test -p keke-sandbox
           cargo test -p keke-cli --test sandbox
+
+  # Windows has no sandbox; what must hold there is that the sandbox says so
+  # rather than posing as one that works.
+  sandbox-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Sandbox
+        run: cargo test -p keke-sandbox

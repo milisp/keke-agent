@@ -362,12 +362,13 @@ mcp_call_millis = 120000    # Single MCP tools/call timeout
 
 Every shell command the model runs — `bash`, in the foreground or the
 background — runs under a sandbox the operating system enforces: Seatbelt
-(`/usr/bin/sandbox-exec`) on macOS, Landlock plus seccomp on Linux.
+(`/usr/bin/sandbox-exec`) on macOS, Landlock plus seccomp on Linux. The
+defaults follow codex's.
 
 | Mode | Reads | Writes | Network |
 |---|---|---|---|
 | `workspace_write` (default) | anywhere | the workspace, the temporary directory, `/tmp`, and `writable_roots` | off unless `network_access = true` |
-| `read_only` | anywhere | nowhere — the `write_file`, `edit`, and `apply_patch` tools are refused too | off |
+| `read_only` | anywhere | nowhere | off |
 | `danger_full_access` | anywhere | anywhere | on |
 
 ```toml
@@ -378,26 +379,39 @@ network_access = false          # true lets commands reach the network
 writable_roots = ["/Users/me/.cache/sccache"]   # absolute paths, writable too
 ```
 
-A machine that cannot enforce the configured mode refuses to start a session
-and says why, rather than running commands unconfined: Linux needs 5.13 or
-later with Landlock enabled, and Windows has no sandbox yet. Set
-`sandbox_mode = "danger_full_access"` in `$KEKE_HOME/config.toml` to run
-commands unconfined there.
+**Workspace metadata stays read-only.** Inside a writable root, `.git`,
+`.agents`, and `.keke` cannot be written by a sandboxed command — a hook
+written into `.git/hooks` would run outside the sandbox the next time you
+commit. `.keke` in the workspace is protected even before it exists. This is
+enforced on macOS; Landlock cannot carve an exception out of a grant, so on
+Linux those directories are as writable as the rest of the workspace.
 
-Package managers usually want both the network and a cache under your home
-directory, so with the defaults `cargo add` or `npm install` fail inside the
-sandbox. Grant what they need — `network_access = true` and the cache
-directory in `writable_roots` — or run them yourself.
+**Stepping outside.** When a command fails because of the sandbox — it needs
+the network, writes outside the workspace, or commits to `.git` — the model can
+rerun it with `bash_unsandboxed`, giving a reason. You are asked every time, a
+standing "allow always" does not answer for you, and where nobody can answer
+(`keke exec`) it is refused.
 
-A workspace is writable all the way down, `.git/hooks` included. A hook written
-there runs outside the sandbox the next time you commit, so review changes
-under `.git/` the way you would review any other edit.
+**The edit tools under `read_only`.** `write_file`, `edit`, and `apply_patch`
+write from keke's own process, where no sandbox reaches, so under `read_only`
+each of them asks you first.
+
+**Where there is no sandbox.** Windows has none — as in codex, where it is
+off unless enabled — because what a non-administrator can build there cannot
+block the network and leaves any directory others may write writable. So on
+Windows, under any mode but `danger_full_access`, every `bash` command asks you
+first, and `keke exec` refuses to run commands. Set `sandbox_mode =
+"danger_full_access"` to run them without asking. On Linux, a kernel without
+Landlock (before 5.13, or with it disabled) refuses to start a session and
+says why, rather than running commands unconfined.
 
 **A repository cannot loosen the sandbox.** `.keke/config.toml` arrives with
 `git clone`, so a project layer may tighten `sandbox_mode` or turn
 `network_access` off, but asking for a looser mode, network access, or extra
 `writable_roots` is an error naming the file. Put those in
-`$KEKE_HOME/config.toml` to grant them.
+`$KEKE_HOME/config.toml` to grant them. (codex instead ignores an untrusted
+project's config and lets a trusted one loosen anything; keke has no project
+trust store for configuration, and tighten-only needs none.)
 
 ## Config Layers
 

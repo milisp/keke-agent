@@ -136,6 +136,15 @@ that confines itself through safe wrappers and then execs the command, so the
 workspace-wide `unsafe_code = "deny"` holds. `main` answers that argument
 before a runtime starts a thread.
 
+Windows has no sandbox. A write-restricted token — all a non-administrator
+can build — cannot block the network and leaves writable anything others may
+already write, which is a boundary that would be claimed rather than kept. So
+there `Sandbox::is_enforced` is false and the tool pack makes every command
+a person's decision; the boundary is a person, and nothing calls it a
+sandbox. Where there is a sandbox, `bash_unsandboxed` is how a command steps
+out of it: every call asks, with the model's stated reason, as codex's
+`require_escalated` does.
+
 The sandbox is a setting a repository could otherwise switch off, so the
 project config layer may only tighten it — the same reasoning as the plugin
 trust gate below: `git clone` is not consent.
