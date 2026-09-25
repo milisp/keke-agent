@@ -17,6 +17,8 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
 const HEADING: Color = Color::Magenta;
 const CODE: Color = Color::Yellow;
@@ -175,8 +177,8 @@ fn heading_rank(level: HeadingLevel) -> usize {
 /// Greedy word wrap over styled words, matching `push_block`'s prefix/indent
 /// convention so markdown and plain-text cells line up.
 fn wrap_words(words: Vec<(String, Style)>, width: usize, prefix: &str) -> Vec<Line<'static>> {
-    let indent = " ".repeat(prefix.chars().count());
-    let body = width.saturating_sub(prefix.chars().count()).max(1);
+    let indent = " ".repeat(prefix.width());
+    let body = width.saturating_sub(prefix.width()).max(1);
     let mut lines = Vec::new();
     let mut spans: Vec<Span<'static>> = vec![Span::raw(prefix.to_string())];
     let mut used = 0usize;
@@ -184,18 +186,39 @@ fn wrap_words(words: Vec<(String, Style)>, width: usize, prefix: &str) -> Vec<Li
         if word.is_empty() {
             continue;
         }
-        let length = word.chars().count();
+        let length = word.width();
         if used > 0 && used + 1 + length > body {
             lines.push(Line::from(std::mem::take(&mut spans)));
             spans.push(Span::raw(indent.clone()));
             used = 0;
         }
-        if used > 0 {
-            spans.push(Span::raw(" "));
-            used += 1;
+        if length <= body {
+            if used > 0 {
+                spans.push(Span::raw(" "));
+                used += 1;
+            }
+            spans.push(Span::styled(word, style));
+            used += length;
+            continue;
         }
-        spans.push(Span::styled(word, style));
-        used += length;
+
+        // A URL or inline-code token can exceed the pane by itself. Split it
+        // at display-cell boundaries so resizing the terminal reflows it too.
+        let mut chunk = String::new();
+        let mut chunk_width = 0;
+        for ch in word.chars() {
+            let char_width = ch.width().unwrap_or(0);
+            if chunk_width > 0 && chunk_width + char_width > body {
+                spans.push(Span::styled(std::mem::take(&mut chunk), style));
+                lines.push(Line::from(std::mem::take(&mut spans)));
+                spans.push(Span::raw(indent.clone()));
+                chunk_width = 0;
+            }
+            chunk.push(ch);
+            chunk_width += char_width;
+        }
+        spans.push(Span::styled(chunk, style));
+        used = chunk_width;
     }
     lines.push(Line::from(spans));
     lines
@@ -212,4 +235,33 @@ pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
         .chunks(width.max(1))
         .map(|chunk| chunk.iter().collect())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_prose_reflows_with_terminal_width() {
+        let text = "one two three four five six";
+        let narrow = render(text, 10, Style::new(), "");
+        let wide = render(text, 30, Style::new(), "");
+
+        assert!(narrow.len() > wide.len());
+        assert!(narrow.iter().all(|line| line.width() <= 10));
+        assert_eq!(wide.len(), 1);
+    }
+
+    #[test]
+    fn long_inline_token_fits_the_resized_pane() {
+        let text = "`abcdefghijklmno`";
+        for width in [5, 8, 20] {
+            let lines = render(text, width, Style::new(), "");
+            assert!(lines.iter().all(|line| line.width() <= width));
+            assert_eq!(
+                lines.iter().map(ToString::to_string).collect::<String>(),
+                "abcdefghijklmno"
+            );
+        }
+    }
 }
