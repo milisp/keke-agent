@@ -5,11 +5,19 @@
 //! on Linux. Checking a command's text is a speed bump, and the guards in
 //! `keke-tools` say as much about themselves.
 //!
-//! Everywhere else — and wherever the kernel lacks the feature — a mode other
-//! than `danger_full_access` is refused at construction rather than quietly
-//! run unconfined (`AGENTS.md` invariant 8). A setting that claims a boundary
-//! it does not enforce is worse than no setting: it is the reason nobody
-//! looked.
+//! Where the kernel lacks the feature — Linux without Landlock, macOS without
+//! `sandbox-exec` — a mode other than `danger_full_access` is refused at
+//! construction rather than quietly run unconfined (`AGENTS.md` invariant 8).
+//! A setting that claims a boundary it does not enforce is worse than no
+//! setting: it is the reason nobody looked.
+//!
+//! Windows has no sandbox here, as codex has none by default. What it could
+//! have without an administrator — a write-restricted token — confines writes
+//! only where no one else already may write, and cannot confine the network
+//! at all. So on Windows the sandbox reports itself unenforced
+//! ([`Sandbox::is_enforced`]) and the tool pack makes every command a
+//! person's decision instead: the boundary is a person, and nothing claims it
+//! is a sandbox.
 //!
 //! Reads are not narrowed. Every mode may read the whole disk, as codex's
 //! profiles do, because a dependency's source under `~/.cargo` is ordinary
@@ -17,11 +25,12 @@
 //! network — the two ways a command changes something or sends something
 //! away.
 //!
-//! Known limit: a writable root is writable all the way down, `.git/hooks`
-//! included, and a hook written there runs unconfined the next time the
-//! person commits. Landlock can only grant, never carve an exception out of a
-//! grant, so closing that on one platform would leave the two disagreeing
-//! about what `workspace_write` means.
+//! Inside a writable root, the metadata that could hand a command more than
+//! the sandbox gives it stays read-only, as codex keeps it: `.git` (a hook
+//! written there runs unconfined at the next commit), `.keke` (the project's
+//! own configuration), and `.agents`. Seatbelt enforces that. Landlock cannot
+//! — it only grants, and cannot carve an exception out of a grant — so on
+//! Linux those directories are as writable as the rest of the workspace.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -30,6 +39,8 @@ mod seatbelt;
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -57,11 +68,19 @@ pub enum SandboxError {
     Unavailable { mode: &'static str, reason: String },
 }
 
+/// Workspace metadata a command may read but not write, beneath every
+/// writable root: codex's `.git` / `.agents` / `.codex`, with keke's own
+/// directory in place of codex's.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
+
 /// Builds the processes a model's commands run in.
 ///
 /// Holding one means the confinement it describes was checked to be
-/// enforceable when it was made; [`Sandbox::command`] cannot fail afterwards,
-/// so no call site has an error path in which to run the command bare.
+/// enforceable when it was made — or, where no sandbox exists, that it says so
+/// through [`Sandbox::is_enforced`]. [`Sandbox::command`] cannot fail
+/// afterwards, so no call site has an error path in which to run the command
+/// bare.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
     policy: SandboxPolicy,
@@ -83,7 +102,9 @@ impl Sandbox {
     /// Check that `policy` can be enforced on this machine, and hold it.
     ///
     /// `helper` is the executable that answers [`HELPER_ARG`] — keke's own
-    /// binary. Only Linux needs one; elsewhere it is ignored.
+    /// binary. Only Linux needs one; elsewhere it is ignored. On a platform
+    /// with no sandbox at all this succeeds unenforced; see
+    /// [`Sandbox::is_enforced`].
     pub fn new(policy: SandboxPolicy, helper: Option<PathBuf>) -> Result<Self, SandboxError> {
         if policy.mode == SandboxMode::DangerFullAccess {
             return Ok(Self {
@@ -113,6 +134,22 @@ impl Sandbox {
     #[must_use]
     pub fn policy(&self) -> &SandboxPolicy {
         &self.policy
+    }
+
+    /// Whether the policy asks for confinement that commands will not get,
+    /// because this platform has no sandbox. A caller holding such a sandbox
+    /// must put a person in front of every command instead.
+    #[must_use]
+    pub fn is_enforced(&self) -> bool {
+        self.policy.mode == SandboxMode::DangerFullAccess
+            || !matches!(self.launcher, Launcher::Unconfined)
+    }
+
+    /// Whether commands run under any confinement at all — false both for
+    /// `danger_full_access` and where nothing is enforced.
+    #[must_use]
+    pub fn confines(&self) -> bool {
+        !matches!(self.launcher, Launcher::Unconfined)
     }
 
     /// A shell running `line`, confined, starting in `workspace`.
@@ -157,8 +194,10 @@ impl Sandbox {
                 if self.network() {
                     command.arg("--network");
                 }
+                // Landlock cannot express the protected subpaths; see the
+                // module documentation.
                 for root in self.writable_roots(workspace) {
-                    command.arg("--write").arg(root);
+                    command.arg("--write").arg(root.path);
                 }
                 command.arg("--").arg(program).args(args);
                 command
@@ -168,6 +207,7 @@ impl Sandbox {
         command
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn network(&self) -> bool {
         match self.policy.mode {
             SandboxMode::WorkspaceWrite => self.policy.network_access,
@@ -183,7 +223,8 @@ impl Sandbox {
     /// `/private/var/folders/…` on disk, and a rule naming the first matches
     /// nothing. A root that does not exist is dropped rather than failing the
     /// command — there is nothing under it to write to.
-    fn writable_roots(&self, workspace: &AbsPath) -> Vec<PathBuf> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn writable_roots(&self, workspace: &AbsPath) -> Vec<WritableRoot> {
         if self.policy.mode != SandboxMode::WorkspaceWrite {
             return Vec::new();
         }
@@ -200,16 +241,65 @@ impl Sandbox {
                 .iter()
                 .map(|root| root.as_path().to_path_buf()),
         );
-        let mut roots: Vec<PathBuf> = Vec::new();
-        for path in wanted {
+        let mut roots: Vec<WritableRoot> = Vec::new();
+        for (index, path) in wanted.into_iter().enumerate() {
             if let Ok(real) = path.canonicalize()
-                && !roots.contains(&real)
+                && !roots.iter().any(|root| root.path == real)
             {
-                roots.push(real);
+                let read_only = protected_beneath(&real, index == 0);
+                roots.push(WritableRoot {
+                    path: real,
+                    read_only,
+                });
             }
         }
         roots
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// A root a command may write beneath, less the paths it may not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WritableRoot {
+    path: PathBuf,
+    // Landlock cannot carve these out of a grant; see the module docs.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    read_only: Vec<PathBuf>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// The metadata under `root` that stays read-only.
+///
+/// Only what exists is protected — a `git init` in a fresh directory has
+/// nothing yet to escalate through — except `.keke` in the workspace itself,
+/// which is protected before it exists so the model cannot be the one to
+/// create a project's configuration. A `.git` *file* is a worktree's or a
+/// submodule's pointer, and the directory it names is where the hooks live.
+fn protected_beneath(root: &Path, is_workspace: bool) -> Vec<PathBuf> {
+    let mut protected = Vec::new();
+    for name in PROTECTED_NAMES {
+        let path = root.join(name);
+        if path.exists() || (is_workspace && *name == ".keke") {
+            protected.push(path.canonicalize().unwrap_or(path.clone()));
+        }
+        if *name == ".git"
+            && path.is_file()
+            && let Some(gitdir) = pointed_gitdir(root, &path)
+        {
+            protected.push(gitdir);
+        }
+    }
+    protected
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn pointed_gitdir(root: &Path, pointer: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(pointer).ok()?;
+    let target = text
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim();
+    root.join(target).canonicalize().ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -231,12 +321,14 @@ fn platform_launcher(policy: &SandboxPolicy, helper: Option<PathBuf>) -> Result<
     Ok(Launcher::Landlock { helper })
 }
 
+/// No sandbox: the result reports itself unenforced, and the tool pack puts a
+/// person in front of every command instead.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn platform_launcher(
     _policy: &SandboxPolicy,
     _helper: Option<PathBuf>,
 ) -> Result<Launcher, String> {
-    Err(format!("keke has no sandbox for {}", std::env::consts::OS))
+    Ok(Launcher::Unconfined)
 }
 
 /// Run as the Linux launcher: confine this process, then become the command.
@@ -275,9 +367,11 @@ mod tests {
         let sandbox = Sandbox::new(SandboxPolicy::unconfined(), None).expect("never refused");
         let (_dir, root) = workspace();
         let command = sandbox.shell("true", &root);
-        assert_eq!(command.get_program(), "sh");
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        assert_eq!(command.get_program(), shell);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn read_only_grants_no_writable_root() {
         let sandbox = Sandbox {
@@ -293,6 +387,7 @@ mod tests {
         assert!(!sandbox.network(), "read_only ignores network_access");
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn workspace_write_resolves_and_deduplicates_its_roots() {
         let (_dir, root) = workspace();
@@ -308,15 +403,61 @@ mod tests {
             launcher: Launcher::Unconfined,
         };
         let roots = sandbox.writable_roots(&root);
-        assert_eq!(roots[0], root.as_path());
+        assert_eq!(roots[0].path, root.as_path());
         assert_eq!(
-            roots.iter().filter(|r| *r == root.as_path()).count(),
+            roots.iter().filter(|r| r.path == root.as_path()).count(),
             1,
             "the workspace is listed once"
         );
         assert!(
-            roots.iter().all(|r| r.exists()),
+            roots.iter().all(|r| r.path.exists()),
             "a missing root is dropped: {roots:?}"
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn metadata_that_exists_is_protected_and_keke_is_protected_before_it_does() {
+        let (_dir, root) = workspace();
+        std::fs::create_dir(root.as_path().join(".git")).expect("mkdir");
+        let protected = protected_beneath(root.as_path(), true);
+        assert!(protected.contains(&root.as_path().join(".git")));
+        assert!(protected.contains(&root.as_path().join(".keke")));
+        assert!(
+            !protected.contains(&root.as_path().join(".agents")),
+            "nothing to protect"
+        );
+        assert!(
+            protected_beneath(root.as_path(), false)
+                .iter()
+                .all(|path| !path.ends_with(".keke")),
+            "only the workspace's own configuration is protected before it exists"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    /// A worktree's `.git` is a file naming the real git directory, which is
+    /// where a hook would be written.
+    #[test]
+    fn a_worktree_pointer_protects_the_directory_it_names() {
+        let (_dir, root) = workspace();
+        let real = root.as_path().join("elsewhere");
+        std::fs::create_dir(&real).expect("mkdir");
+        std::fs::write(root.as_path().join(".git"), "gitdir: elsewhere\n").expect("write");
+        let protected = protected_beneath(root.as_path(), false);
+        assert!(protected.contains(&real), "{protected:?}");
+    }
+
+    /// Where there is no sandbox the value says so, rather than posing as
+    /// one that works.
+    #[test]
+    fn an_unconfined_launcher_under_a_confining_mode_is_unenforced() {
+        let sandbox = Sandbox {
+            policy: SandboxPolicy::default(),
+            launcher: Launcher::Unconfined,
+        };
+        assert!(!sandbox.is_enforced());
+        assert!(!sandbox.confines());
+        assert!(Sandbox::unconfined().is_enforced(), "nothing was asked for");
     }
 }

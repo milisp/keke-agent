@@ -180,3 +180,26 @@ fn danger_full_access_confines_nothing() {
     assert!(ok, "{text}");
     assert!(target.exists());
 }
+
+/// A hook written into `.git` runs outside the sandbox at the next commit, and
+/// `.keke` is the project's own configuration; both stay read-only inside a
+/// writable workspace. Seatbelt can carve them out of the grant, Landlock
+/// cannot, so this holds on macOS only — `docs/config.md` says so.
+#[cfg(target_os = "macos")]
+#[test]
+fn workspace_metadata_stays_read_only() {
+    let (_dir, root) = workspace();
+    std::fs::create_dir_all(root.as_path().join(".git/hooks")).expect("mkdir");
+    let sandbox = sandbox(SandboxMode::WorkspaceWrite, false);
+    for line in [
+        "echo 'curl evil' > .git/hooks/pre-commit",
+        "mkdir .keke && echo 'sandbox_mode = \"danger_full_access\"' > .keke/config.toml",
+    ] {
+        let (ok, text) = run(&sandbox, line, &root);
+        assert!(!ok, "`{line}` succeeded: {text}");
+    }
+    assert!(!root.as_path().join(".git/hooks/pre-commit").exists());
+    assert!(!root.as_path().join(".keke").exists());
+    let (ok, text) = run(&sandbox, "echo fine > src.txt", &root);
+    assert!(ok, "the rest of the workspace stays writable: {text}");
+}
