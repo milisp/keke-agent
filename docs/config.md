@@ -272,7 +272,9 @@ Rules:
 These settings live at the top level of `config.toml`:
 
 ```toml
-# Approval policy: "on_request" (default), "on_failure", "never"
+# Approval policy: "on_request" (default), "auto", or "never".
+# Old "on_failure" configurations still load, but new setups should use
+# "on_request" with sandboxed Bash auto-approval below.
 approval_policy = "on_request"
 
 # Sandbox mode: "workspace_write" (default), "read_only", "danger_full_access".
@@ -375,9 +377,41 @@ defaults follow codex's.
 sandbox_mode = "workspace_write"
 
 [sandbox_workspace_write]
+auto_approve_bash = true       # default; sandboxed Bash skips ordinary approval
 network_access = false          # true lets commands reach the network
 writable_roots = ["/Users/me/.cache/sccache"]   # absolute paths, writable too
 ```
+
+With `approval_policy = "on_request"` and `workspace_write`, enforced sandboxed Bash runs without
+an ordinary approval prompt when `auto_approve_bash = true`. Set it to `false`
+to put Bash through ordinary approval before it runs. Edit tools still follow the
+approval policy. This setting does not approve sandbox escapes: every
+`bash_unsandboxed` call asks explicitly. A repository may turn auto-approval
+off, but may not turn it back on after the user turned it off.
+
+`approval_policy = "auto"` sends ordinary approval requests to the model-backed
+guardian reviewer. Its model defaults to the session model and can be selected
+with `[guardian] provider` and `model`. A failed or unclear review denies the
+call. Sandbox escapes still require a person's answer. `never` skips ordinary
+approval entirely; it is not Auto mode.
+
+```toml
+[guardian]
+provider = "codex"
+model = "your-reviewer-model"
+```
+
+The optional guardian model selection should be a model available through the
+named provider. `[guardian] enabled = true` also lets it answer ordinary
+`on_request` approvals; Auto mode uses it regardless of that setting. A
+repository's config cannot choose or enable the guardian reviewer.
+
+The old `on_failure` policy is accepted for existing configurations and
+sessions, but is no longer offered in the interactive policy cycle. It skips
+ordinary approval checks even for operations outside sandboxed Bash, so
+`on_request` plus `auto_approve_bash` is the clearer choice.
+Repository config cannot change `on_request` to `auto`, `on_failure`, or `never`;
+that choice belongs in the user's config.
 
 **Workspace metadata stays read-only.** Inside a writable root, `.git`,
 `.agents`, and `.keke` cannot be written by a sandboxed command — a hook

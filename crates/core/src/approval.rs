@@ -30,6 +30,9 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
     if capabilities.approval == ApprovalRequirement::Always {
         return Some("needs a person's answer".to_string());
     }
+    if capabilities.approval == ApprovalRequirement::AutoApproved {
+        return None;
+    }
     match policy {
         // Non-interactive by construction. A deployment that sets this has
         // accepted the consequences elsewhere — usually a sandbox.
@@ -37,7 +40,7 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
         // Escalation-after-failure is decided by the tool, which asks by
         // failing; there is nothing to ask before the call.
         ApprovalPolicy::OnFailure => None,
-        ApprovalPolicy::OnRequest => match capabilities.kind {
+        ApprovalPolicy::OnRequest | ApprovalPolicy::Auto => match capabilities.kind {
             ToolKind::Edit => Some("modifies files".to_string()),
             ToolKind::Execute => Some("runs a command".to_string()),
             ToolKind::Network => Some("reaches the network".to_string()),
@@ -111,6 +114,7 @@ mod tests {
         let always = capabilities(ToolKind::Meta).always_asks();
         for policy in [
             ApprovalPolicy::OnRequest,
+            ApprovalPolicy::Auto,
             ApprovalPolicy::OnFailure,
             ApprovalPolicy::Never,
         ] {
@@ -126,6 +130,19 @@ mod tests {
         assert!(
             approval_reason(ApprovalPolicy::OnRequest, &capabilities(ToolKind::Execute)).is_some()
         );
+    }
+
+    #[test]
+    fn an_auto_approved_call_skips_policy_approval() {
+        let mut sandboxed = capabilities(ToolKind::Execute);
+        sandboxed.approval = ApprovalRequirement::AutoApproved;
+        for policy in [
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Never,
+        ] {
+            assert!(approval_reason(policy, &sandboxed).is_none());
+        }
     }
 
     #[test]
@@ -175,6 +192,7 @@ impl ApprovalSwitch {
 fn encode(policy: ApprovalPolicy) -> u8 {
     match policy {
         ApprovalPolicy::OnRequest => 0,
+        ApprovalPolicy::Auto => 3,
         ApprovalPolicy::OnFailure => 1,
         ApprovalPolicy::Never => 2,
     }
@@ -184,6 +202,7 @@ fn decode(raw: u8) -> ApprovalPolicy {
     match raw {
         1 => ApprovalPolicy::OnFailure,
         2 => ApprovalPolicy::Never,
+        3 => ApprovalPolicy::Auto,
         // Only `encode` ever writes the cell, so anything else is impossible;
         // the strictest policy is the safe reading if it ever happened.
         _ => ApprovalPolicy::OnRequest,

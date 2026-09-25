@@ -102,6 +102,16 @@ pub trait ToolLifecycleContributor: Send + Sync {
 /// The first contributor returning `Some` decides; later ones are not consulted.
 /// Registration order is therefore priority order.
 pub trait ApprovalReviewContributor: Send + Sync {
+    /// Whether this reviewer may answer ordinary requests in Auto mode.
+    fn automatic(&self) -> bool {
+        false
+    }
+
+    /// Whether this reviewer participates in the ordinary on-request flow.
+    fn on_request(&self) -> bool {
+        true
+    }
+
     fn review<'a>(
         &'a self,
         _ctx: &'a ExtensionContext,

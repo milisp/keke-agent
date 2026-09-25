@@ -24,6 +24,7 @@ fn sandbox(mode: SandboxMode, network_access: bool) -> Sandbox {
     Sandbox::new(
         SandboxPolicy {
             mode,
+            auto_approve_bash: true,
             network_access,
             writable_roots: Vec::new(),
         },

@@ -58,7 +58,7 @@ impl PlanRow {
     #[must_use]
     fn policy(self) -> Option<ApprovalPolicy> {
         match self {
-            PlanRow::AutoMode => Some(ApprovalPolicy::Never),
+            PlanRow::AutoMode => Some(ApprovalPolicy::Auto),
             PlanRow::ManualApprove => Some(ApprovalPolicy::OnRequest),
             PlanRow::TellKekeWhatToChange => None,
         }

@@ -218,6 +218,8 @@ pub struct SubagentsFile {
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct SandboxWorkspaceWriteFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_approve_bash: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_access: Option<bool>,
     /// Accumulated across layers, like `providers`: a managed layer's cache
     /// directory and a person's sibling checkout are both still wanted.
@@ -288,7 +290,6 @@ impl Config {
         for layer in layers {
             merged.provider = layer.file.provider.clone().or(merged.provider);
             merged.model = layer.file.model.clone().or(merged.model);
-            merged.approval_policy = layer.file.approval_policy.or(merged.approval_policy);
             merged.require_plan_approval = layer
                 .file
                 .require_plan_approval
@@ -296,11 +297,13 @@ impl Config {
             if matches!(layer.source, LayerSource::Project(_)) {
                 check_project_sandbox(&layer.file, &merged, &layer.source)?;
             }
+            merged.approval_policy = layer.file.approval_policy.or(merged.approval_policy);
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
             if let Some(section) = &layer.file.sandbox_workspace_write {
                 let base = merged
                     .sandbox_workspace_write
                     .get_or_insert_with(SandboxWorkspaceWriteFile::default);
+                base.auto_approve_bash = section.auto_approve_bash.or(base.auto_approve_bash);
                 base.network_access = section.network_access.or(base.network_access);
                 base.writable_roots
                     .extend(section.writable_roots.iter().cloned());
@@ -626,6 +629,7 @@ impl Config {
                 let section = merged.sandbox_workspace_write.unwrap_or_default();
                 SandboxPolicy {
                     mode: merged.sandbox_mode.unwrap_or_default(),
+                    auto_approve_bash: section.auto_approve_bash.unwrap_or(true),
                     network_access: section.network_access.unwrap_or(false),
                     writable_roots: section.writable_roots,
                 }
@@ -668,6 +672,29 @@ fn check_project_sandbox(
     beneath: &ConfigFile,
     source: &LayerSource,
 ) -> Result<(), ConfigError> {
+    if let Some(guardian) = &project.guardian
+        && (guardian.enabled == Some(true)
+            || guardian.provider.is_some()
+            || guardian.model.is_some()
+            || guardian.reasoning_effort.is_some())
+    {
+        return Err(ConfigError::Invalid {
+            path: source.describe(),
+            message: "a repository's config may not choose or enable the guardian reviewer; set it in $KEKE_HOME/config.toml".to_string(),
+        });
+    }
+    if let Some(asked) = project.approval_policy
+        && beneath.approval_policy.unwrap_or_default() == ApprovalPolicy::OnRequest
+        && asked != ApprovalPolicy::OnRequest
+    {
+        return Err(ConfigError::Invalid {
+            path: source.describe(),
+            message: format!(
+                "approval_policy = \"{}\" skips ordinary approval; a repository's config may not loosen the user's approval policy — set it in $KEKE_HOME/config.toml to accept it",
+                asked.as_str()
+            ),
+        });
+    }
     let refuse = |message: String| ConfigError::Invalid {
         path: source.describe(),
         message: format!(
@@ -686,6 +713,17 @@ fn check_project_sandbox(
         )));
     }
     if let Some(section) = &project.sandbox_workspace_write {
+        let auto_approval_granted = beneath
+            .sandbox_workspace_write
+            .as_ref()
+            .and_then(|base| base.auto_approve_bash)
+            .unwrap_or(true);
+        if section.auto_approve_bash == Some(true) && !auto_approval_granted {
+            return Err(refuse(
+                "sandbox_workspace_write.auto_approve_bash = true bypasses command approval"
+                    .to_string(),
+            ));
+        }
         let granted = beneath
             .sandbox_workspace_write
             .as_ref()
@@ -806,6 +844,7 @@ mod tests {
         assert_eq!(config.approval_policy, ApprovalPolicy::OnRequest);
         assert_eq!(config.sandbox, SandboxPolicy::default());
         assert_eq!(config.sandbox.mode, SandboxMode::WorkspaceWrite);
+        assert!(config.sandbox.auto_approve_bash);
         assert!(!config.sandbox.network_access);
     }
 
@@ -840,6 +879,57 @@ mod tests {
         let config = Config::from_layers(home(), &[project("sandbox_mode = \"read_only\"\n")])
             .expect("tightening is allowed");
         assert_eq!(config.sandbox.mode, SandboxMode::ReadOnly);
+    }
+
+    #[test]
+    fn a_repository_cannot_reenable_bash_auto_approval() {
+        let layers = vec![
+            layer(
+                "user",
+                "[sandbox_workspace_write]\nauto_approve_bash = false\n",
+            ),
+            project("[sandbox_workspace_write]\nauto_approve_bash = true\n"),
+        ];
+        let error = Config::from_layers(home(), &layers).expect_err("project widened approval");
+        assert!(error.to_string().contains("auto_approve_bash"));
+    }
+
+    #[test]
+    fn a_repository_cannot_skip_approval_chosen_by_the_user() {
+        for policy in ["auto", "on_failure", "never"] {
+            let error = Config::from_layers(
+                home(),
+                &[project(&format!("approval_policy = \"{policy}\"\n"))],
+            )
+            .expect_err("project skipped ordinary approval");
+            assert!(error.to_string().contains("may not loosen"));
+        }
+    }
+
+    #[test]
+    fn a_repository_cannot_choose_the_auto_reviewer() {
+        let error = Config::from_layers(
+            home(),
+            &[
+                layer("user", "approval_policy = \"auto\"\n"),
+                project("[guardian]\nprovider = \"untrusted\"\nmodel = \"yes-man\"\n"),
+            ],
+        )
+        .expect_err("project changed the reviewer");
+        assert!(error.to_string().contains("may not choose"));
+    }
+
+    #[test]
+    fn a_person_can_require_approval_for_sandboxed_bash() {
+        let config = Config::from_layers(
+            home(),
+            &[layer(
+                "user",
+                "[sandbox_workspace_write]\nauto_approve_bash = false\n",
+            )],
+        )
+        .expect("loads");
+        assert!(!config.sandbox.auto_approve_bash);
     }
 
     /// What the person granted in their own layer, a repository may restate

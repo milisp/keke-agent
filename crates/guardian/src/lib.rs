@@ -35,11 +35,9 @@ use keke_provider_api::ProviderRegistry;
 use keke_provider_api::RouteError;
 use keke_provider_api::StreamChunk;
 
-/// Register the guardian reviewer, when configuration enables it.
+/// Register the guardian reviewer for Auto mode and, when enabled, on-request.
 ///
-/// A disabled guardian registers nothing, so the turn loop's existing
-/// deny-by-default behavior (`crates/core/src/dispatch.rs`) is exactly what it
-/// was before this crate existed — no hidden default kicks in from here.
+/// A disabled guardian does not participate in on-request approval.
 /// `fallback` is the session's own model, used when `config.model` is unset.
 ///
 /// The route is resolved here, at composition time, rather than on the first
@@ -53,14 +51,17 @@ pub fn install(
     providers: &ProviderRegistry,
     fallback: &ModelSelection,
 ) -> Result<(), RouteError> {
-    if !config.enabled {
-        return Ok(());
-    }
+    let explicit_model = config.model.is_some();
     let selection = config.model.unwrap_or_else(|| fallback.clone());
-    let provider = providers.get(&selection.provider)?;
+    let provider = match providers.get(&selection.provider) {
+        Ok(provider) => provider,
+        Err(_) if !config.enabled && !explicit_model => return Ok(()),
+        Err(error) => return Err(error),
+    };
     let reviewer = Arc::new(GuardianReviewer {
         model: selection.model,
         reasoning_effort: config.reasoning_effort,
+        on_request: config.enabled,
         provider,
     });
     registry.approval_review_contributor(reviewer);
@@ -70,6 +71,7 @@ pub fn install(
 struct GuardianReviewer {
     model: String,
     reasoning_effort: Option<keke_protocol::ReasoningEffort>,
+    on_request: bool,
     provider: ArcProvider,
 }
 
@@ -89,17 +91,17 @@ impl GuardianReviewer {
     /// clear verdict — the caller turns `None` into `Deny`, never `Allow`.
     fn parse(reply: &str) -> Option<ApprovalDecision> {
         let reply = reply.trim();
-        if let Some(rest) = reply
-            .strip_prefix("ALLOW")
-            .map(str::trim_start)
-            .map(|rest| rest.trim_start_matches(':').trim())
-        {
+        if reply == "ALLOW" {
+            return Some(ApprovalDecision::Allow { note: None });
+        }
+        if let Some(rest) = reply.strip_prefix("ALLOW:") {
+            let rest = rest.trim();
             return Some(ApprovalDecision::Allow {
                 note: (!rest.is_empty()).then(|| rest.to_string()),
             });
         }
-        if let Some(rest) = reply.strip_prefix("DENY") {
-            let reason = rest.trim_start_matches(':').trim();
+        if reply == "DENY" || reply.starts_with("DENY:") {
+            let reason = reply.strip_prefix("DENY:").unwrap_or("").trim();
             return Some(ApprovalDecision::Deny {
                 reason: if reason.is_empty() {
                     "the guardian reviewer denied this call".to_string()
@@ -113,6 +115,14 @@ impl GuardianReviewer {
 }
 
 impl ApprovalReviewContributor for GuardianReviewer {
+    fn automatic(&self) -> bool {
+        true
+    }
+
+    fn on_request(&self) -> bool {
+        self.on_request
+    }
+
     fn review<'a>(
         &'a self,
         ctx: &'a ExtensionContext,
@@ -235,5 +245,6 @@ mod tests {
         // The caller turns `None` into `Deny`; a reviewer must never be able to
         // manufacture an allow out of a reply it could not understand.
         assert_eq!(GuardianReviewer::parse("uh, maybe?"), None);
+        assert_eq!(GuardianReviewer::parse("ALLOWANCE"), None);
     }
 }

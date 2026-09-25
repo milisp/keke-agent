@@ -294,7 +294,7 @@ fn choices(entry: &Entry) -> Vec<Choice> {
             current: policy_value(selected.approval_policy).to_string(),
             options: [
                 ApprovalPolicy::OnRequest,
-                ApprovalPolicy::OnFailure,
+                ApprovalPolicy::Auto,
                 ApprovalPolicy::Never,
             ]
             .into_iter()
@@ -365,8 +365,9 @@ fn mode_label(mode: SessionMode) -> &'static str {
 fn policy_label(policy: ApprovalPolicy) -> &'static str {
     match policy {
         ApprovalPolicy::OnRequest => "Ask for approval",
-        ApprovalPolicy::OnFailure => "Ask on failure",
-        ApprovalPolicy::Never => "Full access",
+        ApprovalPolicy::Auto => "Automatic review",
+        ApprovalPolicy::OnFailure => "Legacy ask on failure",
+        ApprovalPolicy::Never => "Skip ordinary approvals",
     }
 }
 

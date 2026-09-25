@@ -377,6 +377,7 @@ mod tests {
         let sandbox = Sandbox {
             policy: SandboxPolicy {
                 mode: SandboxMode::ReadOnly,
+                auto_approve_bash: true,
                 network_access: true,
                 writable_roots: vec![AbsPath::new("/").expect("abs")],
             },
@@ -394,6 +395,7 @@ mod tests {
         let sandbox = Sandbox {
             policy: SandboxPolicy {
                 mode: SandboxMode::WorkspaceWrite,
+                auto_approve_bash: true,
                 network_access: false,
                 writable_roots: vec![
                     root.clone(),

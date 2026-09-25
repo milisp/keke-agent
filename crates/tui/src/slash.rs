@@ -311,12 +311,12 @@ fn is_name_char(ch: char) -> bool {
     ch.is_alphanumeric() || matches!(ch, '-' | '_' | ':')
 }
 
-/// The three approval policies, strictest first: the order the plan panel
+/// The visible approval policies, strictest first: the order the plan panel
 /// lists them in, so the row a person lands on without reading is the one
 /// that asks the most rather than the one that asks the least.
 pub const POLICIES: [ApprovalPolicy; 3] = [
     ApprovalPolicy::OnRequest,
-    ApprovalPolicy::OnFailure,
+    ApprovalPolicy::Auto,
     ApprovalPolicy::Never,
 ];
 
@@ -325,9 +325,10 @@ pub const POLICIES: [ApprovalPolicy; 3] = [
 #[must_use]
 pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
     match policy {
-        ApprovalPolicy::OnRequest => "ask before each command",
-        ApprovalPolicy::OnFailure => "ask only when a command fails",
-        ApprovalPolicy::Never => "never ask \u{2014} run everything",
+        ApprovalPolicy::OnRequest => "ask before edits and commands without sandbox auto-approval",
+        ApprovalPolicy::Auto => "automatic review for edits; sandbox escapes still ask",
+        ApprovalPolicy::OnFailure => "legacy: skips ordinary approval checks",
+        ApprovalPolicy::Never => "skip ordinary approvals; sandbox escapes still ask",
     }
 }
 
@@ -336,6 +337,7 @@ pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
 pub fn policy_name(policy: ApprovalPolicy) -> &'static str {
     match policy {
         ApprovalPolicy::OnRequest => "on-request",
+        ApprovalPolicy::Auto => "auto",
         ApprovalPolicy::OnFailure => "on-failure",
         ApprovalPolicy::Never => "never",
     }

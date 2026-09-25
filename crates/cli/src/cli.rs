@@ -294,8 +294,8 @@ pub(crate) struct ExecArgs {
     #[arg(long)]
     pub print_log_path: bool,
 
-    /// Override the approval policy for this run: `on-request`, `on-failure`,
-    /// or `never`.
+    /// Override the approval policy for this run: `on-request` or `never`.
+    /// The old `on-failure` spelling remains accepted for compatibility.
     ///
     /// `exec` has nobody to ask, so a call needing approval is refused. Pass
     /// `never` for CI, where the confinement is the sandbox rather than a
@@ -327,10 +327,11 @@ fn parse_approval(raw: &str) -> Result<keke_config_types::ApprovalPolicy, String
     use keke_config_types::ApprovalPolicy;
     match raw {
         "on-request" => Ok(ApprovalPolicy::OnRequest),
+        "auto" => Ok(ApprovalPolicy::Auto),
         "on-failure" => Ok(ApprovalPolicy::OnFailure),
         "never" => Ok(ApprovalPolicy::Never),
         other => Err(format!(
-            "unknown approval policy `{other}`; expected on-request, on-failure, or never"
+            "unknown approval policy `{other}`; expected on-request, auto, or never (`on-failure` is accepted for compatibility)"
         )),
     }
 }

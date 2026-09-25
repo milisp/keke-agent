@@ -22,10 +22,14 @@ pub use keke_protocol::ReasoningEffort;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalPolicy {
-    /// Ask before anything with an effect outside the workspace.
+    /// Ask before edits and execution unless a tool has a scoped exemption,
+    /// such as Bash under an enforced sandbox when configured to auto-approve.
     #[default]
     OnRequest,
-    /// Ask only when a command fails and wants to escalate.
+    /// Let an automatic reviewer decide ordinary approval requests.
+    Auto,
+    /// Legacy policy that skips ordinary approval checks. Kept for saved
+    /// sessions and configurations; new sessions should use `on-request`.
     OnFailure,
     /// Never ask. Intended for CI, not for interactive use.
     Never,
@@ -40,6 +44,7 @@ impl ApprovalPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OnRequest => "on-request",
+            Self::Auto => "auto",
             Self::OnFailure => "on-failure",
             Self::Never => "never",
         }
@@ -52,6 +57,7 @@ impl ApprovalPolicy {
     pub fn parse(wire: &str) -> Option<Self> {
         match wire {
             "on-request" => Some(Self::OnRequest),
+            "auto" => Some(Self::Auto),
             "on-failure" => Some(Self::OnFailure),
             "never" => Some(Self::Never),
             _ => None,
@@ -166,9 +172,13 @@ impl SandboxMode {
 /// `network_access` and `writable_roots` widen `workspace_write` only; the
 /// other two modes ignore them, because `read_only` means what it says and
 /// `danger_full_access` has nothing left to widen.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxPolicy {
     pub mode: SandboxMode,
+    /// Whether Bash confined by an enforced sandbox skips ordinary
+    /// `on-request` approval. Escalation outside the sandbox still asks.
+    #[serde(default = "default_auto_approve_bash")]
+    pub auto_approve_bash: bool,
     /// Off by default: a command that can reach the network can send the
     /// workspace anywhere, and that is the exfiltration a sandbox exists to
     /// stop.
@@ -176,6 +186,21 @@ pub struct SandboxPolicy {
     /// Writable beyond the workspace and the temporary directory — a shared
     /// build cache, a sibling checkout. Absolute by type.
     pub writable_roots: Vec<AbsPath>,
+}
+
+fn default_auto_approve_bash() -> bool {
+    true
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        Self {
+            mode: SandboxMode::default(),
+            auto_approve_bash: default_auto_approve_bash(),
+            network_access: false,
+            writable_roots: Vec::new(),
+        }
+    }
 }
 
 impl SandboxPolicy {

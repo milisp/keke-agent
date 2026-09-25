@@ -713,8 +713,8 @@ impl Composed {
         );
         keke_hooks::install_with(&mut extensions, &plugins, timeouts);
 
-        // Before the surface's own bridge, so a person is only asked once the
-        // guardian itself could not answer. Its model is resolved against
+        // Before the surface's own bridge. Auto selects the guardian; ordinary
+        // on-request review includes it only when explicitly enabled. Its model is resolved against
         // `providers` here, at composition time, so a guardian pointed at an
         // unregistered route fails the build rather than denying every call
         // it is later asked to review.

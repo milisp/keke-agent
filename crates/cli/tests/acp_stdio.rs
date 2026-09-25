@@ -58,6 +58,11 @@ struct Seen {
 async fn an_editor_prompts_keke_and_answers_its_permission_request() {
     let home = tempfile::tempdir().expect("tempdir");
     let workspace = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[sandbox_workspace_write]\nauto_approve_bash = false\n",
+    )
+    .expect("configure Bash approval for this test");
     let server = MockInferenceServer::start().await;
 
     // A command needs approval, so the editor has to be asked before it runs.

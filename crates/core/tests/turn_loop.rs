@@ -283,6 +283,7 @@ impl Tool for WriteFile {
 struct Reviewer {
     decision: ApprovalDecision,
     asked: Arc<Mutex<Vec<String>>>,
+    automatic: bool,
 }
 
 impl Reviewer {
@@ -292,6 +293,7 @@ impl Reviewer {
             Arc::new(Self {
                 decision,
                 asked: Arc::clone(&asked),
+                automatic: false,
             }),
             asked,
         )
@@ -299,6 +301,10 @@ impl Reviewer {
 }
 
 impl ApprovalReviewContributor for Reviewer {
+    fn automatic(&self) -> bool {
+        self.automatic
+    }
+
     fn review<'a>(
         &'a self,
         _ctx: &'a ExtensionContext,
@@ -990,6 +996,14 @@ async fn run_with_reviewer(
     decision: Option<ApprovalDecision>,
     policy: ApprovalPolicy,
 ) -> (Vec<SessionEvent>, Vec<String>) {
+    run_with_reviewer_kind(decision, policy, false).await
+}
+
+async fn run_with_reviewer_kind(
+    decision: Option<ApprovalDecision>,
+    policy: ApprovalPolicy,
+    automatic: bool,
+) -> (Vec<SessionEvent>, Vec<String>) {
     let harness = harness();
     let (provider, _seen) = ScriptedProvider::new(dangerous_calls());
 
@@ -997,7 +1011,10 @@ async fn run_with_reviewer(
     extensions.tool_contributor(Arc::new(EchoPack));
     let asked = match decision {
         Some(decision) => {
-            let (reviewer, asked) = Reviewer::new(decision);
+            let (mut reviewer, asked) = Reviewer::new(decision);
+            Arc::get_mut(&mut reviewer)
+                .expect("exclusive reviewer")
+                .automatic = automatic;
             extensions.approval_review_contributor(reviewer);
             asked
         }
@@ -1046,6 +1063,48 @@ async fn a_call_needing_approval_is_put_to_the_reviewer() {
         vec!["dangerous".to_string(), "dangerous".to_string()]
     );
     assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+}
+
+#[tokio::test]
+async fn auto_uses_an_automatic_reviewer_but_never_skips_it() {
+    let (events, asked) = run_with_reviewer_kind(
+        Some(ApprovalDecision::Deny {
+            reason: "unsafe command".to_string(),
+        }),
+        ApprovalPolicy::Auto,
+        true,
+    )
+    .await;
+    assert_eq!(asked, vec!["dangerous", "dangerous"]);
+    assert_eq!(
+        statuses(&events),
+        vec![ToolStatus::Denied, ToolStatus::Denied]
+    );
+
+    let (events, asked) = run_with_reviewer_kind(
+        Some(ApprovalDecision::Deny {
+            reason: "unsafe command".to_string(),
+        }),
+        ApprovalPolicy::Never,
+        true,
+    )
+    .await;
+    assert!(asked.is_empty());
+    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+
+    let (events, asked) = run_with_reviewer(
+        Some(ApprovalDecision::Allow { note: None }),
+        ApprovalPolicy::Auto,
+    )
+    .await;
+    assert!(
+        asked.is_empty(),
+        "Auto must not silently use the human bridge"
+    );
+    assert_eq!(
+        statuses(&events),
+        vec![ToolStatus::Denied, ToolStatus::Denied]
+    );
 }
 
 /// Someone who approves while asking for one thing to be different has

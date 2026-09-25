@@ -324,11 +324,33 @@ mod tests {
             background: None,
         };
         let expected = if confining.is_enforced() {
-            keke_tool::ApprovalRequirement::ByPolicy
+            keke_tool::ApprovalRequirement::AutoApproved
         } else {
             keke_tool::ApprovalRequirement::Always
         };
         assert_eq!(bash.capabilities().approval, expected);
+    }
+
+    #[test]
+    fn sandboxed_bash_approval_can_be_restored_by_config() {
+        let policy = keke_config_types::SandboxPolicy {
+            auto_approve_bash: false,
+            ..Default::default()
+        };
+        let sandbox = Arc::new(
+            Sandbox::new(policy, Some(std::path::PathBuf::from("/proc/self/exe")))
+                .expect("this machine must be able to build the sandbox"),
+        );
+        if sandbox.is_enforced() {
+            let bash = Bash {
+                sandbox,
+                background: None,
+            };
+            assert_eq!(
+                bash.capabilities().approval,
+                keke_tool::ApprovalRequirement::ByPolicy
+            );
+        }
     }
 
     #[tokio::test]

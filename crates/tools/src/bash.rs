@@ -163,10 +163,14 @@ impl Tool for Bash {
             // for it on every command — including the ones a standing "allow
             // always" or a permissive policy would have waved through, since
             // both assumed the command would be confined.
-            approval: if self.sandbox.is_enforced() {
-                ApprovalRequirement::ByPolicy
-            } else {
+            approval: if !self.sandbox.is_enforced() {
                 ApprovalRequirement::Always
+            } else if self.sandbox.policy().mode == SandboxMode::WorkspaceWrite
+                && self.sandbox.policy().auto_approve_bash
+            {
+                ApprovalRequirement::AutoApproved
+            } else {
+                ApprovalRequirement::ByPolicy
             },
             kind: ToolKind::Execute,
             // A shell command can touch anything the other calls in the step

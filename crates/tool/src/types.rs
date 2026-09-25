@@ -59,10 +59,10 @@ impl ToolKind {
 /// Whether the approval policy gets to decide about this tool.
 ///
 /// Almost every tool is [`Self::ByPolicy`]: what it does decides whether a
-/// person is asked, and a deployment that turned approvals off has said it
-/// does not want to be. A few tools are the exception because *asking is what
-/// they are for* — a tool that exists to put a decision in front of a person
-/// has done nothing if the policy answers for them.
+/// person is asked. A tool with an enforced boundary may be [`Self::AutoApproved`]
+/// so ordinary approval is unnecessary. A few tools are the exception because
+/// *asking is what they are for* — a tool that exists to put a decision in
+/// front of a person has done nothing if the policy answers for them.
 ///
 /// This is not a way to be stricter than the policy in general. It is a way for
 /// a tool to say that a policy answering on a person's behalf would make the
@@ -76,6 +76,9 @@ pub enum ApprovalRequirement {
     /// The policy and the tool's kind decide, as usual.
     #[default]
     ByPolicy,
+    /// The tool's enforced boundary is sufficient for this call, so ordinary
+    /// policy approval is skipped. Guards still run before the tool body.
+    AutoApproved,
     /// A person is asked whatever the policy says, and a standing "allow
     /// always" does not answer for them either.
     ///

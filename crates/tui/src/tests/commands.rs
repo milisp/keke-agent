@@ -143,17 +143,16 @@ async fn shift_tab_walks_one_ladder_through_plan_and_the_policies() {
     assert_eq!(app.session_mode(), SessionMode::Default);
 
     app.handle_key(key(KeyCode::BackTab));
-    assert_eq!(app.approval_policy(), ApprovalPolicy::OnFailure);
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Auto);
+    app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
     // The gesture is silent: the status bar already says which rung is on, and
     // a line per tap would push the conversation off screen to repeat it.
     assert!(app.transcript.is_empty(), "{:?}", app.transcript.cells());
 
-    app.handle_key(shift(KeyCode::Tab));
-    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
-
     // The tightest rung: plan mode, with the policy back at on-request, since
     // a rung must mean one thing rather than one thing plus what was under it.
-    app.handle_key(key(KeyCode::BackTab));
+    app.handle_key(shift(KeyCode::Tab));
     drain(&mut app, &mut updates, 1).await;
     assert_eq!(app.session_mode(), SessionMode::Plan);
     assert_eq!(app.approval_policy(), ApprovalPolicy::OnRequest);
@@ -167,7 +166,7 @@ async fn shift_tab_walks_one_ladder_through_plan_and_the_policies() {
     assert_eq!(
         scripted.policies(),
         vec![
-            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Auto,
             ApprovalPolicy::Never,
             ApprovalPolicy::OnRequest,
             ApprovalPolicy::OnRequest,
@@ -306,7 +305,7 @@ async fn approving_a_plan_carries_it_out_under_the_row_chosen_on_the_panel() {
     assert!(scripted.answers().is_empty(), "picking is not answering");
 
     app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
+    assert_eq!(app.approval_policy(), ApprovalPolicy::Auto);
     assert_eq!(
         scripted.answers(),
         vec![(

@@ -151,7 +151,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
             call: call.clone(),
             reason,
         };
-        match review(registry, ext_ctx, &request).await {
+        match review(registry, ext_ctx, &request, policy, capabilities.approval).await {
             ApprovalDecision::Allow { note } => approval_note = note,
             ApprovalDecision::AllowAlways => memory.allow_always(&call.name),
             ApprovalDecision::Deny { reason } => {
@@ -234,8 +234,20 @@ async fn review(
     registry: &ExtensionRegistry,
     ext_ctx: &ExtensionContext,
     request: &ApprovalRequest,
+    policy: ApprovalPolicy,
+    requirement: ApprovalRequirement,
 ) -> ApprovalDecision {
     for contributor in registry.approval_contributors() {
+        let eligible = if requirement == ApprovalRequirement::Always {
+            !contributor.automatic()
+        } else if policy == ApprovalPolicy::Auto {
+            contributor.automatic()
+        } else {
+            contributor.on_request()
+        };
+        if !eligible {
+            continue;
+        }
         if let Some(decision) = contributor.review(ext_ctx, request).await {
             return decision;
         }
