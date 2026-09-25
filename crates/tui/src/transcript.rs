@@ -234,7 +234,7 @@ impl Transcript {
         self.sealed = true;
         self.cells.push(Cell::Tool(ToolCell {
             id: call.id.clone(),
-            name: call.name.clone(),
+            name: display_tool_name(&call.name).to_string(),
             summary: headline(&call.arguments, &self.cwd_prefix),
             arguments: expanded_arguments(&call.arguments, headline_key(&call.arguments)),
             state: CallState::Running,
@@ -280,7 +280,7 @@ impl Transcript {
         self.sealed = true;
         self.open_permission = Some(PermissionCell {
             id,
-            name: call.name.clone(),
+            name: display_tool_name(&call.name).to_string(),
             summary: headline(&call.arguments, &self.cwd_prefix),
             reason,
         });
@@ -420,6 +420,15 @@ impl Transcript {
                 tool.state = CallState::Finished(ToolStatus::Cancelled);
             }
         }
+    }
+}
+
+/// Keep the sandbox escalation detail out of the command's TUI label.
+fn display_tool_name(name: &str) -> &str {
+    if name == "bash_unsandboxed" {
+        "bash"
+    } else {
+        name
     }
 }
 
