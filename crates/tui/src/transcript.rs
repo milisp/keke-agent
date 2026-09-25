@@ -441,7 +441,7 @@ pub(crate) fn is_exploration_tool(name: &str) -> bool {
 /// Exploration tools (`read_file`, `list_dir`, `grep`) group with each other
 /// regardless of order — a person skimming `read, list, read` wants one
 /// "Exploring" run, not three headers for a search that never wrote anything.
-/// A diff tool (`edit`, `write_file`) never groups, not even with itself: its
+/// A diff tool (`edit`, `write_file`, `apply_patch`) never groups, not even with itself: its
 /// diff is the one thing a person needs to see to trust the change, and two
 /// diffs sharing one header with no label between them are indistinguishable.
 /// Commands never group: each command and its output must be independently
@@ -479,7 +479,7 @@ pub(crate) fn verb(name: &str) -> (&str, &str) {
 /// the one thing a person needs to see to trust what the agent just did, so
 /// it stays open even on success.
 pub(crate) fn is_diff_tool(name: &str) -> bool {
-    matches!(name, "edit" | "write_file")
+    matches!(name, "edit" | "write_file" | "apply_patch")
 }
 
 /// The fields worth showing alone, in the order a reader would want them.
@@ -638,8 +638,36 @@ fn detail_line(name: &str, result: &ToolResult) -> Option<String> {
     match name {
         "read_file" | "list_dir" | "grep" => None,
         "edit" | "write_file" => diff_hunk(result).or_else(|| full_text(result)),
+        "apply_patch" => patch_diff(result).or_else(|| full_text(result)),
         _ => full_text(result),
     }
+}
+
+/// The per-file diffs carried by `apply_patch`, with a path heading so a
+/// multi-file change remains legible in the transcript.
+fn patch_diff(result: &ToolResult) -> Option<String> {
+    let changes = result.value.as_ref()?.get("changes")?.as_array()?;
+    let mut sections = Vec::new();
+    for change in changes {
+        let path = change.get("path")?.as_str()?;
+        let diff = change.get("diff")?;
+        let hunk = diff.get("hunk")?.as_str()?.trim_end();
+        if hunk.is_empty() {
+            continue;
+        }
+        let added = diff
+            .get("added")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let removed = diff
+            .get("removed")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let destination = change.get("moved_to").and_then(serde_json::Value::as_str);
+        let heading = destination.map_or_else(|| path.to_string(), |to| format!("{path} → {to}"));
+        sections.push(format!("{heading} (+{added} -{removed})\n{hunk}"));
+    }
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
 
 /// The unified diff a write carried in [`ToolResult::value`], if any.

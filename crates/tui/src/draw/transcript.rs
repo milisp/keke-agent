@@ -391,12 +391,32 @@ fn push_tool_detail(
     }
     if let Some(detail) = &tool.detail {
         if crate::transcript::is_diff_tool(&tool.name) {
-            push_diff_block(lines, "      ", detail, width);
+            if tool.name == "apply_patch" {
+                push_patch_block(lines, detail, width);
+            } else {
+                push_diff_block(lines, "      ", detail, width);
+            }
         } else if tool.name == "bash" && !full_transcript {
             push_limited_block(lines, "      ", detail, Style::new().fg(THINKING), width);
         } else {
             push_block(lines, "      ", detail, Style::new().fg(THINKING), width);
         }
+    }
+}
+
+/// Draw an `apply_patch` result as file-scoped summaries followed by their
+/// diffs, so a multi-file patch can be reviewed one file at a time.
+fn push_patch_block(lines: &mut Vec<Line<'static>>, detail: &str, width: usize) {
+    for (index, section) in detail.split("\n\n").enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
+        let Some((heading, hunk)) = section.split_once('\n') else {
+            push_block(lines, "      ", section, Style::new().fg(THINKING), width);
+            continue;
+        };
+        push_block(lines, "      ", heading, Style::new().fg(THINKING), width);
+        push_diff_block(lines, "        ", hunk, width);
     }
 }
 
