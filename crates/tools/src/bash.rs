@@ -1,4 +1,5 @@
 use keke_protocol::ContentBlock;
+use keke_sandbox::Sandbox;
 use keke_tasks::BackgroundTasks;
 use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
@@ -91,6 +92,11 @@ impl ToolOutput for BashOutput {
 /// outlives the turn cannot be owned by the call that started it, and
 /// `keke-tasks` is the one place that records what a task is doing.
 pub struct Bash {
+    /// What confines the command. Held here rather than consulted per call
+    /// because it was checked to be enforceable when it was built, and a
+    /// sandbox that could fail to build mid-turn would need a fallback — the
+    /// only one available being to run the command bare.
+    pub sandbox: Arc<Sandbox>,
     /// Where a backgrounded command goes. `None` in a composition with no task
     /// registry, which makes `background: true` an error rather than a silent
     /// foreground run — the model asked not to wait, and quietly waiting is a
@@ -148,16 +154,7 @@ impl Tool for Bash {
         let millis = args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(ceiling);
         let deadline = Instant::now() + Duration::from_millis(millis);
 
-        let (program, flag) = if cfg!(windows) {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
-        let child = Command::new(program)
-            .arg(flag)
-            .arg(&args.command)
-            .current_dir(ctx.workspace_root.as_path())
+        let child = Command::from(self.sandbox.shell(&args.command, &ctx.workspace_root))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -165,7 +162,7 @@ impl Tool for Bash {
             // the timeout and cancellation paths drop it.
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| ToolError::custom("spawn_failed", format!("{program}: {error}")))?;
+            .map_err(|error| ToolError::custom("spawn_failed", error.to_string()))?;
 
         let wait = child.wait_with_output();
         tokio::pin!(wait);

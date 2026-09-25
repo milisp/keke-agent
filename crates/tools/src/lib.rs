@@ -47,22 +47,36 @@ pub use write_file::WriteFileOutput;
 
 use std::sync::Arc;
 
+use keke_config_types::SandboxMode;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_plugin_api::ToolContributor;
+use keke_protocol::ToolCall;
+use keke_sandbox::Sandbox;
 use keke_tool::ArcTool;
+
+/// The tools that write from inside keke's own process rather than from a
+/// child, and so are not confined by the sandbox a shell command runs in.
+const WRITING_TOOLS: &[&str] = &["write_file", "edit", "apply_patch"];
 
 /// Every tool in this pack, in the order they are advertised.
 ///
-/// `background` is where a backgrounded shell command goes. `None` builds a
-/// pack whose `bash` can only run in the foreground.
+/// `sandbox` confines what `bash` runs. `background` is where a backgrounded
+/// shell command goes; `None` builds a pack whose `bash` can only run in the
+/// foreground.
 #[must_use]
-pub fn builtin_tools(background: Option<Arc<keke_tasks::BackgroundTasks>>) -> Vec<ArcTool> {
+pub fn builtin_tools(
+    sandbox: Arc<Sandbox>,
+    background: Option<Arc<keke_tasks::BackgroundTasks>>,
+) -> Vec<ArcTool> {
     vec![
         Arc::new(ReadFile),
         Arc::new(ListDir),
         Arc::new(Grep),
-        Arc::new(Bash { background }),
+        Arc::new(Bash {
+            sandbox,
+            background,
+        }),
         Arc::new(WriteFile),
         Arc::new(Edit),
         Arc::new(ApplyPatch),
@@ -70,28 +84,48 @@ pub fn builtin_tools(background: Option<Arc<keke_tasks::BackgroundTasks>>) -> Ve
 }
 
 struct BuiltinTools {
+    sandbox: Arc<Sandbox>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 }
 
 impl ToolContributor for BuiltinTools {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        builtin_tools(self.background.clone())
+        builtin_tools(Arc::clone(&self.sandbox), self.background.clone())
     }
 }
 
 /// Register the built-in tool pack, and the turn context it needs.
 ///
-/// Pass the background registry to let `bash` start commands that outlive the
-/// turn; pass `None` for a composition that has none.
+/// `sandbox` confines every shell command the pack runs. Pass the background
+/// registry to let `bash` start commands that outlive the turn; pass `None`
+/// for a composition that has none.
 pub fn install(
     registry: &mut ExtensionRegistryBuilder,
+    sandbox: Arc<Sandbox>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) {
-    registry.tool_contributor(Arc::new(BuiltinTools { background }));
+    let read_only = sandbox.policy().mode == SandboxMode::ReadOnly;
+    registry.tool_contributor(Arc::new(BuiltinTools {
+        sandbox,
+        background,
+    }));
     registry.context_contributor(Arc::new(prompt::BuiltinToolGuidance));
     // Guards subtract only, so this one is registered unconditionally: there is
     // no composition in which reading a private key is what the person meant.
     registry.tool_guard(Box::new(secrets::denial));
+    // The edit tools write from this process, where the sandbox does not
+    // reach, so `read_only` would stop `bash` from writing a file and let
+    // `write_file` write it anyway. A guard closes that, and a guard can only
+    // deny, so nothing registered later reopens it.
+    if read_only {
+        registry.tool_guard(Box::new(read_only_denial));
+    }
+}
+
+fn read_only_denial(call: &ToolCall) -> Option<String> {
+    WRITING_TOOLS
+        .contains(&call.name.as_str())
+        .then(|| "sandbox_mode is read_only, so no tool may write files".to_string())
 }
 
 #[cfg(test)]
@@ -111,6 +145,10 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
+
+    fn unconfined() -> Arc<Sandbox> {
+        Arc::new(Sandbox::unconfined())
+    }
 
     fn workspace() -> (TempDir, ToolCallContext) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -197,7 +235,7 @@ mod tests {
     #[test]
     fn installing_the_pack_registers_the_credential_guard() {
         let mut builder = keke_plugin_api::ExtensionRegistryBuilder::new();
-        install(&mut builder, None);
+        install(&mut builder, unconfined(), None);
         let registry = builder.build();
 
         let denial = registry.first_denial(&keke_protocol::ToolCall {
@@ -209,6 +247,35 @@ mod tests {
         assert!(
             denial.is_some(),
             "reads are uncontained, so this is the gate"
+        );
+    }
+
+    /// `read_only` is a promise about the files, not about `bash`: a mode
+    /// that confined the shell and let `write_file` through would be keeping
+    /// half of it.
+    #[test]
+    fn read_only_refuses_every_tool_that_writes_from_this_process() {
+        let call = |name: &str| keke_protocol::ToolCall {
+            id: ToolCallId::new("call-1"),
+            name: name.into(),
+            arguments: serde_json::json!({ "path": "notes.md" }),
+        };
+        let offered: Vec<String> = builtin_tools(unconfined(), None)
+            .iter()
+            .map(|tool| tool.id().to_string())
+            .collect();
+        for name in WRITING_TOOLS {
+            // A renamed tool would otherwise walk past the guard unnoticed.
+            assert!(offered.iter().any(|id| id == name), "{name} is not a tool");
+            assert!(
+                read_only_denial(&call(name)).is_some(),
+                "{name} got through"
+            );
+        }
+        assert!(read_only_denial(&call("read_file")).is_none());
+        assert!(
+            read_only_denial(&call("bash")).is_none(),
+            "the sandbox confines bash"
         );
     }
 
@@ -391,17 +458,20 @@ mod tests {
     async fn bash_captures_output_and_a_failing_exit_code() {
         let (_dir, ctx) = workspace();
 
-        let out = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "echo out; echo err >&2; exit 3".into(),
-                    background: false,
-                    timeout_ms: None,
-                },
-            )
-            .await
-            .expect("ran");
+        let out = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "echo out; echo err >&2; exit 3".into(),
+                background: false,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("ran");
 
         let BashOutput::Finished {
             exit_code, output, ..
@@ -420,17 +490,20 @@ mod tests {
     async fn bash_reports_a_timeout_as_a_timeout() {
         let (_dir, ctx) = workspace();
 
-        let error = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "sleep 5".into(),
-                    background: false,
-                    timeout_ms: Some(100),
-                },
-            )
-            .await
-            .expect_err("times out");
+        let error = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "sleep 5".into(),
+                background: false,
+                timeout_ms: Some(100),
+            },
+        )
+        .await
+        .expect_err("times out");
 
         assert!(
             matches!(error, ToolError::Timeout { millis } if millis == 100),
@@ -452,17 +525,20 @@ mod tests {
             abort.store(true, Ordering::SeqCst);
         });
 
-        let error = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "sleep 5".into(),
-                    background: false,
-                    timeout_ms: Some(30_000),
-                },
-            )
-            .await
-            .expect_err("cancelled");
+        let error = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "sleep 5".into(),
+                background: false,
+                timeout_ms: Some(30_000),
+            },
+        )
+        .await
+        .expect_err("cancelled");
 
         assert!(matches!(error, ToolError::Cancelled), "got {error:?}");
     }
@@ -640,9 +716,11 @@ mod tests {
         let (_dir, ctx) = workspace();
         let tasks = Arc::new(keke_tasks::BackgroundTasks::new(
             keke_config_types::BackgroundLimits::default(),
+            unconfined(),
         ));
 
         let out = Bash {
+            sandbox: unconfined(),
             background: Some(Arc::clone(&tasks)),
         }
         .run(
@@ -669,17 +747,20 @@ mod tests {
     #[tokio::test]
     async fn backgrounding_without_a_registry_is_an_error_not_a_silent_wait() {
         let (_dir, ctx) = workspace();
-        let error = Bash { background: None }
-            .run(
-                ctx,
-                BashArgs {
-                    command: "true".into(),
-                    background: true,
-                    timeout_ms: None,
-                },
-            )
-            .await
-            .expect_err("no registry");
+        let error = Bash {
+            sandbox: unconfined(),
+            background: None,
+        }
+        .run(
+            ctx,
+            BashArgs {
+                command: "true".into(),
+                background: true,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect_err("no registry");
 
         assert!(
             matches!(error, ToolError::Execution { ref code, .. } if code == "background_unavailable"),
@@ -690,7 +771,7 @@ mod tests {
     #[test]
     fn the_pack_installs_every_builtin_tool() {
         let mut builder = ExtensionRegistryBuilder::new();
-        install(&mut builder, None);
+        install(&mut builder, unconfined(), None);
         let registry = builder.build();
 
         let ctx = ExtensionContext::new(

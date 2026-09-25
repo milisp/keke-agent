@@ -409,6 +409,16 @@ impl PlanSetup {
     }
 }
 
+/// The executable that answers [`keke_sandbox::HELPER_ARG`]: this one.
+///
+/// `/proc/self/exe` rather than `current_exe()`, because it is resolved in
+/// the child after `fork` and so names the running binary even after an
+/// upgrade has replaced the file on disk — where the path `current_exe()`
+/// returned would now start the new version, or nothing.
+fn sandbox_helper() -> Option<std::path::PathBuf> {
+    cfg!(target_os = "linux").then(|| std::path::PathBuf::from("/proc/self/exe"))
+}
+
 /// The configured values a composition reads, borrowed from a `Config`.
 ///
 /// One struct rather than four parameters: they are all answers to "what did
@@ -423,6 +433,7 @@ pub(crate) struct Settings<'a> {
     pub skills: &'a keke_config_types::SkillSelection,
     pub guardian: &'a keke_config_types::GuardianReviewConfig,
     pub model: &'a keke_config_types::ModelSelection,
+    pub sandbox: &'a keke_config_types::SandboxPolicy,
 }
 
 impl<'a> From<&'a keke_config::Config> for Settings<'a> {
@@ -435,6 +446,7 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             skills: &config.skills,
             guardian: &config.guardian,
             model: &config.model,
+            sandbox: &config.sandbox,
         }
     }
 }
@@ -494,6 +506,7 @@ impl Composed {
             skills,
             guardian,
             model,
+            sandbox,
         } = settings;
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -607,8 +620,23 @@ impl Composed {
         // The registry outlives every turn that starts a task, which is the
         // whole point: a command started in one turn is still running in the
         // next, and the thing holding it must not be per-turn.
-        let background = Arc::new(keke_tasks::BackgroundTasks::new(background_limits));
-        keke_tools::install(&mut extensions, Some(Arc::clone(&background)));
+        //
+        // Checked here, before the first command, so a machine that cannot
+        // enforce the configured mode fails the session with a reason rather
+        // than every command failing — or, worse, running bare.
+        let sandbox = Arc::new(
+            keke_sandbox::Sandbox::new(sandbox.clone(), sandbox_helper())
+                .context("setting up the command sandbox")?,
+        );
+        let background = Arc::new(keke_tasks::BackgroundTasks::new(
+            background_limits,
+            Arc::clone(&sandbox),
+        ));
+        keke_tools::install(
+            &mut extensions,
+            Arc::clone(&sandbox),
+            Some(Arc::clone(&background)),
+        );
         // The scheduler the surface fires from and the tool writes to. One
         // handle, for the same reason the task registry is one: a loop the
         // model gave itself that a person cannot list is a prompt arriving

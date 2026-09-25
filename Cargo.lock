@@ -868,6 +868,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1724,6 +1744,7 @@ dependencies = [
  "keke-provider-codex",
  "keke-provider-grok",
  "keke-provider-ollama",
+ "keke-sandbox",
  "keke-schedule",
  "keke-skills",
  "keke-subagent",
@@ -2009,6 +2030,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-sandbox"
+version = "0.1.28"
+dependencies = [
+ "keke-config-types",
+ "keke-paths",
+ "landlock",
+ "libc",
+ "seccompiler",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "keke-schedule"
 version = "0.1.28"
 dependencies = [
@@ -2066,6 +2100,7 @@ dependencies = [
  "keke-paths",
  "keke-plugin-api",
  "keke-protocol",
+ "keke-sandbox",
  "keke-tool",
  "schemars 0.8.22",
  "serde",
@@ -2111,6 +2146,7 @@ dependencies = [
  "keke-plugin-api",
  "keke-protocol",
  "keke-provider-api",
+ "keke-sandbox",
  "keke-tasks",
  "keke-tool",
  "regex",
@@ -2197,6 +2233,17 @@ dependencies = [
  "security-framework 3.7.0",
  "windows-sys 0.60.2",
  "zeroize",
+]
+
+[[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror",
 ]
 
 [[package]]
@@ -2896,7 +2943,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3034,6 +3081,15 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "security-framework"

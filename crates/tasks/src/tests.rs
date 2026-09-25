@@ -14,7 +14,14 @@ use crate::TaskState;
 fn host(limits: BackgroundLimits) -> (Arc<BackgroundTasks>, tempfile::TempDir, AbsPath) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = AbsPath::new(dir.path()).expect("abs path");
-    (Arc::new(BackgroundTasks::new(limits)), dir, root)
+    (
+        Arc::new(BackgroundTasks::new(
+            limits,
+            Arc::new(keke_sandbox::Sandbox::unconfined()),
+        )),
+        dir,
+        root,
+    )
 }
 
 /// Poll rather than sleep a fixed time: the point is that the command finished,

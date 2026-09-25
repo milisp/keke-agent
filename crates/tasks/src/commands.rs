@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 
 use keke_config_types::BackgroundLimits;
 use keke_paths::AbsPath;
+use keke_sandbox::Sandbox;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -78,6 +79,9 @@ impl Slot {
 /// Every background command one session has started.
 pub struct BackgroundTasks {
     limits: BackgroundLimits,
+    /// The same confinement a foreground `bash` gets. Backgrounding changes
+    /// who waits, not what the command may do.
+    sandbox: Arc<Sandbox>,
     next: AtomicU64,
     slots: Mutex<HashMap<TaskId, Slot>>,
     /// Ids in the order they were started, so rows read chronologically. Kept
@@ -92,9 +96,10 @@ pub struct BackgroundTasks {
 
 impl BackgroundTasks {
     #[must_use]
-    pub fn new(limits: BackgroundLimits) -> Self {
+    pub fn new(limits: BackgroundLimits, sandbox: Arc<Sandbox>) -> Self {
         Self {
             limits,
+            sandbox,
             next: AtomicU64::new(1),
             slots: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
@@ -158,15 +163,7 @@ impl BackgroundTasks {
             return Err(BackgroundError::TooMany(self.limits.max_concurrent));
         }
 
-        let (program, flag) = if cfg!(windows) {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-        let mut child = Command::new(program)
-            .arg(flag)
-            .arg(&command)
-            .current_dir(cwd.as_path())
+        let mut child = Command::from(self.sandbox.shell(&command, cwd))
             // A background command has nobody to answer a prompt, so its stdin
             // is closed rather than left inheriting the terminal's — a child
             // reading from the person's keyboard is the worst kind of hang.
@@ -175,7 +172,7 @@ impl BackgroundTasks {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| BackgroundError::Spawn(format!("{program}: {error}")))?;
+            .map_err(|error| BackgroundError::Spawn(error.to_string()))?;
 
         let id = format!("{KIND}_{}", self.next.fetch_add(1, Ordering::SeqCst));
         let (kill, killed) = tokio::sync::oneshot::channel();
