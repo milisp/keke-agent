@@ -5,7 +5,7 @@
 **keke** 是用 Rust 编写的本地终端编码 agent，目标是零厂商锁定。  
 **下载约 7 MB · 无外部运行时依赖 · 即开即用。**
 
-[![asciicast](https://asciinema.org/a/eUqMzR5n59Pfsta5.svg)](https://asciinema.org/a/eUqMzR5n59Pfsta5)
+[![asciicast](https://asciinema.org/a/1266474.svg)](https://asciinema.org/a/1266474)
 
 ## 为什么选择 keke？
 

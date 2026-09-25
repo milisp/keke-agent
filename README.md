@@ -5,7 +5,7 @@
 **keke** is a local terminal coding agent built in Rust for zero vendor lock-in.  
 **7 MB download · zero external runtime dependencies · instant startup.**
 
-[![asciicast](https://asciinema.org/a/eUqMzR5n59Pfsta5.svg)](https://asciinema.org/a/eUqMzR5n59Pfsta5)
+[![asciicast](https://asciinema.org/a/1266474.svg)](https://asciinema.org/a/1266474)
 
 ## Why keke?
 
