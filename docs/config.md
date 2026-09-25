@@ -272,7 +272,7 @@ Rules:
 These settings live at the top level of `config.toml`:
 
 ```toml
-# Approval policy: "on_request" (default), "auto", or "never".
+# Approval policy: "on_request" (default), "accept_edits", "auto", or "never".
 # Old "on_failure" configurations still load, but new setups should use
 # "on_request" with sandboxed Bash auto-approval below.
 approval_policy = "on_request"
@@ -395,6 +395,13 @@ with `[guardian] provider` and `model`. A failed or unclear review denies the
 call. Sandbox escapes still require a person's answer. `never` skips ordinary
 approval entirely; it is not Auto mode.
 
+`approval_policy = "accept_edits"` accepts the built-in file edit tools and
+the scoped `git_add` / `git_commit` tools without an ordinary prompt. The Git
+tools run directly under the sandbox with repository metadata writable and
+hooks disabled. Other commands and sandbox escapes keep their normal approval
+rules. On macOS, shell `git add` and `git commit` still cannot write protected
+`.git` metadata; use the scoped tools for those operations.
+
 ```toml
 [guardian]
 provider = "codex"
@@ -410,7 +417,8 @@ The old `on_failure` policy is accepted for existing configurations and
 sessions, but is no longer offered in the interactive policy cycle. It skips
 ordinary approval checks even for operations outside sandboxed Bash, so
 `on_request` plus `auto_approve_bash` is the clearer choice.
-Repository config cannot change `on_request` to `auto`, `on_failure`, or `never`;
+Repository config cannot change `on_request` to `accept_edits`, `auto`,
+`on_failure`, or `never`;
 that choice belongs in the user's config.
 
 **Workspace metadata stays read-only.** Inside a writable root, `.git`,

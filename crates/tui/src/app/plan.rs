@@ -27,8 +27,10 @@ pub enum PlanFocus {
 /// policy submenu and no per-line comment to attach first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanRow {
-    /// Carry the plan out without asking again.
+    /// Carry the plan out with automatic review.
     AutoMode,
+    /// Carry the plan out, accepting workspace edits and scoped Git writes.
+    AcceptEdits,
     /// Carry the plan out, asking before each command.
     ManualApprove,
     /// Send the agent back to planning with what gets typed next.
@@ -36,8 +38,9 @@ pub enum PlanRow {
 }
 
 /// Every row, in display order.
-pub(crate) const ROWS: [PlanRow; 3] = [
+pub(crate) const ROWS: [PlanRow; 4] = [
     PlanRow::AutoMode,
+    PlanRow::AcceptEdits,
     PlanRow::ManualApprove,
     PlanRow::TellKekeWhatToChange,
 ];
@@ -48,6 +51,7 @@ impl PlanRow {
     pub fn label(self) -> &'static str {
         match self {
             PlanRow::AutoMode => "Yes, and use auto mode",
+            PlanRow::AcceptEdits => "Yes, and accept edits",
             PlanRow::ManualApprove => "Yes, manually approve edits",
             PlanRow::TellKekeWhatToChange => "Tell Keke what to change",
         }
@@ -59,6 +63,7 @@ impl PlanRow {
     fn policy(self) -> Option<ApprovalPolicy> {
         match self {
             PlanRow::AutoMode => Some(ApprovalPolicy::Auto),
+            PlanRow::AcceptEdits => Some(ApprovalPolicy::AcceptEdits),
             PlanRow::ManualApprove => Some(ApprovalPolicy::OnRequest),
             PlanRow::TellKekeWhatToChange => None,
         }

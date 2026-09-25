@@ -143,6 +143,8 @@ async fn shift_tab_walks_one_ladder_through_plan_and_the_policies() {
     assert_eq!(app.session_mode(), SessionMode::Default);
 
     app.handle_key(key(KeyCode::BackTab));
+    assert_eq!(app.approval_policy(), ApprovalPolicy::AcceptEdits);
+    app.handle_key(key(KeyCode::BackTab));
     assert_eq!(app.approval_policy(), ApprovalPolicy::Auto);
     app.handle_key(key(KeyCode::BackTab));
     assert_eq!(app.approval_policy(), ApprovalPolicy::Never);
@@ -166,6 +168,7 @@ async fn shift_tab_walks_one_ladder_through_plan_and_the_policies() {
     assert_eq!(
         scripted.policies(),
         vec![
+            ApprovalPolicy::AcceptEdits,
             ApprovalPolicy::Auto,
             ApprovalPolicy::Never,
             ApprovalPolicy::OnRequest,

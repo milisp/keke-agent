@@ -8,6 +8,7 @@ mod apply_patch;
 mod bash;
 mod edit;
 mod escalate;
+mod git;
 mod grep;
 mod list_dir;
 mod prompt;
@@ -32,6 +33,11 @@ pub use edit::EditOutput;
 pub use escalate::BashUnsandboxed;
 pub use escalate::BashUnsandboxedArgs;
 use escalate::PersonDecides;
+pub use git::GitAdd;
+pub use git::GitAddArgs;
+pub use git::GitCommit;
+pub use git::GitCommitArgs;
+pub use git::GitOutput;
 pub use grep::Grep;
 pub use grep::GrepArgs;
 pub use grep::GrepOutput;
@@ -80,10 +86,18 @@ pub fn builtin_tools(
         Arc::new(ListDir),
         Arc::new(Grep),
         Arc::new(Bash {
-            sandbox,
+            sandbox: Arc::clone(&sandbox),
             background,
         }),
     ];
+    if sandbox.policy().mode == SandboxMode::WorkspaceWrite {
+        tools.push(Arc::new(GitAdd {
+            sandbox: Arc::clone(&sandbox),
+        }));
+        tools.push(Arc::new(GitCommit {
+            sandbox: Arc::clone(&sandbox),
+        }));
+    }
     if confines {
         tools.push(Arc::new(BashUnsandboxed::new()));
     }
@@ -289,6 +303,9 @@ mod tests {
 
         let tools = approvals(&builtin_tools(sandbox(SandboxMode::WorkspaceWrite), None));
         assert!(tools.contains(&("write_file".to_string(), ByPolicy)));
+        for name in ["git_add", "git_commit"] {
+            assert!(tools.contains(&(name.to_string(), ByPolicy)));
+        }
     }
 
     /// Stepping outside the sandbox is offered where there is one, and asks

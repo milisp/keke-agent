@@ -28,9 +28,11 @@
 //! Inside a writable root, the metadata that could hand a command more than
 //! the sandbox gives it stays read-only, as codex keeps it: `.git` (a hook
 //! written there runs unconfined at the next commit), `.keke` (the project's
-//! own configuration), and `.agents`. Seatbelt enforces that. Landlock cannot
-//! — it only grants, and cannot carve an exception out of a grant — so on
-//! Linux those directories are as writable as the rest of the workspace.
+//! own configuration), and `.agents`. Direct Git staging and commits receive
+//! a narrow `.git` write grant while hooks and Git configuration stay
+//! protected. Seatbelt enforces those exceptions. Landlock cannot carve an
+//! exception out of a grant, so on Linux those directories are as writable as
+//! the rest of the workspace.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -174,6 +176,32 @@ impl Sandbox {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.command_with_metadata(program, args, workspace, false)
+    }
+
+    /// Run a direct Git operation with repository metadata writable while
+    /// preserving the workspace and network sandbox. Callers must restrict
+    /// the subcommand and disable hooks; arbitrary shell text is not safe here.
+    #[must_use]
+    pub fn git_command<I, S>(&self, args: I, workspace: &AbsPath) -> Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.command_with_metadata("git", args, workspace, true)
+    }
+
+    fn command_with_metadata<I, S>(
+        &self,
+        program: &str,
+        args: I,
+        workspace: &AbsPath,
+        git_metadata: bool,
+    ) -> Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let mut command = match &self.launcher {
             Launcher::Unconfined => {
                 let mut command = Command::new(program);
@@ -182,7 +210,7 @@ impl Sandbox {
             }
             #[cfg(target_os = "macos")]
             Launcher::Seatbelt => seatbelt::command(
-                &self.writable_roots(workspace),
+                &self.writable_roots_with_git(workspace, git_metadata),
                 self.network(),
                 program,
                 args,
@@ -196,7 +224,7 @@ impl Sandbox {
                 }
                 // Landlock cannot express the protected subpaths; see the
                 // module documentation.
-                for root in self.writable_roots(workspace) {
+                for root in self.writable_roots_with_git(workspace, git_metadata) {
                     command.arg("--write").arg(root.path);
                 }
                 command.arg("--").arg(program).args(args);
@@ -224,7 +252,17 @@ impl Sandbox {
     /// nothing. A root that does not exist is dropped rather than failing the
     /// command — there is nothing under it to write to.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(test)]
     fn writable_roots(&self, workspace: &AbsPath) -> Vec<WritableRoot> {
+        self.writable_roots_with_git(workspace, false)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn writable_roots_with_git(
+        &self,
+        workspace: &AbsPath,
+        git_metadata: bool,
+    ) -> Vec<WritableRoot> {
         if self.policy.mode != SandboxMode::WorkspaceWrite {
             return Vec::new();
         }
@@ -241,12 +279,26 @@ impl Sandbox {
                 .iter()
                 .map(|root| root.as_path().to_path_buf()),
         );
+        let gitdirs = if git_metadata {
+            git_metadata_dirs(workspace.as_path())
+        } else {
+            Vec::new()
+        };
+        wanted.extend(gitdirs.iter().cloned());
         let mut roots: Vec<WritableRoot> = Vec::new();
         for (index, path) in wanted.into_iter().enumerate() {
             if let Ok(real) = path.canonicalize()
                 && !roots.iter().any(|root| root.path == real)
             {
-                let read_only = protected_beneath(&real, index == 0);
+                let mut read_only = protected_beneath(&real, index == 0);
+                if git_metadata {
+                    read_only.retain(|path| !gitdirs.contains(path));
+                    for metadata in &gitdirs {
+                        if metadata.starts_with(&real) {
+                            read_only.extend(protected_git_internals(metadata));
+                        }
+                    }
+                }
                 roots.push(WritableRoot {
                     path: real,
                     read_only,
@@ -255,6 +307,47 @@ impl Sandbox {
         }
         roots
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn git_metadata_dirs(workspace: &Path) -> Vec<PathBuf> {
+    let dot_git = workspace.join(".git");
+    if dot_git.is_symlink() {
+        return Vec::new();
+    }
+    let Some(gitdir) = (if dot_git.is_dir() {
+        dot_git.canonicalize().ok()
+    } else {
+        pointed_gitdir(workspace, &dot_git).filter(|gitdir| {
+            let backlink = std::fs::read_to_string(gitdir.join("gitdir"))
+                .ok()
+                .and_then(|pointer| gitdir.join(pointer.trim()).canonicalize().ok());
+            backlink.is_some() && backlink == dot_git.canonicalize().ok()
+        })
+    }) else {
+        return Vec::new();
+    };
+    if !gitdir.join("HEAD").is_file() {
+        return Vec::new();
+    }
+    let mut dirs = vec![gitdir.clone()];
+    if let Ok(common) = std::fs::read_to_string(gitdir.join("commondir"))
+        && let Ok(path) = gitdir.join(common.trim()).canonicalize()
+        && path != gitdir
+        && path.join("objects").is_dir()
+        && path.join("config").is_file()
+    {
+        dirs.push(path);
+    }
+    dirs
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn protected_git_internals(gitdir: &Path) -> Vec<PathBuf> {
+    ["hooks", "config", "config.worktree", "info"]
+        .into_iter()
+        .map(|name| gitdir.join(name))
+        .collect()
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -448,6 +541,47 @@ mod tests {
         std::fs::write(root.as_path().join(".git"), "gitdir: elsewhere\n").expect("write");
         let protected = protected_beneath(root.as_path(), false);
         assert!(protected.contains(&real), "{protected:?}");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn scoped_git_writes_keep_hooks_and_configuration_protected() {
+        let (_dir, root) = workspace();
+        let gitdir = root.as_path().join(".git");
+        std::fs::create_dir(&gitdir).expect("gitdir");
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/main\n").expect("head");
+        let sandbox = Sandbox {
+            policy: SandboxPolicy::default(),
+            launcher: Launcher::Unconfined,
+        };
+        let ordinary = sandbox.writable_roots(&root);
+        assert!(ordinary[0].read_only.contains(&gitdir));
+        let scoped = sandbox.writable_roots_with_git(&root, true);
+        assert!(!scoped[0].read_only.contains(&gitdir));
+        for name in ["hooks", "config", "config.worktree", "info"] {
+            assert!(
+                scoped[0].read_only.contains(&gitdir.join(name)),
+                "{name} should stay protected"
+            );
+        }
+        assert!(scoped[0].read_only.contains(&root.as_path().join(".keke")));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_git_pointer_needs_a_backlink_before_it_receives_write_access() {
+        let (_dir, root) = workspace();
+        let gitdir = root.as_path().join("git-data");
+        std::fs::create_dir(&gitdir).expect("gitdir");
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/main\n").expect("head");
+        std::fs::write(root.as_path().join(".git"), "gitdir: git-data\n").expect("pointer");
+        assert!(git_metadata_dirs(root.as_path()).is_empty());
+        std::fs::write(
+            gitdir.join("gitdir"),
+            root.as_path().join(".git").display().to_string(),
+        )
+        .expect("backlink");
+        assert_eq!(git_metadata_dirs(root.as_path()), vec![gitdir]);
     }
 
     /// Where there is no sandbox the value says so, rather than posing as

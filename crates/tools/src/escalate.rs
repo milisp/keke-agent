@@ -116,8 +116,9 @@ impl Tool for BashUnsandboxed {
         ToolDescription::new(
             "Run a shell command outside the sandbox. The person is asked every time and sees \
              your justification, so use it only after `bash` failed because of the sandbox — \
-             the command needs the network, must write outside the workspace, or must write \
-             `.git` (a commit, say) — and say which. Never use it to avoid trying `bash` first.",
+             the command needs the network or must write outside the workspace — and say which. \
+             Use `git_add` and `git_commit` for staging and commits. Never use it to avoid trying \
+             `bash` first.",
         )
     }
 

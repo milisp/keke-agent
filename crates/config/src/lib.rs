@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_repository_cannot_skip_approval_chosen_by_the_user() {
-        for policy in ["auto", "on_failure", "never"] {
+        for policy in ["accept_edits", "auto", "on_failure", "never"] {
             let error = Config::from_layers(
                 home(),
                 &[project(&format!("approval_policy = \"{policy}\"\n"))],

@@ -314,8 +314,9 @@ fn is_name_char(ch: char) -> bool {
 /// The visible approval policies, strictest first: the order the plan panel
 /// lists them in, so the row a person lands on without reading is the one
 /// that asks the most rather than the one that asks the least.
-pub const POLICIES: [ApprovalPolicy; 3] = [
+pub const POLICIES: [ApprovalPolicy; 4] = [
     ApprovalPolicy::OnRequest,
+    ApprovalPolicy::AcceptEdits,
     ApprovalPolicy::Auto,
     ApprovalPolicy::Never,
 ];
@@ -326,6 +327,7 @@ pub const POLICIES: [ApprovalPolicy; 3] = [
 pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
     match policy {
         ApprovalPolicy::OnRequest => "ask before edits and commands without sandbox auto-approval",
+        ApprovalPolicy::AcceptEdits => "accept edits and scoped Git commits; ask for other escapes",
         ApprovalPolicy::Auto => "automatic review for edits; sandbox escapes still ask",
         ApprovalPolicy::OnFailure => "legacy: skips ordinary approval checks",
         ApprovalPolicy::Never => "skip ordinary approvals; sandbox escapes still ask",
@@ -337,6 +339,7 @@ pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
 pub fn policy_name(policy: ApprovalPolicy) -> &'static str {
     match policy {
         ApprovalPolicy::OnRequest => "on-request",
+        ApprovalPolicy::AcceptEdits => "accept-edits",
         ApprovalPolicy::Auto => "auto",
         ApprovalPolicy::OnFailure => "on-failure",
         ApprovalPolicy::Never => "never",

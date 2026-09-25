@@ -40,12 +40,15 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
         // Escalation-after-failure is decided by the tool, which asks by
         // failing; there is nothing to ask before the call.
         ApprovalPolicy::OnFailure => None,
-        ApprovalPolicy::OnRequest | ApprovalPolicy::Auto => match capabilities.kind {
-            ToolKind::Edit => Some("modifies files".to_string()),
-            ToolKind::Execute => Some("runs a command".to_string()),
-            ToolKind::Network => Some("reaches the network".to_string()),
-            ToolKind::Read | ToolKind::Search | ToolKind::Meta => None,
-        },
+        ApprovalPolicy::AcceptEdits if capabilities.kind == ToolKind::Edit => None,
+        ApprovalPolicy::OnRequest | ApprovalPolicy::AcceptEdits | ApprovalPolicy::Auto => {
+            match capabilities.kind {
+                ToolKind::Edit => Some("modifies files".to_string()),
+                ToolKind::Execute => Some("runs a command".to_string()),
+                ToolKind::Network => Some("reaches the network".to_string()),
+                ToolKind::Read | ToolKind::Search | ToolKind::Meta => None,
+            }
+        }
     }
 }
 
@@ -114,6 +117,7 @@ mod tests {
         let always = capabilities(ToolKind::Meta).always_asks();
         for policy in [
             ApprovalPolicy::OnRequest,
+            ApprovalPolicy::AcceptEdits,
             ApprovalPolicy::Auto,
             ApprovalPolicy::OnFailure,
             ApprovalPolicy::Never,
@@ -129,6 +133,20 @@ mod tests {
     fn running_a_command_does() {
         assert!(
             approval_reason(ApprovalPolicy::OnRequest, &capabilities(ToolKind::Execute)).is_some()
+        );
+    }
+
+    #[test]
+    fn accept_edits_skips_edit_approval_but_still_checks_commands() {
+        assert!(
+            approval_reason(ApprovalPolicy::AcceptEdits, &capabilities(ToolKind::Edit)).is_none()
+        );
+        assert!(
+            approval_reason(
+                ApprovalPolicy::AcceptEdits,
+                &capabilities(ToolKind::Execute)
+            )
+            .is_some()
         );
     }
 
@@ -192,6 +210,7 @@ impl ApprovalSwitch {
 fn encode(policy: ApprovalPolicy) -> u8 {
     match policy {
         ApprovalPolicy::OnRequest => 0,
+        ApprovalPolicy::AcceptEdits => 4,
         ApprovalPolicy::Auto => 3,
         ApprovalPolicy::OnFailure => 1,
         ApprovalPolicy::Never => 2,
@@ -203,6 +222,7 @@ fn decode(raw: u8) -> ApprovalPolicy {
         1 => ApprovalPolicy::OnFailure,
         2 => ApprovalPolicy::Never,
         3 => ApprovalPolicy::Auto,
+        4 => ApprovalPolicy::AcceptEdits,
         // Only `encode` ever writes the cell, so anything else is impossible;
         // the strictest policy is the safe reading if it ever happened.
         _ => ApprovalPolicy::OnRequest,

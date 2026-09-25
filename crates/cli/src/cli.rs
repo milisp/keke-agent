@@ -327,11 +327,12 @@ fn parse_approval(raw: &str) -> Result<keke_config_types::ApprovalPolicy, String
     use keke_config_types::ApprovalPolicy;
     match raw {
         "on-request" => Ok(ApprovalPolicy::OnRequest),
+        "accept-edits" => Ok(ApprovalPolicy::AcceptEdits),
         "auto" => Ok(ApprovalPolicy::Auto),
         "on-failure" => Ok(ApprovalPolicy::OnFailure),
         "never" => Ok(ApprovalPolicy::Never),
         other => Err(format!(
-            "unknown approval policy `{other}`; expected on-request, auto, or never (`on-failure` is accepted for compatibility)"
+            "unknown approval policy `{other}`; expected on-request, accept-edits, auto, or never (`on-failure` is accepted for compatibility)"
         )),
     }
 }

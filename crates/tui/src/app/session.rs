@@ -18,7 +18,7 @@ impl App {
     /// answer "how much may the agent do without me", and a person tapping
     /// through two independent switches has to work out how they stack —
     /// so they are laid out as a single ordering, loosest last:
-    /// `plan → on-request → auto → never → plan`. Plan mode is the
+    /// `plan → on-request → accept-edits → auto → never → plan`. Plan mode is the
     /// tightest rung because it refuses edits outright rather than offering
     /// them for approval, so entering it also brings the policy back to
     /// `on-request`: a rung must mean one thing, not one thing plus whatever
@@ -34,7 +34,10 @@ impl App {
             return;
         }
         match self.approval {
-            ApprovalPolicy::OnRequest => self.set_approval_policy_aloud(ApprovalPolicy::Auto),
+            ApprovalPolicy::OnRequest => {
+                self.set_approval_policy_aloud(ApprovalPolicy::AcceptEdits)
+            }
+            ApprovalPolicy::AcceptEdits => self.set_approval_policy_aloud(ApprovalPolicy::Auto),
             ApprovalPolicy::Auto | ApprovalPolicy::OnFailure => {
                 self.set_approval_policy_aloud(ApprovalPolicy::Never);
             }

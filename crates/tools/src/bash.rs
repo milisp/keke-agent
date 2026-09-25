@@ -135,7 +135,7 @@ impl Tool for Bash {
         ToolId::new("bash")
     }
 
-    fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
+    fn description(&self, ctx: &ListToolsContext) -> ToolDescription {
         let mut text = String::from(
             "Run a shell command from the workspace root. Returns stdout and stderr combined, \
              plus the exit code when it is non-zero. Long output is truncated, so pipe through \
@@ -153,6 +153,12 @@ impl Tool for Bash {
                  — and it genuinely needs more, rerun it with `bash_unsandboxed`, which asks \
                  the person first."
             ));
+        }
+        if ctx.has("git_add") && ctx.has("git_commit") {
+            text.push_str(
+                " For Git staging and commits, use `git_add` and `git_commit`: they allow \
+                 the required repository metadata writes inside the sandbox.",
+            );
         }
         ToolDescription::new(text)
     }

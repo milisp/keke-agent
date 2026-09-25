@@ -26,6 +26,8 @@ pub enum ApprovalPolicy {
     /// such as Bash under an enforced sandbox when configured to auto-approve.
     #[default]
     OnRequest,
+    /// Accept file edits and scoped Git staging/commits without ordinary approval.
+    AcceptEdits,
     /// Let an automatic reviewer decide ordinary approval requests.
     Auto,
     /// Legacy policy that skips ordinary approval checks. Kept for saved
@@ -44,6 +46,7 @@ impl ApprovalPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OnRequest => "on-request",
+            Self::AcceptEdits => "accept-edits",
             Self::Auto => "auto",
             Self::OnFailure => "on-failure",
             Self::Never => "never",
@@ -57,6 +60,7 @@ impl ApprovalPolicy {
     pub fn parse(wire: &str) -> Option<Self> {
         match wire {
             "on-request" => Some(Self::OnRequest),
+            "accept-edits" => Some(Self::AcceptEdits),
             "auto" => Some(Self::Auto),
             "on-failure" => Some(Self::OnFailure),
             "never" => Some(Self::Never),
