@@ -111,17 +111,82 @@ impl SessionMode {
     }
 }
 
-/// How tightly spawned processes are confined.
+/// How tightly the commands a model runs are confined.
+///
+/// Enforced by the operating system (`keke-sandbox`), not by inspecting the
+/// command: a shell line can reach anything the process can, so a check on its
+/// text is a speed bump rather than a boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
-    /// No filesystem writes outside the workspace, no network.
+    /// Writes only under the workspace, the temporary directory, and any
+    /// configured writable roots; no network unless configured.
     #[default]
     WorkspaceWrite,
-    /// Reads only.
+    /// Reads anywhere, writes nowhere, no network.
     ReadOnly,
     /// No confinement.
     DangerFullAccess,
+}
+
+impl SandboxMode {
+    /// Rank by how much a command may do, least first, so "the stricter of
+    /// two modes" is a `min` rather than a table someone has to keep in sync.
+    fn latitude(self) -> u8 {
+        match self {
+            Self::ReadOnly => 0,
+            Self::WorkspaceWrite => 1,
+            Self::DangerFullAccess => 2,
+        }
+    }
+
+    /// The more confining of the two.
+    #[must_use]
+    pub fn stricter(self, other: Self) -> Self {
+        if other.latitude() < self.latitude() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// The wire spelling, for messages that name the setting a person types.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => "workspace_write",
+            Self::ReadOnly => "read_only",
+            Self::DangerFullAccess => "danger_full_access",
+        }
+    }
+}
+
+/// Everything the sandbox needs to confine one command.
+///
+/// `network_access` and `writable_roots` widen `workspace_write` only; the
+/// other two modes ignore them, because `read_only` means what it says and
+/// `danger_full_access` has nothing left to widen.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxPolicy {
+    pub mode: SandboxMode,
+    /// Off by default: a command that can reach the network can send the
+    /// workspace anywhere, and that is the exfiltration a sandbox exists to
+    /// stop.
+    pub network_access: bool,
+    /// Writable beyond the workspace and the temporary directory — a shared
+    /// build cache, a sibling checkout. Absolute by type.
+    pub writable_roots: Vec<AbsPath>,
+}
+
+impl SandboxPolicy {
+    /// A policy that confines nothing.
+    #[must_use]
+    pub fn unconfined() -> Self {
+        Self {
+            mode: SandboxMode::DangerFullAccess,
+            ..Self::default()
+        }
+    }
 }
 
 /// Which model to run, and where.

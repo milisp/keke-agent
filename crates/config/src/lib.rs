@@ -40,6 +40,7 @@ use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
 use keke_config_types::ReasoningEffort;
 use keke_config_types::SandboxMode;
+use keke_config_types::SandboxPolicy;
 use keke_config_types::SkillSelection;
 use keke_config_types::SubagentLimits;
 use keke_paths::AbsPath;
@@ -78,7 +79,8 @@ pub struct Config {
     /// asked, and plan mode still refuses edits either way — only the exit
     /// stops being a question.
     pub require_plan_approval: bool,
-    pub sandbox_mode: SandboxMode,
+    /// How the commands a model runs are confined.
+    pub sandbox: SandboxPolicy,
     /// A persona for the agent: who it is and how it should behave, joined
     /// into the system prompt ahead of the project's own `AGENTS.md`. Absent
     /// leaves keke's plain identity in place. A caller running several named
@@ -129,6 +131,7 @@ pub struct ConfigFile {
     pub approval_policy: Option<ApprovalPolicy>,
     pub require_plan_approval: Option<bool>,
     pub sandbox_mode: Option<SandboxMode>,
+    pub sandbox_workspace_write: Option<SandboxWorkspaceWriteFile>,
     pub instructions: Option<String>,
     pub max_output_tokens: Option<u32>,
     /// Read as a string rather than as the enum so a misspelled level names
@@ -209,6 +212,19 @@ pub struct SubagentsFile {
     pub collect_timeout_millis: Option<u64>,
 }
 
+/// What `workspace_write` may do beyond the workspace. Spelled as codex spells
+/// it, so a person moving a setting across does not have to translate it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct SandboxWorkspaceWriteFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_access: Option<bool>,
+    /// Accumulated across layers, like `providers`: a managed layer's cache
+    /// directory and a person's sibling checkout are both still wanted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable_roots: Vec<AbsPath>,
+}
+
 /// The background-command section, separated for the same reason.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
@@ -277,7 +293,18 @@ impl Config {
                 .file
                 .require_plan_approval
                 .or(merged.require_plan_approval);
+            if matches!(layer.source, LayerSource::Project(_)) {
+                check_project_sandbox(&layer.file, &merged, &layer.source)?;
+            }
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
+            if let Some(section) = &layer.file.sandbox_workspace_write {
+                let base = merged
+                    .sandbox_workspace_write
+                    .get_or_insert_with(SandboxWorkspaceWriteFile::default);
+                base.network_access = section.network_access.or(base.network_access);
+                base.writable_roots
+                    .extend(section.writable_roots.iter().cloned());
+            }
             merged.instructions = layer.file.instructions.clone().or(merged.instructions);
             merged.max_output_tokens = layer.file.max_output_tokens.or(merged.max_output_tokens);
             merged.reasoning_effort = layer
@@ -595,7 +622,14 @@ impl Config {
             model,
             approval_policy: merged.approval_policy.unwrap_or_default(),
             require_plan_approval: merged.require_plan_approval.unwrap_or(false),
-            sandbox_mode: merged.sandbox_mode.unwrap_or_default(),
+            sandbox: {
+                let section = merged.sandbox_workspace_write.unwrap_or_default();
+                SandboxPolicy {
+                    mode: merged.sandbox_mode.unwrap_or_default(),
+                    network_access: section.network_access.unwrap_or(false),
+                    writable_roots: section.writable_roots,
+                }
+            },
             instructions: merged.instructions,
             max_output_tokens,
             reasoning_effort,
@@ -619,6 +653,57 @@ impl Config {
             sources,
         })
     }
+}
+
+/// Refuse a project layer that would loosen the sandbox.
+///
+/// `.keke/config.toml` arrives with `git clone`, and a sandbox the repository
+/// can switch off is one that confines only the repositories that did not
+/// think to. So a project may tighten what the layers beneath it chose and
+/// never widen it. The refusal is an error rather than a quiet clamp: a
+/// maintainer who wrote the looser value meant something by it, and the
+/// person cloning should learn what was asked and where to grant it.
+fn check_project_sandbox(
+    project: &ConfigFile,
+    beneath: &ConfigFile,
+    source: &LayerSource,
+) -> Result<(), ConfigError> {
+    let refuse = |message: String| ConfigError::Invalid {
+        path: source.describe(),
+        message: format!(
+            "{message}; a repository's config may only tighten the sandbox — set it in \
+             $KEKE_HOME/config.toml to accept it"
+        ),
+    };
+    let current = beneath.sandbox_mode.unwrap_or_default();
+    if let Some(asked) = project.sandbox_mode
+        && current.stricter(asked) != asked
+    {
+        return Err(refuse(format!(
+            "sandbox_mode = \"{}\" is looser than the \"{}\" already in force",
+            asked.as_str(),
+            current.as_str()
+        )));
+    }
+    if let Some(section) = &project.sandbox_workspace_write {
+        let granted = beneath
+            .sandbox_workspace_write
+            .as_ref()
+            .and_then(|base| base.network_access)
+            .unwrap_or(false);
+        if section.network_access == Some(true) && !granted {
+            return Err(refuse(
+                "sandbox_workspace_write.network_access = true grants network access".to_string(),
+            ));
+        }
+        if let Some(root) = section.writable_roots.first() {
+            return Err(refuse(format!(
+                "sandbox_workspace_write.writable_roots grants writes to {}",
+                root.as_str()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Update one field of `$KEKE_HOME/config.toml`, so a switch a person makes at
@@ -719,7 +804,82 @@ mod tests {
         let config = Config::from_layers(home(), &[]).expect("merges");
         assert_eq!(config.model.provider, DEFAULT_PROVIDER);
         assert_eq!(config.approval_policy, ApprovalPolicy::OnRequest);
-        assert_eq!(config.sandbox_mode, SandboxMode::WorkspaceWrite);
+        assert_eq!(config.sandbox, SandboxPolicy::default());
+        assert_eq!(config.sandbox.mode, SandboxMode::WorkspaceWrite);
+        assert!(!config.sandbox.network_access);
+    }
+
+    fn project(text: &str) -> ConfigLayer {
+        ConfigLayer::parse(
+            LayerSource::Project(std::path::PathBuf::from(".keke/config.toml")),
+            text,
+        )
+        .expect("parses")
+    }
+
+    /// `git clone` must not be enough to switch the sandbox off: a repository
+    /// that could would be confined only by its own goodwill.
+    #[test]
+    fn a_repository_cannot_loosen_the_sandbox() {
+        for text in [
+            "sandbox_mode = \"danger_full_access\"\n",
+            "[sandbox_workspace_write]\nnetwork_access = true\n",
+            &format!("[sandbox_workspace_write]\nwritable_roots = [\"{ROOT}\"]\n"),
+        ] {
+            let error = Config::from_layers(home(), &[project(text)])
+                .expect_err(&format!("a project widened the sandbox with {text:?}"));
+            assert!(
+                error.to_string().contains("may only tighten"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repository_may_tighten_the_sandbox() {
+        let config = Config::from_layers(home(), &[project("sandbox_mode = \"read_only\"\n")])
+            .expect("tightening is allowed");
+        assert_eq!(config.sandbox.mode, SandboxMode::ReadOnly);
+    }
+
+    /// What the person granted in their own layer, a repository may restate
+    /// without it counting as a widening.
+    #[test]
+    fn a_repository_may_restate_what_the_person_granted() {
+        let layers = vec![
+            layer(
+                "user",
+                "sandbox_mode = \"danger_full_access\"\n[sandbox_workspace_write]\nnetwork_access = true\n",
+            ),
+            project(
+                "sandbox_mode = \"workspace_write\"\n[sandbox_workspace_write]\nnetwork_access = true\n",
+            ),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.sandbox.mode, SandboxMode::WorkspaceWrite);
+        assert!(config.sandbox.network_access);
+    }
+
+    #[test]
+    fn writable_roots_accumulate_across_the_persons_layers() {
+        let layers = vec![
+            layer(
+                "managed",
+                &format!("[sandbox_workspace_write]\nwritable_roots = [\"{ROOT}/a\"]\n"),
+            ),
+            layer(
+                "user",
+                &format!("[sandbox_workspace_write]\nwritable_roots = [\"{ROOT}/b\"]\n"),
+            ),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        let roots: Vec<&str> = config
+            .sandbox
+            .writable_roots
+            .iter()
+            .map(AbsPath::as_str)
+            .collect();
+        assert_eq!(roots, [format!("{ROOT}/a"), format!("{ROOT}/b")]);
     }
 
     #[test]
