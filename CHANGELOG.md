@@ -6,23 +6,161 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.29] - 2026-09-24
+
 ### Added
-- `keke mcp add|list|get|remove`, for configuring MCP servers without authoring
-  a plugin — including remote ones:
-  `keke mcp add --transport http vercel https://mcp.vercel.com`.
-- Remote MCP transports: streamable HTTP and the older HTTP+SSE.
-- OAuth for remote MCP servers: `keke mcp login <name>` discovers the
-  authorization server (RFC 9728), registers a client (RFC 7591), and completes
-  a PKCE flow in the browser; tokens refresh on expiry and on a 401. `keke mcp
-  add` offers to sign in as soon as a remote server is configured.
-- `/mcp` lists the servers, what each is reached by, and which need signing in;
-  `/mcp login <name>` runs the flow from inside the interface.
-- `keke-oauth`, holding PKCE and the loopback redirect once instead of once per
-  vendor auth crate.
-- `$KEKE_HOME`, `~/.claude`, `.keke/`, and `.claude/` are read for `commands/`,
-  `skills/`, and `.mcp.json`, so a slash command is a markdown file dropped into
-  a directory. What the project directory contributes is held back until
-  `keke plugin trust workspace`.
+- OS-enforced command sandboxing on macOS (Seatbelt) and Linux (Landlock and
+  seccomp), with explicit failure when the selected mode cannot be enforced.
+- `bash_unsandboxed`, which lets a person approve a command outside the sandbox
+  after reviewing its justification.
+- Interactive session picker.
+
+### Changed
+- Background tasks run in the command sandbox too; read-only mode also refuses
+  tools that would write outside it.
+- Sandbox settings are documented, and repository configuration may tighten but
+  not loosen the active sandbox.
+- Agent-message wrapping now follows terminal resizes correctly.
+
+### Fixed
+- Sandbox metadata stays read-only, and missing workspace metadata is reported.
+- Session cleanup, startup rendering, and sandbox CI workflow.
+
+## [0.1.28] - 2026-09-22
+
+### Added
+- Independently visible command transcript entries.
+- Per-provider-route model preferences and in-place provider switching in a
+  fresh session.
+- User messages are tinted to suit the terminal theme.
+
+### Fixed
+- Session cleanup checks only the session being closed; startup draws its first
+  frame before measuring the banner's git diff.
+
+## [0.1.27] - 2026-09-17
+
+### Added
+- Guards deny access to credential files and `.env` files, while allowing
+  environment file templates.
+
+### Changed
+- Tool writes are contained to the workspace without restricting reads.
+
+## [0.1.26] - 2026-09-16
+
+### Fixed
+- Project plugins are contained within their package root; other plugin scopes
+  retain their existing behavior.
+
+## [0.1.25] - 2026-09-15
+
+### Added
+- Guardian review: a model-backed approval reviewer.
+
+## [0.1.24] - 2026-09-12
+
+### Changed
+- Subagent collection is bounded and returns the first completed result.
+
+## [0.1.23] - 2026-09-12
+
+### Added
+- Startup prefers cached model catalogs; plan files live under keke home.
+
+### Fixed
+- Terminal cleanup on TUI input and exit.
+
+## [0.1.22] - 2026-09-11
+
+### Added
+- Initial and early stream-read provider failures are retried.
+
+### Fixed
+- Turn state resets for new sessions, duplicate failed-turn updates are avoided,
+  and transcript rendering is improved.
+
+## [0.1.21] - 2026-09-09
+
+### Added
+- Word-based cursor movement and atomic multi-file patching with the ApplyPatch
+  tool.
+
+## [0.1.20] - 2026-09-07
+
+### Fixed
+- ACP tool-call descriptions now match the shape expected by clients.
+
+## [0.1.19] - 2026-09-07
+
+### Added
+- Startup banner reports startup duration and tool/skill counts; configurable
+  persona instructions.
+
+## [0.1.18] - 2026-09-05
+
+### Fixed
+- Plugins from another harness's home directory are no longer auto-trusted.
+
+## [0.1.17] - 2026-09-03
+
+### Added
+- Model-scheduled standing prompts and opt-in startup checkpoint tracing.
+- Lazily opened, bounded per-session checkpoint indexes for git snapshots.
+
+## [0.1.16] - 2026-09-01
+
+### Added
+- `/loop` repeats a prompt on an interval; background shell commands run as
+  managed tasks.
+- Hosted web search for Codex and Grok, with configurable access and session
+  logging.
+- `/export` writes transcript cells as Markdown.
+- `/fast` selects a Codex service tier and can be changed mid-conversation.
+
+### Fixed
+- Rewind, transcript grouping, slash-command ordering, and empty-session cleanup.
+
+## [0.1.15] - 2026-08-31
+
+### Added
+- Skills are available as slash commands, with deployment-level controls.
+- Double-Escape rewind snapshots the working tree and lets a person choose what
+  to restore.
+
+## [0.1.14] - 2026-08-30
+
+### Added
+- MCP server enable/disable controls.
+
+### Changed
+- Architecture documentation now includes the crate dependency tiers.
+
+## [0.1.13] - 2026-08-30
+
+### Added
+- Exact-match text replacement via the edit tool; tool-call output is easier to
+  inspect and resume commands are printed after a session exits.
+
+## [0.1.12] - 2026-08-29
+
+### Added
+- Plan mode across the core, ACP, and TUI, including plan review and approval.
+- OpenRouter request attribution and keyed gateway presets.
+
+### Changed
+- Session storage and TUI command implementations were reorganized; crates use
+  short names.
+
+## [0.1.11] - 2026-08-28
+
+### Added
+- Remote MCP transports (streamable HTTP and HTTP+SSE) with OAuth login.
+- Windows ARM64 release support.
+- Session summaries and richer TUI status, picker, and banner.
+
+### Fixed
+- Session resume details and startup banner behavior.
 
 ## [0.1.10] - 2026-08-27
 
