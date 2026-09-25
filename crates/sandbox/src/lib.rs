@@ -26,13 +26,16 @@
 //! away.
 //!
 //! Inside a writable root, the metadata that could hand a command more than
-//! the sandbox gives it stays read-only, as codex keeps it: `.git` (a hook
-//! written there runs unconfined at the next commit), `.keke` (the project's
-//! own configuration), and `.agents`. Direct Git staging and commits receive
-//! a narrow `.git` write grant while hooks and Git configuration stay
-//! protected. Seatbelt enforces those exceptions. Landlock cannot carve an
-//! exception out of a grant, so on Linux those directories are as writable as
-//! the rest of the workspace.
+//! the sandbox gives it stays read-only: `.keke` (the project's own
+//! configuration), `.agents`, and the parts of the workspace's `.git` that
+//! Git executes or obeys — `hooks`, `config`, `info`, and `modules` (a
+//! submodule's own hooks and config). A hook or a `core.hooksPath` written
+//! there would run unconfined at the person's next commit. The rest of the
+//! workspace's `.git` is writable, as Claude Code's sandbox leaves it, so
+//! `git add` and `git commit` are ordinary commands rather than escapes. A
+//! `.git` in any other writable root stays read-only whole. Seatbelt enforces
+//! those exceptions. Landlock cannot carve an exception out of a grant, so on
+//! Linux those directories are as writable as the rest of the workspace.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -178,32 +181,6 @@ impl Sandbox {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.command_with_metadata(program, args, workspace, false)
-    }
-
-    /// Run a direct Git operation with repository metadata writable while
-    /// preserving the workspace and network sandbox. Callers must restrict
-    /// the subcommand and disable hooks; arbitrary shell text is not safe here.
-    #[must_use]
-    pub fn git_command<I, S>(&self, args: I, workspace: &AbsPath) -> Command
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        self.command_with_metadata("git", args, workspace, true)
-    }
-
-    fn command_with_metadata<I, S>(
-        &self,
-        program: &str,
-        args: I,
-        workspace: &AbsPath,
-        git_metadata: bool,
-    ) -> Command
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
         let mut command = match &self.launcher {
             Launcher::Unconfined => {
                 let mut command = Command::new(program);
@@ -212,7 +189,7 @@ impl Sandbox {
             }
             #[cfg(target_os = "macos")]
             Launcher::Seatbelt => seatbelt::command(
-                &self.writable_roots_with_git(workspace, git_metadata),
+                &self.writable_roots(workspace),
                 self.network(),
                 program,
                 args,
@@ -226,7 +203,7 @@ impl Sandbox {
                 }
                 // Landlock cannot express the protected subpaths; see the
                 // module documentation.
-                for root in self.writable_roots_with_git(workspace, git_metadata) {
+                for root in self.writable_roots(workspace) {
                     command.arg("--write").arg(root.path);
                 }
                 command.arg("--").arg(program).args(args);
@@ -254,17 +231,7 @@ impl Sandbox {
     /// nothing. A root that does not exist is dropped rather than failing the
     /// command — there is nothing under it to write to.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[cfg(test)]
     fn writable_roots(&self, workspace: &AbsPath) -> Vec<WritableRoot> {
-        self.writable_roots_with_git(workspace, false)
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn writable_roots_with_git(
-        &self,
-        workspace: &AbsPath,
-        git_metadata: bool,
-    ) -> Vec<WritableRoot> {
         if self.policy.mode != SandboxMode::WorkspaceWrite {
             return Vec::new();
         }
@@ -281,11 +248,9 @@ impl Sandbox {
                 .iter()
                 .map(|root| root.as_path().to_path_buf()),
         );
-        let gitdirs = if git_metadata {
-            git_metadata_dirs(workspace.as_path())
-        } else {
-            Vec::new()
-        };
+        // A worktree's git directory lives outside the workspace, so it is a
+        // root of its own rather than something the workspace grant covers.
+        let gitdirs = git_metadata_dirs(workspace.as_path());
         wanted.extend(gitdirs.iter().cloned());
         let mut roots: Vec<WritableRoot> = Vec::new();
         for (index, path) in wanted.into_iter().enumerate() {
@@ -293,12 +258,10 @@ impl Sandbox {
                 && !roots.iter().any(|root| root.path == real)
             {
                 let mut read_only = protected_beneath(&real, index == 0);
-                if git_metadata {
-                    read_only.retain(|path| !gitdirs.contains(path));
-                    for metadata in &gitdirs {
-                        if metadata.starts_with(&real) {
-                            read_only.extend(protected_git_internals(metadata));
-                        }
+                read_only.retain(|path| !gitdirs.contains(path));
+                for metadata in &gitdirs {
+                    if metadata.starts_with(&real) {
+                        read_only.extend(protected_git_internals(metadata));
                     }
                 }
                 roots.push(WritableRoot {
@@ -311,6 +274,11 @@ impl Sandbox {
     }
 }
 
+/// The workspace's own git directories, which commands may write.
+///
+/// A `.git` file is followed only when the directory it names points back at
+/// it, as a real worktree's does: otherwise a repository could name any
+/// directory on disk and have it made writable.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn git_metadata_dirs(workspace: &Path) -> Vec<PathBuf> {
     let dot_git = workspace.join(".git");
@@ -344,9 +312,11 @@ fn git_metadata_dirs(workspace: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// What Git runs or obeys inside a git directory. Protected even before it
+/// exists, so a command cannot be the one to create a hook.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn protected_git_internals(gitdir: &Path) -> Vec<PathBuf> {
-    ["hooks", "config", "config.worktree", "info"]
+    ["hooks", "config", "config.worktree", "info", "modules"]
         .into_iter()
         .map(|name| gitdir.join(name))
         .collect()
@@ -547,7 +517,7 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn scoped_git_writes_keep_hooks_and_configuration_protected() {
+    fn a_repository_is_writable_except_what_git_executes() {
         let (_dir, root) = workspace();
         let gitdir = root.as_path().join(".git");
         std::fs::create_dir(&gitdir).expect("gitdir");
@@ -556,17 +526,15 @@ mod tests {
             policy: SandboxPolicy::default(),
             launcher: Launcher::Unconfined,
         };
-        let ordinary = sandbox.writable_roots(&root);
-        assert!(ordinary[0].read_only.contains(&gitdir));
-        let scoped = sandbox.writable_roots_with_git(&root, true);
-        assert!(!scoped[0].read_only.contains(&gitdir));
-        for name in ["hooks", "config", "config.worktree", "info"] {
+        let roots = sandbox.writable_roots(&root);
+        assert!(!roots[0].read_only.contains(&gitdir));
+        for name in ["hooks", "config", "config.worktree", "info", "modules"] {
             assert!(
-                scoped[0].read_only.contains(&gitdir.join(name)),
+                roots[0].read_only.contains(&gitdir.join(name)),
                 "{name} should stay protected"
             );
         }
-        assert!(scoped[0].read_only.contains(&root.as_path().join(".keke")));
+        assert!(roots[0].read_only.contains(&root.as_path().join(".keke")));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

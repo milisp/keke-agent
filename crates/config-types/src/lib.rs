@@ -26,7 +26,7 @@ pub enum ApprovalPolicy {
     /// such as Bash under an enforced sandbox when configured to auto-approve.
     #[default]
     OnRequest,
-    /// Accept file edits and scoped Git staging/commits without ordinary approval.
+    /// Accept file edits without ordinary approval.
     AcceptEdits,
     /// Let an automatic reviewer decide ordinary approval requests.
     Auto,

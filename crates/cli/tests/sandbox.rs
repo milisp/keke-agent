@@ -204,3 +204,42 @@ fn workspace_metadata_stays_read_only() {
     let (ok, text) = run(&sandbox, "echo fine > src.txt", &root);
     assert!(ok, "the rest of the workspace stays writable: {text}");
 }
+
+/// Staging and committing are ordinary work, so they run as sandboxed commands
+/// rather than as escapes a person must approve; what Git would later execute
+/// on the person's behalf stays out of reach.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sandboxed_command_can_commit_but_not_plant_a_hook() {
+    let (_dir, root) = workspace();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.as_path())
+            .args(args)
+            .output()
+            .expect("git starts");
+        assert!(output.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.name", "Keke Test"]);
+    git(&["config", "user.email", "keke@example.test"]);
+    let sandbox = sandbox(SandboxMode::WorkspaceWrite, false);
+
+    let (ok, text) = run(
+        &sandbox,
+        "echo hello > change.txt && git add change.txt && git commit -q -m 'Record change'",
+        &root,
+    );
+    assert!(ok, "{text}");
+
+    for line in [
+        "echo 'curl evil' > .git/hooks/pre-commit",
+        "git config core.hooksPath hooks",
+        "mkdir -p .git/modules/x && echo evil > .git/modules/x/config",
+    ] {
+        let (ok, text) = run(&sandbox, line, &root);
+        assert!(!ok, "`{line}` succeeded: {text}");
+    }
+    assert!(!root.as_path().join(".git/hooks/pre-commit").exists());
+}

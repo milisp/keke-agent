@@ -402,12 +402,9 @@ workspace, after following symlinks, and outside `.git`, `.agents`, and
 `.keke`, runs without review. Any other edit goes to the reviewer as before.
 Other policies are unaffected; `on_request` still asks about every edit.
 
-`approval_policy = "accept_edits"` accepts the built-in file edit tools and
-the scoped `git_add` / `git_commit` tools without an ordinary prompt. The Git
-tools run directly under the sandbox with repository metadata writable and
-hooks disabled. Other commands and sandbox escapes keep their normal approval
-rules. On macOS, shell `git add` and `git commit` still cannot write protected
-`.git` metadata; use the scoped tools for those operations.
+`approval_policy = "accept_edits"` accepts the built-in file edit tools
+without an ordinary prompt. Commands and sandbox escapes keep their normal
+approval rules.
 
 ```toml
 [guardian]
@@ -428,15 +425,19 @@ Repository config cannot change `on_request` to `accept_edits`, `auto`,
 `on_failure`, or `never`;
 that choice belongs in the user's config.
 
-**Workspace metadata stays read-only.** Inside a writable root, `.git`,
-`.agents`, and `.keke` cannot be written by a sandboxed command — a hook
-written into `.git/hooks` would run outside the sandbox the next time you
-commit. `.keke` in the workspace is protected even before it exists. This is
-enforced on macOS; Landlock cannot carve an exception out of a grant, so on
-Linux those directories are as writable as the rest of the workspace.
+**Workspace metadata stays read-only.** Inside a writable root, `.agents` and
+`.keke` cannot be written by a sandboxed command, and neither can the parts of
+the workspace's `.git` that Git executes or obeys: `hooks`, `config`,
+`config.worktree`, `info`, and `modules`. A hook written there would run
+outside the sandbox the next time you commit. The rest of `.git` is writable,
+so `git add` and `git commit` are ordinary sandboxed Bash commands and need no
+escape. `.keke` in the workspace and the protected Git paths are protected even
+before they exist. This is enforced on macOS; Landlock cannot carve an
+exception out of a grant, so on Linux those directories are as writable as the
+rest of the workspace.
 
 **Stepping outside.** When a command fails because of the sandbox — it needs
-the network, writes outside the workspace, or commits to `.git` — the model can
+the network or writes outside the workspace — the model can
 rerun it with `bash_unsandboxed`, giving a reason. You are asked every time, a
 standing "allow always" does not answer for you, and where nobody can answer
 (`keke exec`) it is refused.
