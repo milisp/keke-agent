@@ -1,0 +1,62 @@
+name: sandbox
+
+# The macOS and Windows halves of the sandbox cost a slow runner each, and what
+# they exercise depends only on these paths — `crates/cli/tests/sandbox.rs`
+# uses nothing beyond `keke-sandbox`, `keke-config-types`, and `keke-paths`.
+# The Linux half already runs in ci.yml as part of `cargo test --workspace`.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/sandbox/**"
+      - "crates/config-types/**"
+      - "crates/paths/**"
+      - "crates/cli/tests/sandbox.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/sandbox.yml"
+  pull_request:
+    paths:
+      - "crates/sandbox/**"
+      - "crates/config-types/**"
+      - "crates/paths/**"
+      - "crates/cli/tests/sandbox.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/sandbox.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: sandbox-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The Seatbelt half of the sandbox exists only on macOS, so only a macOS
+  # runner can say whether it confines anything.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Sandbox
+        run: |
+          cargo test -p keke-sandbox
+          cargo test -p keke-cli --test sandbox
+
+  # Windows has no sandbox; what must hold there is that the sandbox says so
+  # rather than posing as one that works.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Sandbox
+        run: cargo test -p keke-sandbox
