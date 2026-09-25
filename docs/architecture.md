@@ -72,6 +72,7 @@ graph TD
         keke-wire
         keke-catalog
         keke-oauth
+        keke-sandbox
     end
 
     subgraph Tier0["Tier 0 - Contract Crates"]
@@ -118,6 +119,26 @@ issuer. It sits here rather than in a vendor auth crate because an MCP server
 behind OAuth is not a vendor and cannot depend on one; before it existed, that
 code was in `keke-auth-codex` and `keke-auth-grok` twice, byte-identical apart
 from which config struct it read.
+
+`keke-sandbox` confines the commands a model runs, and the confinement is the
+kernel's, not keke's: Seatbelt on macOS, Landlock and seccomp on Linux. A
+shell line can reach anything the process can, so inspecting its text — the
+credential guard in `keke-tools` does, and says so — stops accidents and
+nothing else. Holding a `Sandbox` means its mode was checked to be enforceable
+when it was built; a machine that cannot enforce it fails the session with a
+reason instead of running commands bare, because a setting that claims a
+boundary it does not enforce is the reason nobody looked.
+
+On Linux both restrictions have to be installed in the child between `fork`
+and `exec`, which from a multi-threaded process means `unsafe`. keke instead
+re-executes its own binary as a single-threaded launcher (`__keke-sandbox`)
+that confines itself through safe wrappers and then execs the command, so the
+workspace-wide `unsafe_code = "deny"` holds. `main` answers that argument
+before a runtime starts a thread.
+
+The sandbox is a setting a repository could otherwise switch off, so the
+project config layer may only tighten it — the same reasoning as the plugin
+trust gate below: `git clone` is not consent.
 
 ### Tier 1 — engine
 

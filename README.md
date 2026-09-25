@@ -65,8 +65,11 @@ all other settings are documented in [`docs/config.md`](docs/config.md).
 
 ## Safety
 
-- **Sandboxing & approvals** — `approval_policy` and `sandbox_mode` are
-  configurable to match how you run it ([`docs/config.md`](docs/config.md)).
+- **Sandboxing & approvals** — shell commands run under an OS sandbox
+  (Seatbelt on macOS, Landlock + seccomp on Linux): by default they may write
+  only inside the workspace and cannot reach the network. A repository's own
+  config can tighten that but never loosen it. See
+  [`docs/config.md`](docs/config.md#sandbox).
 - **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
   execute on `git clone` alone; a person must approve them, keyed to their
   exact contents, not their path. There's no flag to turn that gate off.

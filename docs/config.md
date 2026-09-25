@@ -275,7 +275,8 @@ These settings live at the top level of `config.toml`:
 # Approval policy: "on_request" (default), "on_failure", "never"
 approval_policy = "on_request"
 
-# Sandbox mode: "workspace_write" (default), "read_only", "danger_full_access"
+# Sandbox mode: "workspace_write" (default), "read_only", "danger_full_access".
+# See "Sandbox" below for what each one enforces.
 sandbox_mode = "workspace_write"
 
 # Reasoning effort: "low", "medium", "high", "xhigh", "max" (default: "medium")
@@ -356,6 +357,47 @@ hook_millis = 30000       # Hook timeout (100-3600000)
 mcp_startup_millis = 15000  # MCP server startup timeout
 mcp_call_millis = 120000    # Single MCP tools/call timeout
 ```
+
+## Sandbox
+
+Every shell command the model runs — `bash`, in the foreground or the
+background — runs under a sandbox the operating system enforces: Seatbelt
+(`/usr/bin/sandbox-exec`) on macOS, Landlock plus seccomp on Linux.
+
+| Mode | Reads | Writes | Network |
+|---|---|---|---|
+| `workspace_write` (default) | anywhere | the workspace, the temporary directory, `/tmp`, and `writable_roots` | off unless `network_access = true` |
+| `read_only` | anywhere | nowhere — the `write_file`, `edit`, and `apply_patch` tools are refused too | off |
+| `danger_full_access` | anywhere | anywhere | on |
+
+```toml
+sandbox_mode = "workspace_write"
+
+[sandbox_workspace_write]
+network_access = false          # true lets commands reach the network
+writable_roots = ["/Users/me/.cache/sccache"]   # absolute paths, writable too
+```
+
+A machine that cannot enforce the configured mode refuses to start a session
+and says why, rather than running commands unconfined: Linux needs 5.13 or
+later with Landlock enabled, and Windows has no sandbox yet. Set
+`sandbox_mode = "danger_full_access"` in `$KEKE_HOME/config.toml` to run
+commands unconfined there.
+
+Package managers usually want both the network and a cache under your home
+directory, so with the defaults `cargo add` or `npm install` fail inside the
+sandbox. Grant what they need — `network_access = true` and the cache
+directory in `writable_roots` — or run them yourself.
+
+A workspace is writable all the way down, `.git/hooks` included. A hook written
+there runs outside the sandbox the next time you commit, so review changes
+under `.git/` the way you would review any other edit.
+
+**A repository cannot loosen the sandbox.** `.keke/config.toml` arrives with
+`git clone`, so a project layer may tighten `sandbox_mode` or turn
+`network_access` off, but asking for a looser mode, network access, or extra
+`writable_roots` is an error naming the file. Put those in
+`$KEKE_HOME/config.toml` to grant them.
 
 ## Config Layers
 
