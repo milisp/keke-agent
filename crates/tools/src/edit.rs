@@ -1,4 +1,6 @@
+use keke_paths::AbsPath;
 use keke_protocol::ContentBlock;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
 use keke_tool::Tool;
 use keke_tool::ToolCallContext;
@@ -68,6 +70,14 @@ impl Tool for Edit {
 
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities::of_kind(ToolKind::Edit)
+    }
+
+    fn call_approval(&self, workspace_root: &AbsPath, args: &Self::Args) -> ApprovalRequirement {
+        support::write_approval(
+            workspace_root,
+            [args.path.as_str()],
+            self.capabilities().approval,
+        )
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {

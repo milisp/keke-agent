@@ -73,8 +73,10 @@ pub enum SandboxError {
 /// Workspace metadata a command may read but not write, beneath every
 /// writable root: codex's `.git` / `.agents` / `.codex`, with keke's own
 /// directory in place of codex's.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
+///
+/// Public so a tool writing from keke's own process, where no sandbox reaches,
+/// can hold the same line when deciding whether a write is confined.
+pub const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
 
 /// Builds the processes a model's commands run in.
 ///

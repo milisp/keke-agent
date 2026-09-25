@@ -2,6 +2,7 @@
 
 use keke_paths::AbsPath;
 use keke_paths::RelPath;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ToolCallContext;
 use keke_tool::ToolError;
 use std::path::Component;
@@ -43,25 +44,97 @@ pub(crate) fn resolve(
     path: &str,
     access: Access,
 ) -> Result<AbsPath, ToolError> {
+    resolve_in(&ctx.workspace_root, path, access)
+}
+
+fn resolve_in(root: &AbsPath, path: &str, access: Access) -> Result<AbsPath, ToolError> {
     let raw = Path::new(path);
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
         let rel = RelPath::new(raw)
             .map_err(|error| ToolError::custom("bad_path", format!("{path}: {error}")))?;
-        ctx.workspace_root.as_path().join(rel.as_path())
+        root.as_path().join(rel.as_path())
     };
 
     let normalized = AbsPath::new(lexically_normalize(&joined))
         .map_err(|error| ToolError::custom("bad_path", format!("{path}: {error}")))?;
 
-    if access == Access::Write && !normalized.is_contained_in(&ctx.workspace_root) {
+    if access == Access::Write && !normalized.is_contained_in(root) {
         return Err(ToolError::denied(format!(
-            "{path} resolves outside the workspace root {}",
-            ctx.workspace_root
+            "{path} resolves outside the workspace root {root}"
         )));
     }
     Ok(normalized)
+}
+
+/// The approval a write to every one of `paths` needs: [`Confined`] when each
+/// stays inside the workspace and out of its protected metadata, otherwise
+/// whatever `fallback` says.
+///
+/// Stricter than [`resolve`], which is lexical: here a symlink inside the
+/// workspace that points out of it counts as leaving, because skipping a
+/// reviewer is only sound if the write really lands where it appears to. And
+/// `.git`, `.agents`, `.keke` are excluded for the reason the sandbox keeps
+/// them read-only — a hook written there runs later, unconfined.
+///
+/// [`Confined`]: ApprovalRequirement::Confined
+pub(crate) fn write_approval<'a>(
+    root: &AbsPath,
+    paths: impl IntoIterator<Item = &'a str>,
+    fallback: ApprovalRequirement,
+) -> ApprovalRequirement {
+    // Only an ordinary answer may be relaxed; a tool that must always ask a
+    // person keeps asking however tidy its paths are.
+    if fallback != ApprovalRequirement::ByPolicy {
+        return fallback;
+    }
+    let Ok(real_root) = root.as_path().canonicalize() else {
+        return fallback;
+    };
+    let mut any = false;
+    for path in paths {
+        any = true;
+        let Ok(resolved) = resolve_in(root, path, Access::Write) else {
+            return fallback;
+        };
+        let Ok(inside) = resolved.strip_root(root) else {
+            return fallback;
+        };
+        let protected = Path::new(inside.as_str()).components().any(|component| {
+            keke_sandbox::PROTECTED_NAMES
+                .iter()
+                .any(|name| component.as_os_str() == *name)
+        });
+        if protected || !really_inside(&real_root, resolved.as_path()) {
+            return fallback;
+        }
+    }
+    if any {
+        ApprovalRequirement::Confined
+    } else {
+        fallback
+    }
+}
+
+/// Whether `path` lands inside `real_root` once symlinks are followed.
+///
+/// A path that does not exist yet is judged by its nearest existing ancestor,
+/// since that is what the write will create beneath. A dangling symlink is
+/// judged as leaving: the write would follow it somewhere this cannot see.
+fn really_inside(real_root: &Path, path: &Path) -> bool {
+    let mut probe = path;
+    loop {
+        if probe.symlink_metadata().is_ok() {
+            return probe
+                .canonicalize()
+                .is_ok_and(|real| real.starts_with(real_root));
+        }
+        match probe.parent() {
+            Some(parent) => probe = parent,
+            None => return false,
+        }
+    }
 }
 
 /// How a path reads back to the model: relative to the root when it is inside.

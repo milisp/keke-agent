@@ -79,6 +79,14 @@ pub enum ApprovalRequirement {
     /// The tool's enforced boundary is sufficient for this call, so ordinary
     /// policy approval is skipped. Guards still run before the tool body.
     AutoApproved,
+    /// This call writes only inside the workspace, and not into the metadata
+    /// the sandbox keeps read-only. Under Auto mode that is the whole question
+    /// the automatic reviewer would have been asked, so it is not asked; every
+    /// other policy treats this as [`Self::ByPolicy`], since a person who
+    /// chose to review edits wants to see the in-workspace ones too.
+    ///
+    /// Only a per-call answer can say this — see [`crate::Tool::call_approval`].
+    Confined,
     /// A person is asked whatever the policy says, and a standing "allow
     /// always" does not answer for them either.
     ///

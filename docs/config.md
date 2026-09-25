@@ -395,6 +395,13 @@ with `[guardian] provider` and `model`. A failed or unclear review denies the
 call. Sandbox escapes still require a person's answer. `never` skips ordinary
 approval entirely; it is not Auto mode.
 
+In Auto mode, `write_file`, `edit`, and `apply_patch` are decided by the paths
+they write rather than by the reviewer: a call whose every path — for a patch,
+every added, deleted, updated, and moved-to file — resolves inside the
+workspace, after following symlinks, and outside `.git`, `.agents`, and
+`.keke`, runs without review. Any other edit goes to the reviewer as before.
+Other policies are unaffected; `on_request` still asks about every edit.
+
 `approval_policy = "accept_edits"` accepts the built-in file edit tools and
 the scoped `git_add` / `git_commit` tools without an ordinary prompt. The Git
 tools run directly under the sandbox with repository metadata writable and

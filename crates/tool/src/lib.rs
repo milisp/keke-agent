@@ -76,6 +76,21 @@ pub trait Tool: Send + Sync + 'static {
         ToolCapabilities::default()
     }
 
+    /// The approval this particular call needs, decided from its arguments.
+    ///
+    /// Defaults to [`Tool::capabilities`]'s answer. A tool overrides it when
+    /// what a call touches is readable from the arguments — the paths a patch
+    /// writes — so a reviewer is not asked to judge from raw text what the tool
+    /// can establish exactly. Arguments that do not decode get the static
+    /// answer; the call then fails before running anyway.
+    fn call_approval(
+        &self,
+        _workspace_root: &keke_paths::AbsPath,
+        _args: &Self::Args,
+    ) -> ApprovalRequirement {
+        self.capabilities().approval
+    }
+
     /// Whether to advertise this tool for the given turn.
     fn should_list(&self, _ctx: &ListToolsContext) -> bool {
         true

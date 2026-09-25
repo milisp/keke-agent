@@ -8,10 +8,13 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use keke_paths::AbsPath;
 use keke_protocol::ContentBlock;
 use schemars::schema_for;
+use serde::Deserialize;
 use serde_json::Value;
 
+use crate::ApprovalRequirement;
 use crate::ListToolsContext;
 use crate::Tool;
 use crate::ToolCallContext;
@@ -43,6 +46,9 @@ pub trait ToolDyn: Send + Sync + 'static {
     fn id(&self) -> ToolId;
     fn description(&self, ctx: &ListToolsContext) -> ToolDescription;
     fn capabilities(&self) -> ToolCapabilities;
+    /// See [`Tool::call_approval`]; `args` is decoded here the same way
+    /// [`ToolDyn::call`] decodes it.
+    fn call_approval(&self, workspace_root: &AbsPath, args: &Value) -> ApprovalRequirement;
     fn should_list(&self, ctx: &ListToolsContext) -> bool;
 
     /// JSON Schema for the tool's arguments, derived from its `Args` type.
@@ -67,6 +73,13 @@ impl<T: Tool> ToolDyn for T {
 
     fn capabilities(&self) -> ToolCapabilities {
         Tool::capabilities(self)
+    }
+
+    fn call_approval(&self, workspace_root: &AbsPath, args: &Value) -> ApprovalRequirement {
+        match T::Args::deserialize(args) {
+            Ok(decoded) => Tool::call_approval(self, workspace_root, &decoded),
+            Err(_) => Tool::capabilities(self).approval,
+        }
     }
 
     fn should_list(&self, ctx: &ListToolsContext) -> bool {

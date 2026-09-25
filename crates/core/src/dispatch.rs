@@ -137,13 +137,16 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     // After the guards, so a guard's denial is already final and no answer here
     // can undo it, and before the body, so nothing runs unapproved.
     let mut approval_note = None;
-    let capabilities = tool.capabilities();
+    let mut capabilities = tool.capabilities();
+    capabilities.approval = tool.call_approval(workspace_root, &call.arguments);
     // A tool that exists to be decided is asked about every time. Remembering
     // "allow always" for one would answer every later call on a person's
     // behalf, which is the thing it said must not happen — a plan approved
     // once would then approve every plan after it, unasked.
-    let standing = capabilities.approval == ApprovalRequirement::ByPolicy
-        && memory.is_always_allowed(&call.name);
+    let standing = matches!(
+        capabilities.approval,
+        ApprovalRequirement::ByPolicy | ApprovalRequirement::Confined
+    ) && memory.is_always_allowed(&call.name);
     if let Some(reason) = approval_reason(policy, &capabilities)
         && !standing
     {

@@ -10,7 +10,9 @@
 //! files either lands whole or leaves the workspace untouched, so a run that
 //! fails halfway cannot leave a half-renamed module behind.
 
+use keke_paths::AbsPath;
 use keke_protocol::ContentBlock;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
 use keke_tool::Tool;
 use keke_tool::ToolCallContext;
@@ -118,6 +120,23 @@ impl Tool for ApplyPatch {
 
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities::of_kind(ToolKind::Edit)
+    }
+
+    /// Every path the patch names — added, deleted, updated, and each move's
+    /// destination — is what decides it. A patch that does not parse gets the
+    /// ordinary answer; it would be refused before writing anything anyway.
+    fn call_approval(&self, workspace_root: &AbsPath, args: &Self::Args) -> ApprovalRequirement {
+        let fallback = self.capabilities().approval;
+        let Ok(sections) = parse(&args.patch) else {
+            return fallback;
+        };
+        let paths = sections.iter().flat_map(|section| match section {
+            Section::Add { path, .. } | Section::Delete { path } => vec![path.as_str()],
+            Section::Update { path, move_to, .. } => std::iter::once(path.as_str())
+                .chain(move_to.as_deref())
+                .collect(),
+        });
+        support::write_approval(workspace_root, paths, fallback)
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
@@ -707,5 +726,94 @@ mod tests {
             hunks_of("*** Begin Patch\n*** Update File: a.txt\n@@\n-missing\n+b\n*** End Patch\n");
         let error = apply_hunks("something else\n", &hunks, "a.txt").expect_err("no match");
         assert_eq!(code(&error), "no_match");
+    }
+
+    fn approval_in(root: &std::path::Path, patch: &str) -> ApprovalRequirement {
+        let root = AbsPath::new(root).expect("absolute tempdir");
+        ApplyPatch.call_approval(
+            &root,
+            &ApplyPatchArgs {
+                patch: patch.to_string(),
+            },
+        )
+    }
+
+    /// Auto mode decides a patch by where it writes: inside the workspace it
+    /// needs no reviewer, and one path leaving is enough to ask again.
+    #[test]
+    fn a_patch_is_confined_only_when_every_path_stays_in_the_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("src")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), "a\n").expect("write");
+
+        let inside = "*** Begin Patch\n*** Add File: src/new.rs\n+x\n\
+                      *** Update File: src/lib.rs\n*** Move to: src/moved.rs\n@@\n-a\n+b\n\
+                      *** End Patch\n";
+        assert_eq!(
+            approval_in(dir.path(), inside),
+            ApprovalRequirement::Confined
+        );
+
+        let escaping_move = "*** Begin Patch\n*** Update File: src/lib.rs\n\
+                             *** Move to: ../elsewhere.rs\n@@\n-a\n+b\n*** End Patch\n";
+        assert_eq!(
+            approval_in(dir.path(), escaping_move),
+            ApprovalRequirement::ByPolicy
+        );
+    }
+
+    /// A hook written into `.git` runs later, outside any sandbox, so the
+    /// workspace's metadata is never "just an edit".
+    #[test]
+    fn a_patch_into_protected_metadata_is_not_confined() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for path in [
+            ".git/hooks/pre-commit",
+            ".keke/config.toml",
+            "sub/.git/config",
+        ] {
+            let patch = format!("*** Begin Patch\n*** Add File: {path}\n+x\n*** End Patch\n");
+            assert_eq!(
+                approval_in(dir.path(), &patch),
+                ApprovalRequirement::ByPolicy,
+                "{path}"
+            );
+        }
+    }
+
+    /// Containment is judged after symlinks, because that is where the write
+    /// actually lands.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_workspace_is_not_confined() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+        std::os::unix::fs::symlink(outside.path().join("gone"), dir.path().join("dangling"))
+            .expect("symlink");
+        for path in ["link/file.rs", "dangling"] {
+            let patch = format!("*** Begin Patch\n*** Add File: {path}\n+x\n*** End Patch\n");
+            assert_eq!(
+                approval_in(dir.path(), &patch),
+                ApprovalRequirement::ByPolicy,
+                "{path}"
+            );
+        }
+    }
+
+    /// Under `read_only` the edit tools ask a person every time; a tidy patch
+    /// must not talk its way out of that.
+    #[test]
+    fn a_tool_that_always_asks_is_not_relaxed_by_its_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = AbsPath::new(dir.path()).expect("absolute tempdir");
+        let patch = "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n";
+        let approval = crate::escalate::PersonDecides(ApplyPatch).call_approval(
+            &root,
+            &ApplyPatchArgs {
+                patch: patch.to_string(),
+            },
+        );
+        assert_eq!(approval, ApprovalRequirement::Always);
     }
 }

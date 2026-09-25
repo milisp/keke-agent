@@ -33,6 +33,13 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
     if capabilities.approval == ApprovalRequirement::AutoApproved {
         return None;
     }
+    // The tool has already established from the arguments that the call stays
+    // inside the workspace, which is all an automatic reviewer could judge
+    // from them — and a reviewer reading a raw patch denies what it cannot
+    // parse, so asking it would turn ordinary edits into refusals.
+    if policy == ApprovalPolicy::Auto && capabilities.approval == ApprovalRequirement::Confined {
+        return None;
+    }
     match policy {
         // Non-interactive by construction. A deployment that sets this has
         // accepted the consequences elsewhere — usually a sandbox.
@@ -161,6 +168,19 @@ mod tests {
         ] {
             assert!(approval_reason(policy, &sandboxed).is_none());
         }
+    }
+
+    /// Confinement answers for the automatic reviewer only: a person who
+    /// asked to review edits still sees the ones inside the workspace.
+    #[test]
+    fn a_confined_edit_skips_only_the_automatic_reviewer() {
+        let mut confined = capabilities(ToolKind::Edit);
+        confined.approval = ApprovalRequirement::Confined;
+        assert!(approval_reason(ApprovalPolicy::Auto, &confined).is_none());
+        assert!(approval_reason(ApprovalPolicy::OnRequest, &confined).is_some());
+
+        let unconfined = capabilities(ToolKind::Edit);
+        assert!(approval_reason(ApprovalPolicy::Auto, &unconfined).is_some());
     }
 
     #[test]
