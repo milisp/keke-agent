@@ -31,6 +31,13 @@ pub(crate) struct Cli {
     #[arg(long, global = true, env = "KEKE_REASONING_EFFORT", value_parser = parse_effort)]
     pub reasoning_effort: Option<keke_config_types::ReasoningEffort>,
 
+    /// How tightly commands are confined: `read_only`, `workspace_write`, or
+    /// `danger_full_access` (kebab-case works too). Overrides configuration. It
+    /// is the operator's own command line, so it may name any mode; an ACP
+    /// client may later narrow it, never widen it.
+    #[arg(long, global = true, env = "KEKE_SANDBOX", value_parser = parse_sandbox)]
+    pub sandbox: Option<keke_config_types::SandboxMode>,
+
     /// A persona for this run: who the agent is and how it should behave. It
     /// leads the system prompt, ahead of the project's own `AGENTS.md`, so a
     /// repository still has the last word on how it wants to be worked on.
@@ -41,6 +48,14 @@ pub(crate) struct Cli {
     /// to pass as `KEKE_INSTRUCTIONS`.
     #[arg(long, global = true, env = "KEKE_INSTRUCTIONS")]
     pub instructions: Option<String>,
+
+    /// Directory holding this agent's persistent memory, overriding the
+    /// `[memory] dir` configuration. A flag as well as a field because one
+    /// installation may drive several named agents, each with its own memory.
+    /// A relative path is taken against the current directory. Unset, and with
+    /// nothing configured, memory is off.
+    #[arg(long, global = true, env = "KEKE_MEMORY_DIR", value_name = "PATH")]
+    pub memory_dir: Option<PathBuf>,
 
     /// Start in plan mode: research and propose, editing nothing but the plan
     /// file, until the plan is approved. A startup flag rather than a
@@ -55,6 +70,15 @@ pub(crate) struct Cli {
 /// error names the flag instead of arriving as a vendor's rejection.
 fn parse_effort(raw: &str) -> Result<keke_config_types::ReasoningEffort, String> {
     keke_config_types::ReasoningEffort::parse(raw)
+}
+
+/// A mode this build does not know is refused rather than guessed at.
+fn parse_sandbox(raw: &str) -> Result<keke_config_types::SandboxMode, String> {
+    keke_config_types::SandboxMode::parse(raw).ok_or_else(|| {
+        format!(
+            "`{raw}` is not a sandbox mode; use read_only, workspace_write, or danger_full_access"
+        )
+    })
 }
 
 #[derive(Debug, Subcommand)]

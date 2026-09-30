@@ -14,6 +14,7 @@ keke-plugin-api = { workspace = true }
 keke-paths = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
+keke-sandbox = { workspace = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }

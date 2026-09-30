@@ -124,17 +124,21 @@ impl EditorSessions {
         &self,
         cwd: std::path::PathBuf,
         resume: Option<keke_core::ResumedSession>,
+        mcp_servers: Vec<keke_acp::ClientMcpServer>,
     ) -> Result<keke_acp::Opened> {
+        let mcp_servers = crate::client_mcp::resolve(mcp_servers, &cwd)?;
         let (approvals, requests) = keke_acp::approvals();
         // Resolved before the composition rather than after it: which route
         // this session talks to decides which tools it gets — a provider with
         // a web search contributes one — and the registry is frozen once
         // built.
         let route = self.active_route();
+        let mut settings: crate::compose::Settings<'_> = (&self.config).into();
+        settings.client_mcp = &mcp_servers;
         let composed = Composed::build(
             &self.config.home,
             &self.config.providers,
-            &(&self.config).into(),
+            &settings,
             Some(Arc::clone(&approvals)),
             // One switch per session, made here because this is where a
             // session is: an ACP client opens several, and they plan
@@ -166,7 +170,9 @@ impl EditorSessions {
         if let Some(resumed) = resume {
             builder = builder.resume(resumed.id, resumed.history);
         }
-        let mut opened = keke_acp::local(builder, approvals, requests).await?;
+        let mut opened =
+            keke_acp::local_sandboxed(builder, approvals, requests, Arc::clone(&composed.sandbox))
+                .await?;
         opened.history = history.unwrap_or_default();
         opened.models = self.models(&composed, &config.model.provider).await;
         // The same resolved list the TUI would complete against, so an ACP
@@ -181,10 +187,11 @@ impl keke_acp::SessionFactory for EditorSessions {
     fn open(
         &self,
         cwd: std::path::PathBuf,
+        mcp_servers: Vec<keke_acp::ClientMcpServer>,
     ) -> keke_acp::ConversationFuture<'_, Result<keke_acp::Opened, keke_acp::ConversationError>>
     {
         Box::pin(async move {
-            self.start(self.rooted_at(cwd), None)
+            self.start(self.rooted_at(cwd), None, mcp_servers)
                 .await
                 .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))
         })
@@ -388,10 +395,11 @@ impl keke_acp::SessionFactory for EditorSessions {
         &self,
         id: String,
         cwd: std::path::PathBuf,
+        mcp_servers: Vec<keke_acp::ClientMcpServer>,
     ) -> keke_acp::ConversationFuture<'_, Result<keke_acp::Opened, keke_acp::ConversationError>>
     {
         Box::pin(async move {
-            self.reopen(id, cwd)
+            self.reopen(id, cwd, mcp_servers)
                 .await
                 .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))
         })
@@ -400,7 +408,12 @@ impl keke_acp::SessionFactory for EditorSessions {
 
 impl EditorSessions {
     /// Resolve what the client sent back to one session, and continue it.
-    async fn reopen(&self, id: String, cwd: std::path::PathBuf) -> Result<keke_acp::Opened> {
+    async fn reopen(
+        &self,
+        id: String,
+        cwd: std::path::PathBuf,
+        mcp_servers: Vec<keke_acp::ClientMcpServer>,
+    ) -> Result<keke_acp::Opened> {
         let home = &self.config.home.home;
         // The same prefix matching `keke resume` takes, so a client may hand
         // back either the id it was shown or the whole thing.
@@ -422,6 +435,6 @@ impl EditorSessions {
             .cwd
             .as_ref()
             .map_or_else(|| self.rooted_at(cwd), std::path::PathBuf::from);
-        self.start(cwd, Some(resumed)).await
+        self.start(cwd, Some(resumed), mcp_servers).await
     }
 }

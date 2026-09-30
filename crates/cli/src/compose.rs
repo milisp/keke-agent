@@ -430,10 +430,14 @@ pub(crate) struct Settings<'a> {
     pub catalog_ttl: keke_config_types::ModelCatalogTtl,
     pub subagent_limits: keke_config_types::SubagentLimits,
     pub background_limits: keke_config_types::BackgroundLimits,
+    pub memory: &'a keke_config_types::MemoryConfig,
     pub skills: &'a keke_config_types::SkillSelection,
     pub guardian: &'a keke_config_types::GuardianReviewConfig,
     pub model: &'a keke_config_types::ModelSelection,
     pub sandbox: &'a keke_config_types::SandboxPolicy,
+    /// MCP servers the session's client supplied; empty for every surface
+    /// that has no client to supply any.
+    pub client_mcp: &'a [keke_plugin::ResolvedMcpServer],
 }
 
 impl<'a> From<&'a keke_config::Config> for Settings<'a> {
@@ -443,10 +447,12 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             catalog_ttl: config.model_catalog_ttl,
             subagent_limits: config.subagents,
             background_limits: config.background,
+            memory: &config.memory,
             skills: &config.skills,
             guardian: &config.guardian,
             model: &config.model,
             sandbox: &config.sandbox,
+            client_mcp: &[],
         }
     }
 }
@@ -466,6 +472,9 @@ pub(crate) struct Composed {
     /// rather than by a turn, because a command outlives the turn that
     /// started it.
     pub background: Arc<keke_tasks::BackgroundTasks>,
+    /// The sandbox the session's commands run under: the configured mode is
+    /// its ceiling, and an ACP client may narrow it from here.
+    pub sandbox: Arc<keke_sandbox::SandboxSwitch>,
     /// The session's standing prompts. Held here because both the model's
     /// `schedule_prompt` and the surface's `/loop` write to it, and only the
     /// composition root knows both exist.
@@ -503,10 +512,12 @@ impl Composed {
             catalog_ttl,
             subagent_limits,
             background_limits,
+            memory,
             skills,
             guardian,
             model,
             sandbox,
+            client_mcp,
         } = settings;
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -514,6 +525,13 @@ impl Composed {
         // what it ships.
         let (plugins, withheld) = crate::plugins::discover_trusted(home)?;
         crate::plugins::report_withheld(&withheld);
+        crate::client_mcp::refuse_collisions(
+            client_mcp,
+            plugins
+                .mcp_servers()
+                .filter(|server| !server.disabled)
+                .map(|server| server.name.as_str()),
+        )?;
         let home = &home.home;
         let credentials: Arc<dyn CredentialStore> = Arc::new(keke_credentials::standard_store(
             CREDENTIAL_SERVICE,
@@ -625,7 +643,7 @@ impl Composed {
         // enforce the configured mode fails the session with a reason rather
         // than every command failing — or, worse, running bare.
         let sandbox = Arc::new(
-            keke_sandbox::Sandbox::new(sandbox.clone(), sandbox_helper())
+            keke_sandbox::SandboxSwitch::new(sandbox.clone(), sandbox_helper())
                 .context("setting up the command sandbox")?,
         );
         let background = Arc::new(keke_tasks::BackgroundTasks::new(
@@ -697,15 +715,25 @@ impl Composed {
                 Arc::new(schedules.clone()) as Arc<dyn keke_tasks::TaskSource>,
             ],
         );
+        // Off unless a directory was chosen, by flag or configuration. Children
+        // share this registry, so a subagent sees the same memory its parent
+        // does: it is the agent's memory, not the parent turn's.
+        if let Some(dir) = &memory.dir {
+            keke_memory::install(&mut extensions, dir.clone(), memory);
+        }
         keke_skills::install_with(&mut extensions, &plugins, skills);
         // The credential home is handed in rather than discovered: where the
         // harness keeps state is the composition root's to know. `AuthHome`
         // files remote MCP servers' tokens under their own `mcp/`
         // subdirectory of it, keeping a project with many configured servers
         // out of the same flat listing as every other provider login.
-        keke_mcp::install_with(
+        // The client's own servers ride along, deliberately outside the
+        // workspace trust gate `discover_trusted` applied above: see
+        // `client_mcp`.
+        keke_mcp::install_with_servers(
             &mut extensions,
             &plugins,
+            client_mcp.to_vec(),
             keke_mcp::McpOptions {
                 auth: Some(keke_mcp::AuthHome::new(home)),
                 ..timeouts.into()
@@ -739,6 +767,7 @@ impl Composed {
             extensions: extensions.build(),
             subagents,
             background,
+            sandbox,
             schedules,
             plan_mode,
             skills: enabled_skills,

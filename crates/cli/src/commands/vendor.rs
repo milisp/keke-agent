@@ -98,6 +98,10 @@ pub(super) fn doctor(config: Config, composed: Composed) -> Result<()> {
         config.model.provider, config.model.model
     );
 
+    if let Some(dir) = &config.memory.dir {
+        println!("memory:    {dir}");
+    }
+
     println!("\nconfig layers:");
     if config.sources.is_empty() {
         println!("  (none; all defaults)");

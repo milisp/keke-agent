@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::SandboxMode;
 use keke_config_types::SessionMode;
 use keke_core::ApprovalSwitch;
 use keke_core::CoreError;
@@ -32,6 +33,7 @@ use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::RewindScope;
 use keke_protocol::ToolCall;
+use keke_sandbox::SandboxSwitch;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
@@ -223,6 +225,8 @@ struct Switches {
 
 /// A conversation with a session running in this process.
 pub struct LocalConversation {
+    /// `None` where the composition did not offer a sandbox choice.
+    sandbox: Option<Arc<SandboxSwitch>>,
     commands: UnboundedSender<Command>,
     /// Behind a lock rather than fixed at construction: `new_session` swaps it
     /// for the replacement session's own canceller, so a Ctrl-C reaches
@@ -282,6 +286,38 @@ pub async fn local_with(
     subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
     tasks: Option<UnboundedReceiver<Vec<TaskView>>>,
     routes: Option<Arc<dyn RouteRecipes>>,
+) -> Result<Opened, CoreError> {
+    local_in(builder, approvals, requests, subagents, tasks, routes, None).await
+}
+
+/// [`local`] for a session whose commands run under `sandbox`, so a client may
+/// be offered the choice of narrowing it (see [`Conversation::set_sandbox_mode`]).
+pub async fn local_sandboxed(
+    builder: SessionBuilder,
+    approvals: Arc<Approvals>,
+    requests: ApprovalRequests,
+    sandbox: Arc<SandboxSwitch>,
+) -> Result<Opened, CoreError> {
+    local_in(
+        builder,
+        approvals,
+        requests,
+        None,
+        None,
+        None,
+        Some(sandbox),
+    )
+    .await
+}
+
+async fn local_in(
+    builder: SessionBuilder,
+    approvals: Arc<Approvals>,
+    requests: ApprovalRequests,
+    subagents: Option<UnboundedReceiver<Vec<SubagentView>>>,
+    tasks: Option<UnboundedReceiver<Vec<TaskView>>>,
+    routes: Option<Arc<dyn RouteRecipes>>,
+    sandbox: Option<Arc<SandboxSwitch>>,
 ) -> Result<Opened, CoreError> {
     let (turn_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
     let with_updates = builder.updates(turn_tx.clone());
@@ -430,7 +466,13 @@ pub async fn local_with(
         service_tier: configured_tier,
         approval_policy: configured_approval,
         mode: configured_mode,
+        sandbox_mode: sandbox.as_ref().map(|switch| switch.mode()),
+        sandbox_modes: sandbox
+            .as_ref()
+            .map(|switch| switch.offered())
+            .unwrap_or_default(),
         conversation: Arc::new(LocalConversation {
+            sandbox,
             commands,
             cancel: Mutex::new(Box::new(cancel)),
             approvals,
@@ -604,6 +646,13 @@ impl Conversation for LocalConversation {
     fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) {
         if let Ok(switch) = self.effort.lock() {
             switch.set(effort);
+        }
+    }
+
+    fn set_sandbox_mode(&self, mode: SandboxMode) -> Result<(), String> {
+        match &self.sandbox {
+            Some(switch) => switch.set(mode).map_err(|error| error.to_string()),
+            None => Err("this agent cannot change its sandbox".to_string()),
         }
     }
 

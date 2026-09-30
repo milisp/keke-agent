@@ -22,12 +22,22 @@ drift the way the README status line did.
   spawn for one task and collect one answer from; cannot themselves spawn
   subagents.
 - **Markdown rendering** for assistant responses in the TUI.
+- **Selectable sandbox mode** — `--sandbox` / `KEKE_SANDBOX` and an ACP
+  `sandbox_mode` option that narrows up to the configured ceiling; `read_only`
+  now offers no writing tools.
 - **Remote MCP servers, with OAuth login** — streamable-HTTP and HTTP+SSE
   transports, `keke mcp add|list|get|remove` for configuring servers without
   authoring a plugin, and `keke mcp login <name>` / `/mcp login <name>`
   running RFC 9728 discovery + RFC 7591 client registration + PKCE, with
   token refresh on expiry and on 401. `keke-oauth` holds the PKCE and
   loopback-redirect logic once instead of once per vendor auth crate.
+- **MCP servers from ACP clients** — `mcpServers` sent with `session/new`,
+  `session/load` and `session/resume` are connected through `keke-mcp` for
+  that session, outside the workspace trust gate, with name collisions
+  refused.
+- **Per-agent persistent memory** (`keke-memory`) — `[memory]` config,
+  `--memory-dir` / `KEKE_MEMORY_DIR`, `memory_read`/`memory_write` tools and a
+  frozen system-prompt summary, for the TUI, `exec`, and ACP.
 
 ## In progress / next
 

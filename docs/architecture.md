@@ -647,6 +647,41 @@ linking the engine. `keke-skills`, `keke-hooks`, and `keke-mcp` each read a
 resolved `PluginSet` and register through the ordinary contributor traits, which
 is how `keke-core` avoids ever learning that runtime plugins exist.
 
+## Memory
+
+An agent may keep memory that outlives its sessions. The motivating deployment
+is one long-lived keke process per named bot, each with its own directory; the
+mechanism is the same from the TUI, `keke exec`, and `keke agent stdio`.
+
+- **Off unless a directory is chosen.** `[memory] dir` in the person's config or
+  `--memory-dir` / `KEKE_MEMORY_DIR` (the flag wins; a relative flag resolves
+  against the process cwd). There is no default location: one chosen for the
+  operator would be shared by agents meant to be separate. A repository's
+  `.keke/config.toml` may not set it, since the directory is written to outside
+  the workspace. The size limits (`summary_max_bytes`, `entry_max_bytes`) are
+  validated `keke-config-types` fields (invariant 9).
+- **`keke-memory` is a plugin**, installed by `keke-cli` only when a directory is
+  set. Storage is one markdown file per entry, `<dir>/<name>.md`, with `name`
+  matching `[a-z0-9][a-z0-9_-]{0,63}` — the rule that makes traversal and
+  dotfiles unrepresentable. Writes go to a temp file in the directory and are
+  renamed into place. Two tools: `memory_read` (list, or read one) and
+  `memory_write` (replace, append, or delete by replacing with nothing).
+- **Approval.** `memory_write` writes only into keke's own state, never the
+  workspace, so it is `ToolKind::Meta` with `AutoApproved`, not an `Edit`. It
+  stays available under `read_only`: that mode governs the workspace, and
+  memory is the agent's own state. Guards still run.
+- **The summary is frozen.** A `ContextContributor` injects a `memory` fragment —
+  a short preamble plus each entry's name and first line, cut to
+  `summary_max_bytes` on entry boundaries with a marker counting what was
+  dropped. It is computed once at install so the system prompt is stable for the
+  session (prompt-cache friendly); writes made mid-session are visible through
+  `memory_read` and appear in the next session's summary. The engine records
+  every contributed fragment as `SessionEvent::ContextFragment`, so invariant 6
+  needs no new event.
+- **Subagents** share the extension registry, so a child has the same memory
+  tools and summary as its parent. Memory belongs to the agent, not to the parent
+  turn, and children are one level deep and bounded already.
+
 ## Testing
 
 Three layers, each catching what the others cannot.

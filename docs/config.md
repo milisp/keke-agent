@@ -442,9 +442,27 @@ rerun it with `bash_unsandboxed`, giving a reason. You are asked every time, a
 standing "allow always" does not answer for you, and where nobody can answer
 (`keke exec`) it is refused.
 
-**The edit tools under `read_only`.** `write_file`, `edit`, and `apply_patch`
-write from keke's own process, where no sandbox reaches, so under `read_only`
-each of them asks you first.
+**`read_only` writes nowhere.** `write_file`, `edit`, and `apply_patch` write
+from keke's own process, where no sandbox reaches, so under `read_only` they
+are not offered at all — nor is `bash_unsandboxed` — and a guard denies those
+tool names even if a plugin supplies one. Asking a person is not a boundary a
+client that approves on your behalf can be held to. If you want writes you
+review, use `workspace_write` with `approval_policy = "on_request"`.
+
+**Choosing the mode per run.** `--sandbox <mode>` (or `KEKE_SANDBOX`) overrides
+`sandbox_mode` for one run. It is your own command line, so it may name any
+mode, including `danger_full_access`; `read-only` spelled with hyphens works
+too.
+
+**Choosing the mode over ACP.** An ACP client sees a `sandbox_mode` config
+option ("Sandbox": `read_only`, `workspace_write`, and `danger_full_access` as the
+configured mode allows) and may switch it with `session/set_config_option`,
+taking effect on the next command or tool listing. The configured mode is a
+ceiling: a client may narrow it, never widen it, so a `workspace_write`
+deployment offers `read_only` and `workspace_write`, and a `read_only`
+deployment offers only itself. A mode this machine cannot enforce is refused
+and the previous one stays. The choice is not written to the session log: a
+resumed session starts at the configured mode again.
 
 **Where there is no sandbox.** Windows has none — as in codex, where it is
 off unless enabled — because what a non-administrator can build there cannot
@@ -462,6 +480,61 @@ says why, rather than running commands unconfined.
 `$KEKE_HOME/config.toml` to grant them. (codex instead ignores an untrusted
 project's config and lets a trusted one loosen anything; keke has no project
 trust store for configuration, and tighten-only needs none.)
+
+## MCP Servers From an ACP Client
+
+An editor speaking ACP can send `mcpServers` with `session/new`,
+`session/load` and `session/resume`, and keke connects them like any other MCP
+server. `initialize` advertises what is accepted: stdio and streamable HTTP in
+both protocol versions, and HTTP+SSE in v1 (v2 has no SSE).
+
+- **Per session.** The servers sent with a request belong to that session. On
+  load or resume the servers in that request are used, not the ones the
+  original session had.
+- **Tool names.** Tools appear as `acp:<server>:<tool>`.
+- **Not trust-gated.** A plugin under the workspace is withheld until a person
+  approves it, because the repository chose it. A client's servers are chosen by
+  the program that launched keke, not by the repository, so the workspace trust
+  gate does not apply and there is no approval step.
+- **Name collisions are errors.** Two client servers with one name, or a client
+  server named like an enabled configured (plugin or `keke mcp add`) server,
+  fail the request with an error naming the server. An empty name, command or
+  url is an error too. keke never picks one silently.
+- Values may use `${VAR}` references, expanded at spawn or request time as for
+  configured servers.
+
+## Memory
+
+Persistent, per-agent memory: markdown notes the model reads and writes across
+sessions. Off unless a directory is named.
+
+```toml
+[memory]
+dir = "/var/lib/bots/ada/memory"   # absolute; unset = memory off
+summary_max_bytes = 8192            # 0..=65536; 0 injects no summary
+entry_max_bytes = 32768             # 1024..=1048576; larger writes are refused
+```
+
+`--memory-dir <PATH>` (env `KEKE_MEMORY_DIR`) overrides `dir` for one run, in
+the TUI, `keke resume`, `keke exec`, and `keke agent stdio` alike. A relative
+path is resolved against the process's current directory. `dir` in a file must
+be absolute, and a repository's `.keke/config.toml` may not set it.
+
+Use one directory per bot: a host running several agents (Codexia, for
+example) passes each its own `--memory-dir`. Each entry is `<dir>/<name>.md`,
+where `name` is lowercase letters, digits, `-` and `_` (up to 64 characters,
+starting with a letter or digit). The model gets `memory_read` and
+`memory_write`; neither needs approval.
+
+The system prompt carries a short summary — the entry names and first lines,
+cut to `summary_max_bytes` — taken **once when the session starts**. Writes
+during the session do not change it (that keeps the prompt cache warm), but
+`memory_read` always sees the current files and the next session's summary
+includes them.
+
+`sandbox_mode = "read_only"` governs the workspace and the commands the model
+runs. Memory is the agent's own state, outside the workspace, so the memory
+tools keep working under it.
 
 ## Config Layers
 

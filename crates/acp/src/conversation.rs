@@ -200,6 +200,11 @@ pub struct Opened {
     /// The mode this session was configured with, for the same reason. A
     /// resumed session that was planning comes back planning.
     pub mode: SessionMode,
+    /// The sandbox this session is running under, and every mode it may be
+    /// narrowed to. Empty `sandbox_modes` means the choice is not offered —
+    /// the agent cannot change its sandbox — and a client is shown none.
+    pub sandbox_mode: Option<keke_config_types::SandboxMode>,
+    pub sandbox_modes: Vec<keke_config_types::SandboxMode>,
     pub conversation: Arc<dyn Conversation>,
     pub updates: UnboundedReceiver<Update>,
     /// What the session was rebuilt from. Empty for a session that is new.
@@ -341,6 +346,15 @@ pub trait Conversation: Send + Sync {
     /// attached to.
     fn set_service_tier(&self, tier: Option<keke_protocol::ServiceTier>);
 
+    /// Change how tightly this session's commands are confined, for the next
+    /// command on. Refused with a reason when the mode is looser than the
+    /// operator configured or cannot be enforced here; the default refuses,
+    /// because an agent that never offered the choice has nothing to switch.
+    fn set_sandbox_mode(&self, mode: keke_config_types::SandboxMode) -> Result<(), String> {
+        let _ = mode;
+        Err("this agent cannot change its sandbox".to_string())
+    }
+
     /// Change which model answers, within the provider the session was built
     /// with. On the seam for the same reason the two settings above are: a
     /// person switching models is talking about the next answer.
@@ -468,6 +482,9 @@ pub struct ScriptedConversation {
     tiers: Arc<Mutex<Vec<Option<keke_protocol::ServiceTier>>>>,
     models: Arc<Mutex<Vec<String>>>,
     modes: Arc<Mutex<Vec<SessionMode>>>,
+    sandbox_modes: Arc<Mutex<Vec<keke_config_types::SandboxMode>>>,
+    /// When set, `set_sandbox_mode` refuses with this reason.
+    sandbox_refusal: Mutex<Option<String>>,
     new_sessions: Arc<Mutex<usize>>,
     /// Every `new_session_on` asked for, as `(route, model)`.
     routes: Arc<Mutex<Vec<(String, Option<String>)>>>,
@@ -494,6 +511,8 @@ impl ScriptedConversation {
                 tiers: Arc::new(Mutex::new(Vec::new())),
                 models: Arc::new(Mutex::new(Vec::new())),
                 modes: Arc::new(Mutex::new(Vec::new())),
+                sandbox_modes: Arc::new(Mutex::new(Vec::new())),
+                sandbox_refusal: Mutex::new(None),
                 new_sessions: Arc::new(Mutex::new(0)),
                 routes: Arc::new(Mutex::new(Vec::new())),
                 rewinds: Arc::new(Mutex::new(Vec::new())),
@@ -555,6 +574,23 @@ impl ScriptedConversation {
     #[must_use]
     pub fn modes(&self) -> Vec<SessionMode> {
         self.modes
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Make every later sandbox change fail with `reason`, as an agent that
+    /// cannot enforce the mode would.
+    pub fn refuse_sandbox_changes(&self, reason: &str) {
+        if let Ok(mut refusal) = self.sandbox_refusal.lock() {
+            *refusal = Some(reason.to_string());
+        }
+    }
+
+    /// Every sandbox mode the surface has asked for, in order.
+    #[must_use]
+    pub fn sandbox_modes(&self) -> Vec<keke_config_types::SandboxMode> {
+        self.sandbox_modes
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -661,6 +697,16 @@ impl Conversation for ScriptedConversation {
             seen.push(mode);
         }
         let _ = self.updates.send(Update::ModeChanged(mode));
+    }
+
+    fn set_sandbox_mode(&self, mode: keke_config_types::SandboxMode) -> Result<(), String> {
+        if let Some(reason) = self.sandbox_refusal.lock().ok().and_then(|r| r.clone()) {
+            return Err(reason);
+        }
+        if let Ok(mut seen) = self.sandbox_modes.lock() {
+            seen.push(mode);
+        }
+        Ok(())
     }
 
     fn set_approval_policy(&self, policy: ApprovalPolicy) {

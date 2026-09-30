@@ -1,0 +1,26 @@
+[package]
+name = "keke-memory"
+description = "Per-agent persistent memory: markdown entries in an operator-chosen directory, read and written by the model."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-paths = { workspace = true }
+keke-plugin-api = { workspace = true }
+keke-protocol = { workspace = true }
+keke-tool = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

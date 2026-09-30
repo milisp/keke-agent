@@ -29,6 +29,8 @@ use agent_client_protocol::schema::v1::ListSessionsRequest;
 use agent_client_protocol::schema::v1::ListSessionsResponse;
 use agent_client_protocol::schema::v1::LoadSessionRequest;
 use agent_client_protocol::schema::v1::LoadSessionResponse;
+use agent_client_protocol::schema::v1::McpCapabilities;
+use agent_client_protocol::schema::v1::McpServer;
 use agent_client_protocol::schema::v1::NewSessionRequest;
 use agent_client_protocol::schema::v1::NewSessionResponse;
 use agent_client_protocol::schema::v1::PermissionOption;
@@ -73,6 +75,8 @@ use super::choices;
 use super::enrol;
 use super::note_mode;
 use super::present;
+use crate::ClientMcpServer;
+use crate::ClientMcpTransport;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::SessionListing;
@@ -135,6 +139,7 @@ pub(super) fn agent(
                                     // transcript can be replayed; v2 says it
                                     // with a `replayFrom` cursor instead.
                                     .load_session(true)
+                                    .mcp_capabilities(McpCapabilities::new().http(true).sse(true))
                                     .session_capabilities(
                                         SessionCapabilities::new()
                                             .list(SessionListCapabilities::new())
@@ -168,7 +173,7 @@ pub(super) fn agent(
                 async move |request: NewSessionRequest, responder, cx: ConnectionTo<_>| {
                     let cwd = request.cwd.clone();
                     let opened = factory
-                        .open(request.cwd)
+                        .open(request.cwd, client_mcp_servers(request.mcp_servers))
                         .await
                         .map_err(agent_client_protocol::Error::into_internal_error)?;
                     let (id, options) = start(&sessions, opened, cwd, &cx)?;
@@ -234,7 +239,11 @@ pub(super) fn agent(
                 async move |request: LoadSessionRequest, responder, cx: ConnectionTo<_>| {
                     let cwd = request.cwd.clone();
                     let opened = match factory
-                        .resume(request.session_id.to_string(), request.cwd)
+                        .resume(
+                            request.session_id.to_string(),
+                            request.cwd,
+                            client_mcp_servers(request.mcp_servers),
+                        )
                         .await
                     {
                         Ok(opened) => opened,
@@ -260,7 +269,11 @@ pub(super) fn agent(
                 async move |request: ResumeSessionRequest, responder, cx: ConnectionTo<_>| {
                     let cwd = request.cwd.clone();
                     let opened = match factory
-                        .resume(request.session_id.to_string(), request.cwd)
+                        .resume(
+                            request.session_id.to_string(),
+                            request.cwd,
+                            client_mcp_servers(request.mcp_servers),
+                        )
                         .await
                     {
                         Ok(opened) => opened,
@@ -383,7 +396,8 @@ fn rendered(choices: &[super::Choice]) -> Vec<SessionConfigOption> {
 fn category_for(id: &str) -> SessionConfigOptionCategory {
     if id == super::REASONING_EFFORT {
         SessionConfigOptionCategory::ThoughtLevel
-    } else if id == super::APPROVAL_POLICY || id == super::SESSION_MODE {
+    } else if id == super::APPROVAL_POLICY || id == super::SESSION_MODE || id == super::SANDBOX_MODE
+    {
         SessionConfigOptionCategory::Mode
     } else {
         SessionConfigOptionCategory::Model
@@ -647,9 +661,108 @@ fn acp_stop_reason(reason: &StopReason) -> AcpStopReason {
     }
 }
 
+/// What the client sent, in keke's own shape.
+///
+/// A variant this build does not know (the enum is non-exhaustive) is skipped
+/// with a warning rather than failing the session: the client offered a
+/// transport it was never told keke supports, and the rest are still wanted.
+fn client_mcp_servers(servers: Vec<McpServer>) -> Vec<ClientMcpServer> {
+    fn pairs<T>(items: Vec<T>, split: impl Fn(T) -> (String, String)) -> Vec<(String, String)> {
+        items.into_iter().map(split).collect()
+    }
+    servers
+        .into_iter()
+        .filter_map(|server| match server {
+            McpServer::Stdio(server) => Some(ClientMcpServer {
+                name: server.name,
+                transport: ClientMcpTransport::Stdio {
+                    command: server.command,
+                    args: server.args,
+                    env: pairs(server.env, |var| (var.name, var.value)),
+                },
+            }),
+            McpServer::Http(server) => Some(ClientMcpServer {
+                name: server.name,
+                transport: ClientMcpTransport::Http {
+                    url: server.url,
+                    headers: pairs(server.headers, |header| (header.name, header.value)),
+                },
+            }),
+            McpServer::Sse(server) => Some(ClientMcpServer {
+                name: server.name,
+                transport: ClientMcpTransport::Sse {
+                    url: server.url,
+                    headers: pairs(server.headers, |header| (header.name, header.value)),
+                },
+            }),
+            other => {
+                tracing::warn!(
+                    ?other,
+                    "ignoring an MCP server with an unsupported transport"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use agent_client_protocol::schema::v1::EnvVariable;
+    use agent_client_protocol::schema::v1::HttpHeader;
+    use agent_client_protocol::schema::v1::McpServerHttp;
+    use agent_client_protocol::schema::v1::McpServerSse;
+    use agent_client_protocol::schema::v1::McpServerStdio;
+
     use super::*;
+
+    #[test]
+    fn a_stdio_server_keeps_its_environment() {
+        let wire = McpServer::Stdio(
+            McpServerStdio::new("fs", "/usr/bin/fs-mcp")
+                .args(vec!["--root".to_string(), "/work".to_string()])
+                .env(vec![EnvVariable::new("TOKEN", "abc")]),
+        );
+        assert_eq!(
+            client_mcp_servers(vec![wire]),
+            vec![ClientMcpServer {
+                name: "fs".to_string(),
+                transport: ClientMcpTransport::Stdio {
+                    command: "/usr/bin/fs-mcp".into(),
+                    args: vec!["--root".to_string(), "/work".to_string()],
+                    env: vec![("TOKEN".to_string(), "abc".to_string())],
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn remote_servers_keep_their_headers_and_transport() {
+        let http = McpServer::Http(
+            McpServerHttp::new("docs", "https://example.test/mcp")
+                .headers(vec![HttpHeader::new("Authorization", "Bearer x")]),
+        );
+        let sse = McpServer::Sse(McpServerSse::new("legacy", "https://example.test/sse"));
+        assert_eq!(
+            client_mcp_servers(vec![http, sse]),
+            vec![
+                ClientMcpServer {
+                    name: "docs".to_string(),
+                    transport: ClientMcpTransport::Http {
+                        url: "https://example.test/mcp".to_string(),
+                        headers: vec![("Authorization".to_string(), "Bearer x".to_string())],
+                    },
+                },
+                ClientMcpServer {
+                    name: "legacy".to_string(),
+                    transport: ClientMcpTransport::Sse {
+                        url: "https://example.test/sse".to_string(),
+                        headers: Vec::new(),
+                    },
+                },
+            ]
+        );
+    }
 
     #[test]
     fn only_text_reaches_the_model() {

@@ -1,6 +1,7 @@
 mod agent;
 mod conversation;
 mod local;
+mod mcp;
 
 pub use agent::SessionFactory;
 pub use agent::serve_stdio;
@@ -26,4 +27,7 @@ pub use local::RouteRecipes;
 pub use local::approvals;
 pub use local::install;
 pub use local::local;
+pub use local::local_sandboxed;
 pub use local::local_with;
+pub use mcp::ClientMcpServer;
+pub use mcp::ClientMcpTransport;
