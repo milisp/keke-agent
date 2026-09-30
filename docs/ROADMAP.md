@@ -22,6 +22,9 @@ drift the way the README status line did.
   spawn for one task and collect one answer from; cannot themselves spawn
   subagents.
 - **Markdown rendering** for assistant responses in the TUI.
+- **Selectable sandbox mode** — `--sandbox` / `KEKE_SANDBOX` and an ACP
+  `sandbox_mode` option that narrows up to the configured ceiling; `read_only`
+  now offers no writing tools.
 - **Remote MCP servers, with OAuth login** — streamable-HTTP and HTTP+SSE
   transports, `keke mcp add|list|get|remove` for configuring servers without
   authoring a plugin, and `keke mcp login <name>` / `/mcp login <name>`

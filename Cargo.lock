@@ -1625,6 +1625,7 @@ dependencies = [
  "keke-plugin-api",
  "keke-protocol",
  "keke-provider-api",
+ "keke-sandbox",
  "keke-tool",
  "schemars 0.8.22",
  "serde",

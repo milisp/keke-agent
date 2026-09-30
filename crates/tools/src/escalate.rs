@@ -23,46 +23,6 @@ use crate::bash::Bash;
 use crate::bash::BashArgs;
 use crate::bash::BashOutput;
 
-/// A tool that, whatever the policy, puts every call in front of a person.
-///
-/// For the edit tools under `read_only`: they write from keke's own process,
-/// where no sandbox reaches, so the mode's promise is kept by asking — as
-/// codex asks rather than refuses — and where nobody can answer, the engine
-/// denies it.
-pub(crate) struct PersonDecides<T>(pub(crate) T);
-
-impl<T: Tool> Tool for PersonDecides<T> {
-    type Args = T::Args;
-    type Output = T::Output;
-
-    fn id(&self) -> ToolId {
-        self.0.id()
-    }
-
-    fn description(&self, ctx: &ListToolsContext) -> ToolDescription {
-        self.0.description(ctx)
-    }
-
-    fn capabilities(&self) -> ToolCapabilities {
-        ToolCapabilities {
-            approval: ApprovalRequirement::Always,
-            ..self.0.capabilities()
-        }
-    }
-
-    fn should_list(&self, ctx: &ListToolsContext) -> bool {
-        self.0.should_list(ctx)
-    }
-
-    fn input_schema_override(&self) -> Option<serde_json::Value> {
-        self.0.input_schema_override()
-    }
-
-    async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
-        self.0.run(ctx, args).await
-    }
-}
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BashUnsandboxedArgs {
     /// Shell command line, run from the workspace root with no sandbox.

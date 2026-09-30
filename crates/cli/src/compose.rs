@@ -466,6 +466,9 @@ pub(crate) struct Composed {
     /// rather than by a turn, because a command outlives the turn that
     /// started it.
     pub background: Arc<keke_tasks::BackgroundTasks>,
+    /// The sandbox the session's commands run under: the configured mode is
+    /// its ceiling, and an ACP client may narrow it from here.
+    pub sandbox: Arc<keke_sandbox::SandboxSwitch>,
     /// The session's standing prompts. Held here because both the model's
     /// `schedule_prompt` and the surface's `/loop` write to it, and only the
     /// composition root knows both exist.
@@ -625,7 +628,7 @@ impl Composed {
         // enforce the configured mode fails the session with a reason rather
         // than every command failing — or, worse, running bare.
         let sandbox = Arc::new(
-            keke_sandbox::Sandbox::new(sandbox.clone(), sandbox_helper())
+            keke_sandbox::SandboxSwitch::new(sandbox.clone(), sandbox_helper())
                 .context("setting up the command sandbox")?,
         );
         let background = Arc::new(keke_tasks::BackgroundTasks::new(
@@ -739,6 +742,7 @@ impl Composed {
             extensions: extensions.build(),
             subagents,
             background,
+            sandbox,
             schedules,
             plan_mode,
             skills: enabled_skills,

@@ -442,9 +442,27 @@ rerun it with `bash_unsandboxed`, giving a reason. You are asked every time, a
 standing "allow always" does not answer for you, and where nobody can answer
 (`keke exec`) it is refused.
 
-**The edit tools under `read_only`.** `write_file`, `edit`, and `apply_patch`
-write from keke's own process, where no sandbox reaches, so under `read_only`
-each of them asks you first.
+**`read_only` writes nowhere.** `write_file`, `edit`, and `apply_patch` write
+from keke's own process, where no sandbox reaches, so under `read_only` they
+are not offered at all — nor is `bash_unsandboxed` — and a guard denies those
+tool names even if a plugin supplies one. Asking a person is not a boundary a
+client that approves on your behalf can be held to. If you want writes you
+review, use `workspace_write` with `approval_policy = "on_request"`.
+
+**Choosing the mode per run.** `--sandbox <mode>` (or `KEKE_SANDBOX`) overrides
+`sandbox_mode` for one run. It is your own command line, so it may name any
+mode, including `danger_full_access`; `read-only` spelled with hyphens works
+too.
+
+**Choosing the mode over ACP.** An ACP client sees a `sandbox_mode` config
+option ("Sandbox": `read_only`, `workspace_write`, and `danger_full_access` as the
+configured mode allows) and may switch it with `session/set_config_option`,
+taking effect on the next command or tool listing. The configured mode is a
+ceiling: a client may narrow it, never widen it, so a `workspace_write`
+deployment offers `read_only` and `workspace_write`, and a `read_only`
+deployment offers only itself. A mode this machine cannot enforce is refused
+and the previous one stays. The choice is not written to the session log: a
+resumed session starts at the configured mode again.
 
 **Where there is no sandbox.** Windows has none — as in codex, where it is
 off unless enabled — because what a non-administrator can build there cannot
