@@ -476,6 +476,11 @@ async fn the_endpoint_on_the_wire_answers_whichever_version_was_asked_for() {
         v1["result"]["agentCapabilities"]["loadSession"], true,
         "and about replay from `loadSession`: {v1}"
     );
+    assert_eq!(
+        v1["result"]["agentCapabilities"]["mcpCapabilities"],
+        serde_json::json!({ "http": true, "sse": true }),
+        "a v1 client only sends the MCP transports it was told keke speaks: {v1}"
+    );
 
     let v2 = initialize_over_a_pipe(
         br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2,"info":{"name":"web-ui","version":"0.1"},"capabilities":{}}}
@@ -485,6 +490,10 @@ async fn the_endpoint_on_the_wire_answers_whichever_version_was_asked_for() {
     assert!(
         v2["result"]["capabilities"]["session"].is_object(),
         "v2 says the same thing with one `session` object: {v2}"
+    );
+    assert!(
+        v2["result"]["capabilities"]["session"]["mcp"]["http"].is_object(),
+        "v2 advertises HTTP MCP servers under `session.mcp`: {v2}"
     );
 }
 
@@ -615,5 +624,54 @@ async fn a_v1_client_prompts_and_loads_back_the_transcript() {
         replayed.contains(&"remember this".to_string())
             && replayed.contains(&"the first answer".to_string()),
         "`session/load` replays both sides of the conversation: {replayed:?}"
+    );
+}
+
+/// A client that sends two servers under one name asked for something with no
+/// single meaning, so the session must not open with one of them silently
+/// chosen.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_two_mcp_servers_of_one_name_is_refused_naming_it() {
+    use agent_client_protocol::schema::v2::McpServer;
+    use agent_client_protocol::schema::v2::McpServerHttp;
+
+    let home = tempfile::tempdir().expect("tempdir");
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let agent = AcpAgent::new(
+        AcpAgentConfig::new(env!("CARGO_BIN_EXE_keke"))
+            .args(["agent", "stdio"])
+            .env("KEKE_HOME", home.path().display().to_string())
+            .env("KEKE_CREDENTIAL_STORE", "file")
+            .env("KEKE_IMPORT", "off")
+            .env("KEKE_PROVIDER", "grok")
+            .env("KEKE_MODEL", "grok-4.6")
+            .env("XAI_API_KEY", "test-key"),
+    );
+
+    let refusal = agent_client_protocol::Client
+        .v2()
+        .connect_with(agent, {
+            let cwd = workspace.path().to_path_buf();
+            |connection: ConnectionTo<Agent>| async move {
+                initialize(&connection).await?;
+                let servers = vec![
+                    McpServer::Http(McpServerHttp::new("dup", "http://127.0.0.1:1/a")),
+                    McpServer::Http(McpServerHttp::new("dup", "http://127.0.0.1:1/b")),
+                ];
+                Ok(connection
+                    .send_request(
+                        NewSessionRequest::new(AbsolutePath::new(cwd)).mcp_servers(servers),
+                    )
+                    .block_task()
+                    .await)
+            }
+        })
+        .await
+        .expect("the connection itself stays up");
+
+    let error = refusal.expect_err("session/new must fail");
+    assert!(
+        format!("{error:?}").contains("dup"),
+        "the error must name the server: {error:?}"
     );
 }

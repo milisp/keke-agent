@@ -7,6 +7,7 @@
 
 mod api_key;
 mod cli;
+mod client_mcp;
 mod commands;
 mod compose;
 mod declared;

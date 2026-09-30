@@ -30,6 +30,10 @@ use agent_client_protocol::schema::v2::ListSessionsRequest;
 use agent_client_protocol::schema::v2::ListSessionsResponse;
 use agent_client_protocol::schema::v2::LoginAuthRequest;
 use agent_client_protocol::schema::v2::LoginAuthResponse;
+use agent_client_protocol::schema::v2::McpCapabilities;
+use agent_client_protocol::schema::v2::McpHttpCapabilities;
+use agent_client_protocol::schema::v2::McpServer;
+use agent_client_protocol::schema::v2::McpStdioCapabilities;
 use agent_client_protocol::schema::v2::MessageId;
 use agent_client_protocol::schema::v2::NewSessionRequest;
 use agent_client_protocol::schema::v2::NewSessionResponse;
@@ -77,6 +81,8 @@ use super::choices;
 use super::enrol;
 use super::note_mode;
 use super::present;
+use crate::ClientMcpServer;
+use crate::ClientMcpTransport;
 use crate::Opened;
 use crate::PermissionAnswer;
 use crate::SessionListing;
@@ -143,7 +149,16 @@ pub(super) fn agent(
                         // `session` present at all is what says keke speaks the
                         // session surface; `session/list` and `session/resume`
                         // are part of it rather than capabilities of their own.
-                        .capabilities(AgentCapabilities::new().session(SessionCapabilities::new()))
+                        // v2 dropped SSE, so only stdio and HTTP are on offer.
+                        .capabilities(
+                            AgentCapabilities::new().session(
+                                SessionCapabilities::new().mcp(
+                                    McpCapabilities::new()
+                                        .stdio(McpStdioCapabilities::new())
+                                        .http(McpHttpCapabilities::new()),
+                                ),
+                            ),
+                        )
                         .auth_methods(auth_methods(factory.as_ref())),
                     )
                 }
@@ -170,7 +185,10 @@ pub(super) fn agent(
                 async move |request: NewSessionRequest, responder, cx: ConnectionTo<_>| {
                     let cwd = request.cwd.clone().into_inner();
                     let opened = factory
-                        .open(request.cwd.into_inner())
+                        .open(
+                            request.cwd.into_inner(),
+                            client_mcp_servers(request.mcp_servers),
+                        )
                         .await
                         .map_err(agent_client_protocol::Error::into_internal_error)?;
                     let (id, options) = start(&sessions, opened, cwd, &cx)?;
@@ -236,7 +254,11 @@ pub(super) fn agent(
                 async move |request: ResumeSessionRequest, responder, cx: ConnectionTo<_>| {
                     let cwd = request.cwd.clone().into_inner();
                     let opened = match factory
-                        .resume(request.session_id.to_string(), request.cwd.into_inner())
+                        .resume(
+                            request.session_id.to_string(),
+                            request.cwd.into_inner(),
+                            client_mcp_servers(request.mcp_servers),
+                        )
                         .await
                     {
                         Ok(opened) => opened,
@@ -698,8 +720,55 @@ fn acp_stop_reason(reason: &StopReason) -> AcpStopReason {
     }
 }
 
+/// What the client sent, in keke's own shape.
+///
+/// A variant this build does not know (the enum is non-exhaustive, and v2
+/// reserves a catch-all for future transports) is skipped with a warning
+/// rather than failing the session.
+fn client_mcp_servers(servers: Vec<McpServer>) -> Vec<ClientMcpServer> {
+    servers
+        .into_iter()
+        .filter_map(|server| match server {
+            McpServer::Stdio(server) => Some(ClientMcpServer {
+                name: server.name,
+                transport: ClientMcpTransport::Stdio {
+                    command: server.command.into_inner(),
+                    args: server.args,
+                    env: server
+                        .env
+                        .into_iter()
+                        .map(|var| (var.name, var.value))
+                        .collect(),
+                },
+            }),
+            McpServer::Http(server) => Some(ClientMcpServer {
+                name: server.name,
+                transport: ClientMcpTransport::Http {
+                    url: server.url,
+                    headers: server
+                        .headers
+                        .into_iter()
+                        .map(|header| (header.name, header.value))
+                        .collect(),
+                },
+            }),
+            other => {
+                tracing::warn!(
+                    ?other,
+                    "ignoring an MCP server with an unsupported transport"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use agent_client_protocol::schema::v2::EnvVariable;
+    use agent_client_protocol::schema::v2::HttpHeader;
+    use agent_client_protocol::schema::v2::McpServerHttp;
+    use agent_client_protocol::schema::v2::McpServerStdio;
     use agent_client_protocol::schema::v2::SelectedPermissionOutcome;
 
     use super::*;
@@ -821,5 +890,43 @@ mod tests {
         );
         assert_eq!(info.cwd.into_inner(), std::path::PathBuf::from("/work"));
         assert_eq!(info.title.as_deref(), Some("fix the parser"));
+    }
+
+    #[test]
+    fn a_v2_stdio_server_keeps_its_environment() {
+        let wire = McpServer::Stdio(
+            McpServerStdio::new("fs", "/usr/bin/fs-mcp")
+                .args(vec!["--stdio".to_string()])
+                .env(vec![EnvVariable::new("TOKEN", "abc")]),
+        );
+        assert_eq!(
+            client_mcp_servers(vec![wire]),
+            vec![ClientMcpServer {
+                name: "fs".to_string(),
+                transport: ClientMcpTransport::Stdio {
+                    command: "/usr/bin/fs-mcp".into(),
+                    args: vec!["--stdio".to_string()],
+                    env: vec![("TOKEN".to_string(), "abc".to_string())],
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn a_v2_http_server_keeps_its_headers() {
+        let wire = McpServer::Http(
+            McpServerHttp::new("docs", "https://example.test/mcp")
+                .headers(vec![HttpHeader::new("Authorization", "Bearer x")]),
+        );
+        assert_eq!(
+            client_mcp_servers(vec![wire]),
+            vec![ClientMcpServer {
+                name: "docs".to_string(),
+                transport: ClientMcpTransport::Http {
+                    url: "https://example.test/mcp".to_string(),
+                    headers: vec![("Authorization".to_string(), "Bearer x".to_string())],
+                },
+            }]
+        );
     }
 }

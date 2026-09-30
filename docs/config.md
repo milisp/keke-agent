@@ -463,6 +463,28 @@ says why, rather than running commands unconfined.
 project's config and lets a trusted one loosen anything; keke has no project
 trust store for configuration, and tighten-only needs none.)
 
+## MCP Servers From an ACP Client
+
+An editor speaking ACP can send `mcpServers` with `session/new`,
+`session/load` and `session/resume`, and keke connects them like any other MCP
+server. `initialize` advertises what is accepted: stdio and streamable HTTP in
+both protocol versions, and HTTP+SSE in v1 (v2 has no SSE).
+
+- **Per session.** The servers sent with a request belong to that session. On
+  load or resume the servers in that request are used, not the ones the
+  original session had.
+- **Tool names.** Tools appear as `acp:<server>:<tool>`.
+- **Not trust-gated.** A plugin under the workspace is withheld until a person
+  approves it, because the repository chose it. A client's servers are chosen by
+  the program that launched keke, not by the repository, so the workspace trust
+  gate does not apply and there is no approval step.
+- **Name collisions are errors.** Two client servers with one name, or a client
+  server named like an enabled configured (plugin or `keke mcp add`) server,
+  fail the request with an error naming the server. An empty name, command or
+  url is an error too. keke never picks one silently.
+- Values may use `${VAR}` references, expanded at spawn or request time as for
+  configured servers.
+
 ## Config Layers
 
 Configuration is loaded from multiple layers, with later layers overriding earlier ones:

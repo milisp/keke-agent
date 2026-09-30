@@ -28,6 +28,10 @@ drift the way the README status line did.
   running RFC 9728 discovery + RFC 7591 client registration + PKCE, with
   token refresh on expiry and on 401. `keke-oauth` holds the PKCE and
   loopback-redirect logic once instead of once per vendor auth crate.
+- **MCP servers from ACP clients** — `mcpServers` sent with `session/new`,
+  `session/load` and `session/resume` are connected through `keke-mcp` for
+  that session, outside the workspace trust gate, with name collisions
+  refused.
 
 ## In progress / next
 

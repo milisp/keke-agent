@@ -33,6 +33,7 @@ use keke_provider_api::ModelInfo;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::AuthMethodDescriptor;
+use crate::ClientMcpServer;
 use crate::Conversation;
 use crate::ConversationError;
 use crate::ConversationFuture;
@@ -46,7 +47,15 @@ use crate::SessionListing;
 /// that knows how to build a session, and `keke-acp` must not learn.
 pub trait SessionFactory: Send + Sync + 'static {
     /// Open a conversation rooted at `cwd`, as the client asked.
-    fn open(&self, cwd: PathBuf) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
+    ///
+    /// `mcp_servers` are the ones the client sent for this session alone. A
+    /// factory that finds them unusable — a name used twice, an empty command —
+    /// fails the open rather than starting the session without them.
+    fn open(
+        &self,
+        cwd: PathBuf,
+        mcp_servers: Vec<ClientMcpServer>,
+    ) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
 
     /// Every session there is to resume, newest first.
     ///
@@ -63,10 +72,16 @@ pub trait SessionFactory: Send + Sync + 'static {
     ///
     /// The id is whatever the client sent back; resolving it — including
     /// deciding that it names nothing — belongs to whoever keeps the sessions.
+    ///
+    /// `mcp_servers` are the ones sent with this request, and the only ones the
+    /// reopened session gets: a client's servers are its own per-connection
+    /// choice, so replaying whatever the original session was given would
+    /// start programs the client did not just ask for.
     fn resume(
         &self,
         id: String,
         cwd: PathBuf,
+        mcp_servers: Vec<ClientMcpServer>,
     ) -> ConversationFuture<'_, Result<Opened, ConversationError>>;
 
     /// Authentication methods to offer before any session exists.

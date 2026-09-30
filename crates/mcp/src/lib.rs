@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use keke_plugin::PluginSet;
+use keke_plugin::ResolvedMcpServer;
 use keke_plugin_api::ExtensionContext;
 use keke_plugin_api::ExtensionRegistryBuilder;
 use keke_plugin_api::ToolContributor;
@@ -159,8 +160,24 @@ pub fn install_with(
     plugins: &PluginSet,
     options: McpOptions,
 ) {
+    install_with_servers(registry, plugins, Vec::new(), options);
+}
+
+/// [`install_with`], plus servers that belong to no plugin.
+///
+/// `extra` is for a host that has servers of its own — an ACP client's, for
+/// one. They join the plugin set's in one contributor so discovery runs once
+/// for all of them. Which of them may run is the caller's decision, already
+/// made: nothing here consults a trust gate.
+pub fn install_with_servers(
+    registry: &mut ExtensionRegistryBuilder,
+    plugins: &PluginSet,
+    extra: Vec<ResolvedMcpServer>,
+    options: McpOptions,
+) {
     let servers: Vec<Arc<McpServer>> = plugins
         .mcp_servers()
+        .chain(extra.iter())
         .filter(|resolved| !resolved.disabled)
         .map(|resolved| Arc::new(McpServer::new(resolved, options.clone())))
         .collect();

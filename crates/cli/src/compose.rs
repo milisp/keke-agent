@@ -434,6 +434,9 @@ pub(crate) struct Settings<'a> {
     pub guardian: &'a keke_config_types::GuardianReviewConfig,
     pub model: &'a keke_config_types::ModelSelection,
     pub sandbox: &'a keke_config_types::SandboxPolicy,
+    /// MCP servers the session's client supplied; empty for every surface
+    /// that has no client to supply any.
+    pub client_mcp: &'a [keke_plugin::ResolvedMcpServer],
 }
 
 impl<'a> From<&'a keke_config::Config> for Settings<'a> {
@@ -447,6 +450,7 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             guardian: &config.guardian,
             model: &config.model,
             sandbox: &config.sandbox,
+            client_mcp: &[],
         }
     }
 }
@@ -507,6 +511,7 @@ impl Composed {
             guardian,
             model,
             sandbox,
+            client_mcp,
         } = settings;
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -514,6 +519,13 @@ impl Composed {
         // what it ships.
         let (plugins, withheld) = crate::plugins::discover_trusted(home)?;
         crate::plugins::report_withheld(&withheld);
+        crate::client_mcp::refuse_collisions(
+            client_mcp,
+            plugins
+                .mcp_servers()
+                .filter(|server| !server.disabled)
+                .map(|server| server.name.as_str()),
+        )?;
         let home = &home.home;
         let credentials: Arc<dyn CredentialStore> = Arc::new(keke_credentials::standard_store(
             CREDENTIAL_SERVICE,
@@ -703,9 +715,13 @@ impl Composed {
         // files remote MCP servers' tokens under their own `mcp/`
         // subdirectory of it, keeping a project with many configured servers
         // out of the same flat listing as every other provider login.
-        keke_mcp::install_with(
+        // The client's own servers ride along, deliberately outside the
+        // workspace trust gate `discover_trusted` applied above: see
+        // `client_mcp`.
+        keke_mcp::install_with_servers(
             &mut extensions,
             &plugins,
+            client_mcp.to_vec(),
             keke_mcp::McpOptions {
                 auth: Some(keke_mcp::AuthHome::new(home)),
                 ..timeouts.into()
