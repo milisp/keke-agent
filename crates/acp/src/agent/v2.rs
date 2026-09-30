@@ -392,7 +392,8 @@ fn rendered(choices: &[super::Choice]) -> Vec<SessionConfigOption> {
 fn category_for(id: &str) -> SessionConfigOptionCategory {
     if id == super::REASONING_EFFORT {
         SessionConfigOptionCategory::ThoughtLevel
-    } else if id == super::APPROVAL_POLICY || id == super::SESSION_MODE {
+    } else if id == super::APPROVAL_POLICY || id == super::SESSION_MODE || id == super::SANDBOX_MODE
+    {
         SessionConfigOptionCategory::Mode
     } else {
         SessionConfigOptionCategory::Model

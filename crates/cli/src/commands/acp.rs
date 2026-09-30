@@ -170,7 +170,9 @@ impl EditorSessions {
         if let Some(resumed) = resume {
             builder = builder.resume(resumed.id, resumed.history);
         }
-        let mut opened = keke_acp::local(builder, approvals, requests).await?;
+        let mut opened =
+            keke_acp::local_sandboxed(builder, approvals, requests, Arc::clone(&composed.sandbox))
+                .await?;
         opened.history = history.unwrap_or_default();
         opened.models = self.models(&composed, &config.model.provider).await;
         // The same resolved list the TUI would complete against, so an ACP

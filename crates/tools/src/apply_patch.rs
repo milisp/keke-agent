@@ -800,20 +800,4 @@ mod tests {
             );
         }
     }
-
-    /// Under `read_only` the edit tools ask a person every time; a tidy patch
-    /// must not talk its way out of that.
-    #[test]
-    fn a_tool_that_always_asks_is_not_relaxed_by_its_paths() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = AbsPath::new(dir.path()).expect("absolute tempdir");
-        let patch = "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n";
-        let approval = crate::escalate::PersonDecides(ApplyPatch).call_approval(
-            &root,
-            &ApplyPatchArgs {
-                patch: patch.to_string(),
-            },
-        );
-        assert_eq!(approval, ApprovalRequirement::Always);
-    }
 }

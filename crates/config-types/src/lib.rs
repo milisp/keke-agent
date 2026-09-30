@@ -160,6 +160,28 @@ impl SandboxMode {
         }
     }
 
+    /// The inverse of [`Self::as_str`], also accepting the kebab-case a shell
+    /// user types (`read-only`). `None` for anything else: a mode keke does
+    /// not know must not be guessed at.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "workspace_write" | "workspace-write" => Some(Self::WorkspaceWrite),
+            "read_only" | "read-only" => Some(Self::ReadOnly),
+            "danger_full_access" | "danger-full-access" => Some(Self::DangerFullAccess),
+            _ => None,
+        }
+    }
+
+    /// Every mode, least latitude first.
+    pub const ALL: [Self; 3] = [Self::ReadOnly, Self::WorkspaceWrite, Self::DangerFullAccess];
+
+    /// Whether `self` lets a command do more than `other` does.
+    #[must_use]
+    pub fn is_looser_than(self, other: Self) -> bool {
+        self.latitude() > other.latitude()
+    }
+
     /// The wire spelling, for messages that name the setting a person types.
     #[must_use]
     pub fn as_str(self) -> &'static str {

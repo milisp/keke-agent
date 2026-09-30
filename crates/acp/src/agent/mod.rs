@@ -26,6 +26,7 @@ use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectTo;
 use agent_client_protocol::Stdio;
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::SandboxMode;
 use keke_config_types::SessionMode;
 use keke_protocol::ReasoningEffort;
 use keke_protocol::StopReason;
@@ -164,6 +165,7 @@ const MODEL: &str = "model";
 const REASONING_EFFORT: &str = "reasoning_effort";
 const APPROVAL_POLICY: &str = "approval_policy";
 const SESSION_MODE: &str = "session_mode";
+const SANDBOX_MODE: &str = "sandbox_mode";
 
 /// The value that means "no level; let the model decide".
 ///
@@ -199,6 +201,10 @@ struct Entry {
     /// session was opened against, and a list that changed underneath a client
     /// would make a selection it just made invalid.
     models: Vec<ModelInfo>,
+    /// The sandbox modes a client may pick from; empty when this session
+    /// offers no choice. Fixed for the session's life for the same reason
+    /// `models` is.
+    sandbox_modes: Vec<SandboxMode>,
     /// What is selected now. Behind a lock because `session/set_config_option`
     /// changes it from the dispatch loop while the prompt handler reads it.
     selected: Mutex<Selected>,
@@ -215,6 +221,7 @@ struct Selected {
     effort: Option<ReasoningEffort>,
     approval_policy: ApprovalPolicy,
     mode: SessionMode,
+    sandbox: Option<SandboxMode>,
 }
 
 impl Entry {
@@ -230,6 +237,7 @@ impl Entry {
                 effort: None,
                 approval_policy: ApprovalPolicy::default(),
                 mode: SessionMode::default(),
+                sandbox: None,
             })
     }
 
@@ -272,11 +280,13 @@ fn enrol(
         conversation: Arc::clone(&opened.conversation),
         cwd,
         models: opened.models.clone(),
+        sandbox_modes: opened.sandbox_modes.clone(),
         selected: Mutex::new(Selected {
             model: opened.model.clone(),
             effort: opened.effort,
             approval_policy: opened.approval_policy,
             mode: opened.mode,
+            sandbox: opened.sandbox_mode,
         }),
         outcomes: tokio::sync::Mutex::new(outcomes),
     });
@@ -323,6 +333,20 @@ fn choices(entry: &Entry) -> Vec<Choice> {
             .collect(),
         },
     ];
+    if let Some(sandbox) = selected.sandbox
+        && !entry.sandbox_modes.is_empty()
+    {
+        choices.push(Choice {
+            id: SANDBOX_MODE,
+            name: "Sandbox",
+            current: sandbox.as_str().to_string(),
+            options: entry
+                .sandbox_modes
+                .iter()
+                .map(|mode| (mode.as_str().to_string(), sandbox_label(*mode).to_string()))
+                .collect(),
+        });
+    }
     if entry.models.is_empty() {
         return choices;
     }
@@ -375,6 +399,14 @@ fn mode_label(mode: SessionMode) -> &'static str {
     match mode {
         SessionMode::Default => "Normal",
         SessionMode::Plan => "Plan first",
+    }
+}
+
+fn sandbox_label(mode: SandboxMode) -> &'static str {
+    match mode {
+        SandboxMode::ReadOnly => "Read only",
+        SandboxMode::WorkspaceWrite => "Workspace write",
+        SandboxMode::DangerFullAccess => "Full access",
     }
 }
 
@@ -431,6 +463,20 @@ fn apply(entry: &Entry, config_id: &str, value: Option<String>) -> Result<Vec<Ch
             // the mode it was leaving.
             if let Ok(mut selected) = entry.selected.lock() {
                 selected.mode = mode;
+            }
+            Ok(choices(entry))
+        }
+        SANDBOX_MODE => {
+            let wanted = value.ok_or_else(|| "no sandbox mode named".to_string())?;
+            let mode = SandboxMode::parse(&wanted)
+                .filter(|mode| entry.sandbox_modes.contains(mode))
+                .ok_or_else(|| "not a sandbox mode this session offers".to_string())?;
+            // The conversation may still refuse (a mode this machine cannot
+            // enforce), and then nothing changes: the client must not be
+            // shown a boundary the session does not have.
+            entry.conversation.set_sandbox_mode(mode)?;
+            if let Ok(mut selected) = entry.selected.lock() {
+                selected.sandbox = Some(mode);
             }
             Ok(choices(entry))
         }
@@ -527,11 +573,13 @@ mod tests {
                 conversation: Arc::clone(&scripted) as Arc<dyn Conversation>,
                 cwd: PathBuf::from("/work"),
                 models,
+                sandbox_modes: Vec::new(),
                 selected: Mutex::new(Selected {
                     model,
                     effort: None,
                     approval_policy: ApprovalPolicy::default(),
                     mode: SessionMode::default(),
+                    sandbox: None,
                 }),
                 outcomes: tokio::sync::Mutex::new(outcomes),
             },
@@ -741,5 +789,83 @@ mod tests {
         let choices = choices(&entry);
         assert!(option(&choices, MODEL).is_none());
         assert!(option(&choices, APPROVAL_POLICY).is_some());
+    }
+
+    /// A session that offers the choice: read only and workspace write, as an
+    /// operator who configured `workspace_write` would.
+    fn sandboxed_entry() -> (Entry, Arc<crate::ScriptedConversation>) {
+        let (mut entry, scripted) = entry(Vec::new());
+        entry.sandbox_modes = vec![SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite];
+        if let Ok(mut selected) = entry.selected.lock() {
+            selected.sandbox = Some(SandboxMode::WorkspaceWrite);
+        }
+        (entry, scripted)
+    }
+
+    fn sandbox_now(entry: &Entry) -> Option<SandboxMode> {
+        entry.selected().sandbox
+    }
+
+    #[test]
+    fn a_client_can_narrow_the_sandbox_and_the_session_is_told() {
+        let (entry, scripted) = sandboxed_entry();
+        let offered = choices(&entry);
+        let sandbox = option(&offered, SANDBOX_MODE).expect("a sandbox option");
+        assert_eq!(sandbox.name, "Sandbox");
+        assert_eq!(sandbox.current, "workspace_write");
+        assert_eq!(
+            sandbox.options,
+            vec![
+                ("read_only".to_string(), "Read only".to_string()),
+                ("workspace_write".to_string(), "Workspace write".to_string()),
+            ]
+        );
+
+        let choices = apply(&entry, SANDBOX_MODE, Some("read_only".to_string())).expect("offered");
+
+        assert_eq!(scripted.sandbox_modes(), vec![SandboxMode::ReadOnly]);
+        assert_eq!(sandbox_now(&entry), Some(SandboxMode::ReadOnly));
+        assert_eq!(
+            option(&choices, SANDBOX_MODE).map(|choice| choice.current.as_str()),
+            Some("read_only")
+        );
+    }
+
+    /// Invariant 8: a value keke does not offer is an error, and what the
+    /// client was shown stays what the session has.
+    #[test]
+    fn an_unknown_or_unoffered_sandbox_mode_is_refused_and_changes_nothing() {
+        let (entry, scripted) = sandboxed_entry();
+
+        for wanted in ["sandboxed", "danger_full_access"] {
+            assert!(apply(&entry, SANDBOX_MODE, Some(wanted.to_string())).is_err());
+        }
+        assert!(apply(&entry, SANDBOX_MODE, None).is_err());
+
+        assert!(
+            scripted.sandbox_modes().is_empty(),
+            "nothing reached the agent"
+        );
+        assert_eq!(sandbox_now(&entry), Some(SandboxMode::WorkspaceWrite));
+    }
+
+    #[test]
+    fn a_sandbox_change_the_agent_refuses_leaves_the_selection_alone() {
+        let (entry, scripted) = sandboxed_entry();
+        scripted.refuse_sandbox_changes("cannot be enforced here");
+
+        let error = apply(&entry, SANDBOX_MODE, Some("read_only".to_string()))
+            .err()
+            .expect("refused");
+
+        assert_eq!(error, "cannot be enforced here");
+        assert_eq!(sandbox_now(&entry), Some(SandboxMode::WorkspaceWrite));
+    }
+
+    #[test]
+    fn no_sandbox_option_is_offered_when_the_session_has_no_choice_to_make() {
+        let (entry, _scripted) = entry(Vec::new());
+        assert!(option(&choices(&entry), SANDBOX_MODE).is_none());
+        assert!(apply(&entry, SANDBOX_MODE, Some("read_only".to_string())).is_err());
     }
 }

@@ -71,6 +71,14 @@ pub enum SandboxError {
          \"danger_full_access\" in $KEKE_HOME/config.toml to run commands unconfined"
     )]
     Unavailable { mode: &'static str, reason: String },
+    #[error(
+        "sandbox_mode \"{requested}\" is looser than the configured \"{ceiling}\", which a \
+         session may narrow but not widen"
+    )]
+    ExceedsCeiling {
+        requested: &'static str,
+        ceiling: &'static str,
+    },
 }
 
 /// Workspace metadata a command may read but not write, beneath every
@@ -417,6 +425,105 @@ pub fn run_helper(args: impl IntoIterator<Item = OsString>) -> std::io::Error {
     }
 }
 
+/// The sandbox a session is running under right now, and the most it may ever
+/// be loosened to.
+///
+/// The configured policy is a *ceiling*: a client (an editor over ACP) may
+/// narrow what the operator configured, never widen it, because the person at
+/// the other end of a protocol is not the person who wrote the config. The
+/// current [`Sandbox`] sits behind a lock so a switch takes effect for the
+/// next command without rebuilding the composition.
+pub struct SandboxSwitch {
+    ceiling: SandboxPolicy,
+    helper: Option<PathBuf>,
+    current: std::sync::RwLock<std::sync::Arc<Sandbox>>,
+}
+
+impl SandboxSwitch {
+    /// Start at the ceiling, failing if this machine cannot enforce it.
+    pub fn new(policy: SandboxPolicy, helper: Option<PathBuf>) -> Result<Self, SandboxError> {
+        let sandbox = Sandbox::new(policy.clone(), helper.clone())?;
+        Ok(Self {
+            ceiling: policy,
+            helper,
+            current: std::sync::RwLock::new(std::sync::Arc::new(sandbox)),
+        })
+    }
+
+    /// A switch over no confinement, for tests and compositions that have
+    /// decided so explicitly. Its ceiling is `danger_full_access`.
+    #[must_use]
+    pub fn unconfined() -> Self {
+        Self {
+            ceiling: SandboxPolicy::unconfined(),
+            helper: None,
+            current: std::sync::RwLock::new(std::sync::Arc::new(Sandbox::unconfined())),
+        }
+    }
+
+    /// The sandbox in force now. Callers take it per use rather than holding
+    /// it, so a later [`Self::set`] reaches them.
+    #[must_use]
+    pub fn current(&self) -> std::sync::Arc<Sandbox> {
+        match self.current.read() {
+            Ok(guard) => std::sync::Arc::clone(&guard),
+            Err(poisoned) => std::sync::Arc::clone(&poisoned.into_inner()),
+        }
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> SandboxMode {
+        self.current().policy().mode
+    }
+
+    #[must_use]
+    pub fn ceiling(&self) -> SandboxMode {
+        self.ceiling.mode
+    }
+
+    /// Every mode no looser than the ceiling, least latitude first.
+    #[must_use]
+    pub fn offered(&self) -> Vec<SandboxMode> {
+        SandboxMode::ALL
+            .into_iter()
+            .filter(|mode| !mode.is_looser_than(self.ceiling.mode))
+            .collect()
+    }
+
+    /// Switch to `mode`, keeping the ceiling's other settings.
+    ///
+    /// Refused when `mode` is looser than the ceiling, or when this machine
+    /// cannot enforce it; the old sandbox stays in force either way, so a
+    /// failed switch never leaves a session unconfined.
+    pub fn set(&self, mode: SandboxMode) -> Result<(), SandboxError> {
+        if mode.is_looser_than(self.ceiling.mode) {
+            return Err(SandboxError::ExceedsCeiling {
+                requested: mode.as_str(),
+                ceiling: self.ceiling.mode.as_str(),
+            });
+        }
+        let policy = SandboxPolicy {
+            mode,
+            ..self.ceiling.clone()
+        };
+        let sandbox = std::sync::Arc::new(Sandbox::new(policy, self.helper.clone())?);
+        match self.current.write() {
+            Ok(mut guard) => *guard = sandbox,
+            Err(poisoned) => *poisoned.into_inner() = sandbox,
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for SandboxSwitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SandboxSwitch")
+            .field("ceiling", &self.ceiling.mode)
+            .field("mode", &self.mode())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +672,49 @@ mod tests {
         assert!(!sandbox.is_enforced());
         assert!(!sandbox.confines());
         assert!(Sandbox::unconfined().is_enforced(), "nothing was asked for");
+    }
+
+    fn switch(mode: SandboxMode) -> SandboxSwitch {
+        SandboxSwitch::new(
+            SandboxPolicy {
+                mode,
+                ..SandboxPolicy::default()
+            },
+            Some(PathBuf::from("/proc/self/exe")),
+        )
+        .expect("this machine must be able to build the sandbox")
+    }
+
+    #[test]
+    fn a_session_cannot_widen_the_sandbox_beyond_what_was_configured() {
+        let switch = switch(SandboxMode::ReadOnly);
+
+        let error = switch
+            .set(SandboxMode::WorkspaceWrite)
+            .expect_err("wider than the ceiling");
+
+        let message = error.to_string();
+        assert!(message.contains("workspace_write") && message.contains("read_only"));
+        assert_eq!(switch.mode(), SandboxMode::ReadOnly, "the old mode stays");
+        assert!(switch.set(SandboxMode::DangerFullAccess).is_err());
+    }
+
+    #[test]
+    fn a_session_can_narrow_the_sandbox_and_is_offered_only_modes_within_the_ceiling() {
+        let switch = switch(SandboxMode::WorkspaceWrite);
+        assert_eq!(
+            switch.offered(),
+            vec![SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite]
+        );
+
+        switch.set(SandboxMode::ReadOnly).expect("narrowing");
+        assert_eq!(switch.mode(), SandboxMode::ReadOnly);
+        assert_eq!(switch.current().policy().mode, SandboxMode::ReadOnly);
+        assert_eq!(switch.ceiling(), SandboxMode::WorkspaceWrite);
+
+        switch
+            .set(SandboxMode::WorkspaceWrite)
+            .expect("back up to the ceiling");
+        assert_eq!(switch.mode(), SandboxMode::WorkspaceWrite);
     }
 }

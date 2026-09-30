@@ -19,7 +19,7 @@ use std::sync::atomic::Ordering;
 
 use keke_config_types::BackgroundLimits;
 use keke_paths::AbsPath;
-use keke_sandbox::Sandbox;
+use keke_sandbox::SandboxSwitch;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -79,9 +79,9 @@ impl Slot {
 /// Every background command one session has started.
 pub struct BackgroundTasks {
     limits: BackgroundLimits,
-    /// The same confinement a foreground `bash` gets. Backgrounding changes
+    /// The same confinement a foreground `bash` gets, read at each spawn so a switch reaches it. Backgrounding changes
     /// who waits, not what the command may do.
-    sandbox: Arc<Sandbox>,
+    sandbox: Arc<SandboxSwitch>,
     next: AtomicU64,
     slots: Mutex<HashMap<TaskId, Slot>>,
     /// Ids in the order they were started, so rows read chronologically. Kept
@@ -96,7 +96,7 @@ pub struct BackgroundTasks {
 
 impl BackgroundTasks {
     #[must_use]
-    pub fn new(limits: BackgroundLimits, sandbox: Arc<Sandbox>) -> Self {
+    pub fn new(limits: BackgroundLimits, sandbox: Arc<SandboxSwitch>) -> Self {
         Self {
             limits,
             sandbox,
@@ -163,7 +163,7 @@ impl BackgroundTasks {
             return Err(BackgroundError::TooMany(self.limits.max_concurrent));
         }
 
-        let mut child = Command::from(self.sandbox.shell(&command, cwd))
+        let mut child = Command::from(self.sandbox.current().shell(&command, cwd))
             // A background command has nobody to answer a prompt, so its stdin
             // is closed rather than left inheriting the terminal's — a child
             // reading from the person's keyboard is the worst kind of hang.

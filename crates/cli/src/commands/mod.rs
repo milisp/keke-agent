@@ -62,6 +62,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     if let Some(effort) = cli.reasoning_effort {
         config.reasoning_effort = Some(effort);
     }
+    if let Some(mode) = cli.sandbox {
+        config.sandbox.mode = mode;
+    }
     if let Some(instructions) = cli.instructions {
         config.instructions = Some(instructions);
     }

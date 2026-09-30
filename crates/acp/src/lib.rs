@@ -27,6 +27,7 @@ pub use local::RouteRecipes;
 pub use local::approvals;
 pub use local::install;
 pub use local::local;
+pub use local::local_sandboxed;
 pub use local::local_with;
 pub use mcp::ClientMcpServer;
 pub use mcp::ClientMcpTransport;

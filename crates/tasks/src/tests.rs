@@ -17,7 +17,7 @@ fn host(limits: BackgroundLimits) -> (Arc<BackgroundTasks>, tempfile::TempDir, A
     (
         Arc::new(BackgroundTasks::new(
             limits,
-            Arc::new(keke_sandbox::Sandbox::unconfined()),
+            Arc::new(keke_sandbox::SandboxSwitch::unconfined()),
         )),
         dir,
         root,
