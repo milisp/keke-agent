@@ -28,6 +28,25 @@ use crate::cli::Command;
 use crate::compose::Composed;
 use crate::ui::is_interactive;
 
+/// Let `--memory-dir` win over `[memory] dir`. Relative paths mean the process
+/// cwd, which is where a person typed the flag; `-C` names the workspace, not
+/// where an agent's private state lives. An empty value is "not given" rather
+/// than a path, so `KEKE_MEMORY_DIR=` cannot turn memory on at the cwd.
+fn apply_memory_dir(config: &mut Config, flag: Option<&std::path::Path>) -> Result<()> {
+    let Some(flag) = flag.filter(|path| !path.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    let absolute = if flag.is_absolute() {
+        flag.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("reading the current directory")?
+            .join(flag)
+    };
+    config.memory.dir = Some(keke_paths::AbsPath::new(absolute).context("--memory-dir")?);
+    Ok(())
+}
+
 pub(crate) async fn run(cli: Cli) -> Result<()> {
     let cwd = match &cli.cwd {
         Some(path) => path.clone(),
@@ -65,6 +84,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     if let Some(instructions) = cli.instructions {
         config.instructions = Some(instructions);
     }
+    apply_memory_dir(&mut config, cli.memory_dir.as_deref())?;
 
     // Only the interactive surface can answer an approval request, so only it
     // installs the bridge; everything else runs with the engine's default.
@@ -507,6 +527,58 @@ mod tests {
             &[layer],
         )
         .expect("merges")
+    }
+
+    fn memory_config(dir: Option<&str>) -> Config {
+        let text = dir.map_or(String::new(), |dir| format!("[memory]\ndir = \"{dir}\"\n"));
+        let layer = keke_config::ConfigLayer::parse(
+            keke_config::LayerSource::Inline("test".to_string()),
+            &text,
+        )
+        .expect("parses");
+        Config::from_layers(
+            HomeLayout {
+                home: keke_paths::AbsPath::new("/home").expect("abs"),
+                workspace_root: keke_paths::AbsPath::new("/ws").expect("abs"),
+            },
+            &[layer],
+        )
+        .expect("merges")
+    }
+
+    #[test]
+    fn the_memory_dir_flag_overrides_configuration() {
+        let mut config = memory_config(Some("/from/config"));
+        apply_memory_dir(&mut config, Some(std::path::Path::new("/from/flag"))).expect("applies");
+        assert_eq!(
+            config.memory.dir.as_ref().map(|d| d.as_str()),
+            Some("/from/flag")
+        );
+
+        // Absent flag leaves configuration alone; so does an empty one, which is
+        // what an exported-but-empty `KEKE_MEMORY_DIR=` looks like.
+        let mut config = memory_config(Some("/from/config"));
+        apply_memory_dir(&mut config, None).expect("applies");
+        apply_memory_dir(&mut config, Some(std::path::Path::new(""))).expect("applies");
+        assert_eq!(
+            config.memory.dir.as_ref().map(|d| d.as_str()),
+            Some("/from/config")
+        );
+    }
+
+    #[test]
+    fn a_relative_memory_dir_flag_resolves_against_the_process_cwd() {
+        let mut config = memory_config(None);
+        apply_memory_dir(&mut config, Some(std::path::Path::new("bots/a"))).expect("applies");
+        let expected = std::env::current_dir().expect("cwd").join("bots/a");
+        assert_eq!(
+            config
+                .memory
+                .dir
+                .as_ref()
+                .map(|d| d.as_path().to_path_buf()),
+            Some(expected)
+        );
     }
 
     /// A provider whose network listing never answers, so a test that

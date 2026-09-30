@@ -28,6 +28,9 @@ drift the way the README status line did.
   running RFC 9728 discovery + RFC 7591 client registration + PKCE, with
   token refresh on expiry and on 401. `keke-oauth` holds the PKCE and
   loopback-redirect logic once instead of once per vendor auth crate.
+- **Per-agent persistent memory** (`keke-memory`) — `[memory]` config,
+  `--memory-dir` / `KEKE_MEMORY_DIR`, `memory_read`/`memory_write` tools and a
+  frozen system-prompt summary, for the TUI, `exec`, and ACP.
 
 ## In progress / next
 

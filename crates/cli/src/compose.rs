@@ -430,6 +430,7 @@ pub(crate) struct Settings<'a> {
     pub catalog_ttl: keke_config_types::ModelCatalogTtl,
     pub subagent_limits: keke_config_types::SubagentLimits,
     pub background_limits: keke_config_types::BackgroundLimits,
+    pub memory: &'a keke_config_types::MemoryConfig,
     pub skills: &'a keke_config_types::SkillSelection,
     pub guardian: &'a keke_config_types::GuardianReviewConfig,
     pub model: &'a keke_config_types::ModelSelection,
@@ -443,6 +444,7 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             catalog_ttl: config.model_catalog_ttl,
             subagent_limits: config.subagents,
             background_limits: config.background,
+            memory: &config.memory,
             skills: &config.skills,
             guardian: &config.guardian,
             model: &config.model,
@@ -503,6 +505,7 @@ impl Composed {
             catalog_ttl,
             subagent_limits,
             background_limits,
+            memory,
             skills,
             guardian,
             model,
@@ -697,6 +700,12 @@ impl Composed {
                 Arc::new(schedules.clone()) as Arc<dyn keke_tasks::TaskSource>,
             ],
         );
+        // Off unless a directory was chosen, by flag or configuration. Children
+        // share this registry, so a subagent sees the same memory its parent
+        // does: it is the agent's memory, not the parent turn's.
+        if let Some(dir) = &memory.dir {
+            keke_memory::install(&mut extensions, dir.clone(), memory);
+        }
         keke_skills::install_with(&mut extensions, &plugins, skills);
         // The credential home is handed in rather than discovered: where the
         // harness keeps state is the composition root's to know. `AuthHome`

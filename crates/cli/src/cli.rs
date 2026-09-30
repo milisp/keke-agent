@@ -42,6 +42,14 @@ pub(crate) struct Cli {
     #[arg(long, global = true, env = "KEKE_INSTRUCTIONS")]
     pub instructions: Option<String>,
 
+    /// Directory holding this agent's persistent memory, overriding the
+    /// `[memory] dir` configuration. A flag as well as a field because one
+    /// installation may drive several named agents, each with its own memory.
+    /// A relative path is taken against the current directory. Unset, and with
+    /// nothing configured, memory is off.
+    #[arg(long, global = true, env = "KEKE_MEMORY_DIR", value_name = "PATH")]
+    pub memory_dir: Option<PathBuf>,
+
     /// Start in plan mode: research and propose, editing nothing but the plan
     /// file, until the plan is approved. A startup flag rather than a
     /// configuration field because plan mode is about the task in front of you,
