@@ -19,10 +19,16 @@ use keke_auth_api::AuthHeaders;
 use keke_auth_api::AuthProvider;
 use keke_auth_api::CredentialSnapshot;
 use keke_auth_api::LoginUi;
+use keke_protocol::ContentBlock;
 use keke_protocol::Message;
+use keke_protocol::Role;
+use keke_protocol::ToolCall;
+use keke_protocol::ToolCallId;
+use keke_protocol::ToolResult;
 use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
 use keke_provider_api::StreamChunk;
+use keke_provider_api::ToolSpec;
 use keke_provider_api::WireApi;
 use serde_json::Value;
 use wiremock::MockServer;
@@ -164,4 +170,85 @@ fn one_tool_call(chunks: &[StreamChunk]) -> (String, String, String) {
     assert_eq!(starts, 1, "expected one ToolCallStart in {chunks:?}");
     assert_eq!(ends, 1, "expected one ToolCallEnd in {chunks:?}");
     (id, name, arguments)
+}
+
+/// An MCP tool id as the engine knows it, and the name a vendor will accept.
+const MCP_ID: &str = "acp:codexia-bots:list_bots";
+const MCP_WIRE: &str = "acp__codexia-bots__list_bots";
+
+/// A request that offers an MCP tool beside a builtin and has already called
+/// the MCP one, so both places a tool name travels are exercised.
+fn mcp_request() -> ModelRequest {
+    let call_id = ToolCallId::new("call_mcp");
+    let spec = |name: &str| ToolSpec {
+        name: name.to_string(),
+        description: "a tool".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+    };
+    ModelRequest {
+        model: "a-model".to_string(),
+        messages: vec![
+            Message::user("list the bots"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: call_id.clone(),
+                    name: MCP_ID.to_string(),
+                    arguments: serde_json::json!({}),
+                })],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult::ok(call_id, "none"))],
+            },
+        ],
+        tools: vec![spec("bash"), spec(MCP_ID)],
+        ..ModelRequest::default()
+    }
+}
+
+/// Every string stored under a `name` key anywhere in `body`. Tool names sit
+/// at a different depth in each wire format, and the schemas used here have no
+/// property called `name`, so walking the whole body finds them all without
+/// encoding any one format's layout.
+fn names_in(body: &Value) -> Vec<String> {
+    fn walk(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    match child {
+                        Value::String(name) if key == "name" => out.push(name.clone()),
+                        _ => walk(child, out),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(body, &mut out);
+    out
+}
+
+/// What a vendor enforces: 1 to 64 of `[a-zA-Z0-9_-]`.
+fn is_vendor_safe(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+/// The tool names in a body built from [`mcp_request`]: all acceptable to a
+/// vendor, `bash` untouched, and the MCP tool renamed in both the definitions
+/// and the history (so exactly twice).
+fn assert_mcp_names_sanitized(body: &Value) {
+    let names = names_in(body);
+    for name in &names {
+        assert!(is_vendor_safe(name), "{name:?} would be rejected: {body}");
+    }
+    let count = |wanted: &str| names.iter().filter(|name| *name == wanted).count();
+    assert_eq!(count("bash"), 1, "{body}");
+    assert_eq!(count(MCP_WIRE), 2, "{body}");
+    assert_eq!(count(MCP_ID), 0, "{body}");
 }

@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
@@ -19,10 +20,13 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+use super::MCP_ID;
 use super::assert_ends_with_one_done;
+use super::assert_mcp_names_sanitized;
 use super::client_over;
 use super::collect;
 use super::collect_ok;
+use super::mcp_request;
 use super::one_tool_call;
 use super::request;
 use super::sent_body;
@@ -371,4 +375,41 @@ async fn an_out_of_credits_403_is_reported_as_an_account_problem() {
         !refused.needs_reauth(),
         "refreshing the token would replace the account message with an auth error"
     );
+}
+
+#[test]
+fn mcp_tool_ids_are_sent_under_names_the_vendor_accepts() {
+    let body = crate::responses_body(&mcp_request(), false, false);
+    assert_mcp_names_sanitized(&body);
+}
+
+#[tokio::test]
+async fn a_tool_call_to_a_renamed_tool_comes_back_under_its_id() {
+    let server = serve(sse(&[
+        json!({"type":"response.output_item.added","output_index":0,"item":{
+            "type":"function_call","id":"fc_2","call_id":"call_2","name":"acp__codexia-bots__list_bots"
+        }})
+        .to_string(),
+        json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"})
+            .to_string(),
+        json!({"type":"response.function_call_arguments.done","output_index":0}).to_string(),
+        json!({"type":"response.output_item.done","output_index":0}).to_string(),
+        completed(),
+    ])).await;
+    let (client, _auth) = client_over(&server);
+
+    let chunks: Vec<_> = client
+        .stream(API, mcp_request())
+        .await
+        .expect("stream starts")
+        .collect()
+        .await;
+    let chunks: Vec<StreamChunk> = chunks.into_iter().map(|c| c.expect("no error")).collect();
+    let (_, name, _) = one_tool_call(&chunks);
+
+    assert_eq!(name, MCP_ID);
+    // The server only ever saw the sanitized name.
+    let body = sent_body(&server).await;
+    assert_mcp_names_sanitized(&body);
+    assert!(!body.to_string().contains(MCP_ID), "{body}");
 }

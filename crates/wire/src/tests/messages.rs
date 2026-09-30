@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
@@ -20,10 +21,13 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+use super::MCP_ID;
 use super::assert_ends_with_one_done;
+use super::assert_mcp_names_sanitized;
 use super::client_over;
 use super::collect;
 use super::collect_ok;
+use super::mcp_request;
 use super::one_tool_call;
 use super::request;
 use super::sent_body;
@@ -513,4 +517,43 @@ fn thinking_displaces_a_temperature_this_wire_would_refuse_beside_it() {
         false,
     );
     assert_eq!(without_effort["temperature"], json!(0.5));
+}
+
+#[test]
+fn mcp_tool_ids_are_sent_under_names_the_vendor_accepts() {
+    let body = crate::messages_body(&mcp_request(), false);
+    assert_mcp_names_sanitized(&body);
+}
+
+#[tokio::test]
+async fn a_tool_call_to_a_renamed_tool_comes_back_under_its_id() {
+    let server = serve(sse(&{
+        let mut frames = vec![
+            json!({"type":"message_start","message":{"usage":{"input_tokens":7}}}).to_string(),
+            json!({"type":"content_block_start","index":0,"content_block":{
+                "type":"tool_use","id":"toolu_2","name":"acp__codexia-bots__list_bots","input":{}
+            }})
+            .to_string(),
+            json!({"type":"content_block_stop","index":0}).to_string(),
+        ];
+        frames.extend(stop("tool_use"));
+        frames
+    }))
+    .await;
+    let (client, _auth) = client_over(&server);
+
+    let chunks: Vec<_> = client
+        .stream(API, mcp_request())
+        .await
+        .expect("stream starts")
+        .collect()
+        .await;
+    let chunks: Vec<StreamChunk> = chunks.into_iter().map(|c| c.expect("no error")).collect();
+    let (_, name, _) = one_tool_call(&chunks);
+
+    assert_eq!(name, MCP_ID);
+    // The server only ever saw the sanitized name.
+    let body = sent_body(&server).await;
+    assert_mcp_names_sanitized(&body);
+    assert!(!body.to_string().contains(MCP_ID), "{body}");
 }

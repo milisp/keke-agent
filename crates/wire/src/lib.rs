@@ -26,6 +26,7 @@ mod decode;
 mod http;
 mod messages;
 mod responses;
+mod tool_names;
 
 pub use chat_completions::chat_completions_body;
 pub use messages::messages_body;
@@ -42,6 +43,7 @@ use keke_protocol::ToolResult;
 use keke_provider_api::ModelInfo;
 use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
+use keke_provider_api::StreamChunk;
 use keke_provider_api::StreamEvent;
 use keke_provider_api::WireApi;
 use serde::Deserialize;
@@ -136,6 +138,9 @@ impl WireClient {
         api: WireApi,
         request: ModelRequest,
     ) -> Result<StreamEvent, ProviderError> {
+        // The decoder has to undo the renaming the body builder did, and both
+        // derive it from the same request.
+        let names = tool_names::ToolNames::for_request(&request);
         let (path, body) = match api {
             WireApi::ChatCompletions => {
                 ("/chat/completions", chat_completions_body(&request, true))
@@ -174,12 +179,21 @@ impl WireClient {
             .map_ok(|event| event.data)
             .boxed();
 
-        Ok(match api {
+        let chunks = match api {
             WireApi::ChatCompletions => decode::run(frames, chat_completions::Decoder::default()),
             WireApi::Responses => decode::run(frames, responses::Decoder::default()),
             WireApi::Messages => decode::run(frames, messages::Decoder::default()),
             WireApi::Custom => return Err(custom_unsupported()),
-        })
+        };
+        Ok(chunks
+            .map_ok(move |chunk| match chunk {
+                StreamChunk::ToolCallStart { id, name } => StreamChunk::ToolCallStart {
+                    id,
+                    name: names.to_id(name),
+                },
+                other => other,
+            })
+            .boxed())
     }
 
     /// Enumerate the endpoint's models.

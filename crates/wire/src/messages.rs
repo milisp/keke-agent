@@ -77,6 +77,7 @@ fn thinking_budget(effort: ReasoningEffort) -> u32 {
 /// Build a `/messages` body.
 #[must_use]
 pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
+    let request = &*crate::tool_names::wire_request(request);
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
     body.insert("stream".to_string(), json!(stream));
