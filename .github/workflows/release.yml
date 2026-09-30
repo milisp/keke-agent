@@ -17,7 +17,7 @@ jobs:
   tag-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate tag matches Cargo.toml version
         run: |
           set -euo pipefail
@@ -54,7 +54,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml pins the channel, so the target has to be added to
       # *that* toolchain -- targets installed on `stable` would be invisible here.
@@ -139,7 +139,7 @@ jobs:
           7z a "$archive" "./target/${{ matrix.target }}/release/${BIN_NAME}.exe"
           echo "ASSET=$archive" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
@@ -154,7 +154,7 @@ jobs:
         shell: bash
         run: cp target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe npm/${{ matrix.npm-dir }}/${{ env.BIN_NAME }}.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-${{ matrix.npm-dir }}
           path: npm/${{ matrix.npm-dir }}
@@ -164,14 +164,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: "${{ env.BIN_NAME }}-*"
           merge-multiple: true
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
@@ -184,9 +184,9 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -194,7 +194,7 @@ jobs:
       - name: Ensure npm supports OIDC trusted publishing
         run: npm install -g npm@latest
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: npm
           pattern: "npm-*"
