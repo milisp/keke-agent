@@ -34,6 +34,7 @@ use crate::decode::WireDecoder;
 /// Build a `/responses` body.
 #[must_use]
 pub fn responses_body(request: &ModelRequest, stream: bool, sampling_is_fixed: bool) -> Value {
+    let request = &*crate::tool_names::wire_request(request);
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
     body.insert("input".to_string(), json!(input_items(request)));

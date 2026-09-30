@@ -41,6 +41,7 @@ use crate::decode::WireDecoder;
 /// sent to a vendor is behavior, not an implementation detail.
 #[must_use]
 pub fn chat_completions_body(request: &ModelRequest, stream: bool) -> Value {
+    let request = &*crate::tool_names::wire_request(request);
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
     body.insert("messages".to_string(), json!(wire_messages(request)));
