@@ -35,6 +35,9 @@ drift the way the README status line did.
   `session/load` and `session/resume` are connected through `keke-mcp` for
   that session, outside the workspace trust gate, with name collisions
   refused.
+- **Per-agent persistent memory** (`keke-memory`) — `[memory]` config,
+  `--memory-dir` / `KEKE_MEMORY_DIR`, `memory_read`/`memory_write` tools and a
+  frozen system-prompt summary, for the TUI, `exec`, and ACP.
 
 ## In progress / next
 

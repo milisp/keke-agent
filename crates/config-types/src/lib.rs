@@ -1285,6 +1285,75 @@ impl Default for BackgroundLimits {
     }
 }
 
+/// Where an agent keeps what it should remember between sessions, and how much
+/// of it may reach the model.
+///
+/// Deployment-varying in the way invariant 9 in `AGENTS.md` means: one
+/// installation may run many named agents, each with its own directory, and
+/// what a deployment is willing to spend of every prompt on remembered text is
+/// answered differently by a small local model and by a large hosted one.
+///
+/// `dir` unset means memory is off — there is no default location, because a
+/// directory chosen for the operator would be shared by agents that were meant
+/// to be separate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// The memory directory. Absolute: a relative path in a file has no
+    /// well-defined base once layers are merged.
+    pub dir: Option<AbsPath>,
+    /// The most bytes of the entry listing put in the system prompt. `0` injects
+    /// no summary; the tools still work.
+    pub summary_max_bytes: u32,
+    /// The most bytes one entry may hold after a write.
+    pub entry_max_bytes: u32,
+}
+
+impl MemoryConfig {
+    pub const MAX_SUMMARY_BYTES: u32 = 65_536;
+    /// A kilobyte. Below this an entry cannot hold a useful paragraph.
+    pub const MIN_ENTRY_BYTES: u32 = 1_024;
+    /// A megabyte: an entry the model must read whole is context it pays for.
+    pub const MAX_ENTRY_BYTES: u32 = 1_048_576;
+
+    /// Validate the summary budget.
+    pub fn check_summary_max_bytes(value: u32) -> Result<u32, String> {
+        if value <= Self::MAX_SUMMARY_BYTES {
+            Ok(value)
+        } else {
+            Err(format!(
+                "memory.summary_max_bytes must be between 0 and {}, got {value}",
+                Self::MAX_SUMMARY_BYTES
+            ))
+        }
+    }
+
+    /// Validate the per-entry ceiling.
+    pub fn check_entry_max_bytes(value: u32) -> Result<u32, String> {
+        if (Self::MIN_ENTRY_BYTES..=Self::MAX_ENTRY_BYTES).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "memory.entry_max_bytes must be between {} and {}, got {value}",
+                Self::MIN_ENTRY_BYTES,
+                Self::MAX_ENTRY_BYTES
+            ))
+        }
+    }
+}
+
+impl Default for MemoryConfig {
+    /// Off, with an 8 KiB summary and 32 KiB entries. 8 KiB is a couple of
+    /// hundred entry names — enough to see what exists without the listing
+    /// becoming the prompt; 32 KiB holds a long profile document.
+    fn default() -> Self {
+        Self {
+            dir: None,
+            summary_max_bytes: 8_192,
+            entry_max_bytes: 32_768,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

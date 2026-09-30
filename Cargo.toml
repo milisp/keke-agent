@@ -15,6 +15,7 @@ members = [
     "crates/guardian",
     "crates/hooks",
     "crates/mcp",
+    "crates/memory",
     "crates/oauth",
     "crates/paths",
     "crates/plan",
@@ -74,6 +75,7 @@ keke-auth-codex = { path = "crates/auth-codex" }
 keke-guardian = { path = "crates/guardian" }
 keke-hooks = { path = "crates/hooks" }
 keke-mcp = { path = "crates/mcp" }
+keke-memory = { path = "crates/memory" }
 keke-plan = { path = "crates/plan" }
 keke-schedule = { path = "crates/schedule" }
 keke-skills = { path = "crates/skills" }

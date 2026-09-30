@@ -34,6 +34,7 @@ use keke_config_types::DirectoryOverride;
 use keke_config_types::GuardianReviewConfig;
 use keke_config_types::HomeLayout;
 use keke_config_types::MaxOutputTokens;
+use keke_config_types::MemoryConfig;
 use keke_config_types::ModelCatalogTtl;
 use keke_config_types::ModelSelection;
 use keke_config_types::PluginTimeouts;
@@ -100,6 +101,8 @@ pub struct Config {
     pub subagents: SubagentLimits,
     /// Bounds on the shell commands a session may leave running.
     pub background: BackgroundLimits,
+    /// Where the agent's persistent memory lives, if anywhere.
+    pub memory: MemoryConfig,
     /// Which plugin-contributed skills this deployment wants.
     pub skills: SkillSelection,
     /// A model-backed approval reviewer, disabled unless a deployment names
@@ -143,6 +146,7 @@ pub struct ConfigFile {
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
     pub background: Option<BackgroundFile>,
+    pub memory: Option<MemoryFile>,
     pub skills: Option<SkillsFile>,
     pub guardian: Option<GuardianFile>,
     /// Seconds. `0` asks the vendor every time.
@@ -234,6 +238,15 @@ pub struct BackgroundFile {
     pub max_concurrent: Option<u8>,
     pub output_bytes: Option<u64>,
     pub kill_grace_millis: Option<u64>,
+}
+
+/// The memory section, separated so a layer can override one field of it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct MemoryFile {
+    pub dir: Option<AbsPath>,
+    pub summary_max_bytes: Option<u32>,
+    pub entry_max_bytes: Option<u32>,
 }
 
 /// The guardian-review section: a model-backed approval reviewer.
@@ -359,6 +372,12 @@ impl Config {
                 base.max_concurrent = background.max_concurrent.or(base.max_concurrent);
                 base.output_bytes = background.output_bytes.or(base.output_bytes);
                 base.kill_grace_millis = background.kill_grace_millis.or(base.kill_grace_millis);
+            }
+            if let Some(memory) = &layer.file.memory {
+                let base = merged.memory.get_or_insert_with(MemoryFile::default);
+                base.dir = memory.dir.clone().or(base.dir.clone());
+                base.summary_max_bytes = memory.summary_max_bytes.or(base.summary_max_bytes);
+                base.entry_max_bytes = memory.entry_max_bytes.or(base.entry_max_bytes);
             }
             if let Some(subagents) = layer.file.subagents {
                 let base = merged.subagents.get_or_insert_with(SubagentsFile::default);
@@ -527,6 +546,20 @@ impl Config {
             },
         };
 
+        let memory_defaults = MemoryConfig::default();
+        let memory_file = merged.memory.unwrap_or_default();
+        let memory = MemoryConfig {
+            dir: memory_file.dir,
+            summary_max_bytes: match memory_file.summary_max_bytes {
+                Some(value) => MemoryConfig::check_summary_max_bytes(value).map_err(invalid)?,
+                None => memory_defaults.summary_max_bytes,
+            },
+            entry_max_bytes: match memory_file.entry_max_bytes {
+                Some(value) => MemoryConfig::check_entry_max_bytes(value).map_err(invalid)?,
+                None => memory_defaults.entry_max_bytes,
+            },
+        };
+
         let max_output_tokens = match merged.max_output_tokens {
             Some(value) => MaxOutputTokens::new(value).map_err(|message| ConfigError::Invalid {
                 path: sources
@@ -642,6 +675,7 @@ impl Config {
             plugins,
             subagents,
             background,
+            memory,
             skills,
             guardian,
             model_catalog_ttl,
@@ -681,6 +715,18 @@ fn check_project_sandbox(
         return Err(ConfigError::Invalid {
             path: source.describe(),
             message: "a repository's config may not choose or enable the guardian reviewer; set it in $KEKE_HOME/config.toml".to_string(),
+        });
+    }
+    // The directory is written to, outside the workspace, by whatever the
+    // repository can talk the model into: a repository must not pick where.
+    if project
+        .memory
+        .as_ref()
+        .is_some_and(|memory| memory.dir.is_some())
+    {
+        return Err(ConfigError::Invalid {
+            path: source.describe(),
+            message: "a repository's config may not choose the memory directory; set it in $KEKE_HOME/config.toml or pass --memory-dir".to_string(),
         });
     }
     if let Some(asked) = project.approval_policy
@@ -1225,6 +1271,60 @@ mod tests {
         // A wait shorter than the floor is busy polling dressed as a setting.
         let layers = vec![layer("user", "[subagents]\ncollect_timeout_millis = 500\n")];
         let error = Config::from_layers(home(), &layers).expect_err("too short");
+        assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    #[test]
+    fn memory_is_off_until_a_directory_is_named() {
+        let config = Config::from_layers(home(), &[]).expect("merges");
+        assert_eq!(config.memory, MemoryConfig::default());
+        assert!(config.memory.dir.is_none());
+
+        let layers = vec![layer(
+            "user",
+            &format!("[memory]\ndir = \"{ROOT}/bots/a\"\nsummary_max_bytes = 0\n"),
+        )];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(
+            config.memory.dir.as_ref().map(AbsPath::as_str),
+            Some(&*format!("{ROOT}/bots/a"))
+        );
+        assert_eq!(config.memory.summary_max_bytes, 0);
+        assert_eq!(
+            config.memory.entry_max_bytes,
+            MemoryConfig::default().entry_max_bytes
+        );
+    }
+
+    #[test]
+    fn out_of_range_memory_limits_fail_loud() {
+        for text in [
+            "[memory]\nsummary_max_bytes = 65537\n",
+            "[memory]\nentry_max_bytes = 10\n",
+            "[memory]\nentry_max_bytes = 2000000\n",
+        ] {
+            let error = Config::from_layers(home(), &[layer("user", text)]).expect_err(text);
+            assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_relative_memory_dir_in_a_file_is_refused() {
+        let parsed = ConfigLayer::parse(
+            LayerSource::Inline("user".to_string()),
+            "[memory]\ndir = \"bots/a\"\n",
+        );
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn a_repository_cannot_choose_where_memory_is_written() {
+        let project = ConfigLayer::parse(
+            LayerSource::Project(std::path::PathBuf::from(".keke/config.toml")),
+            &format!("[memory]\ndir = \"{ROOT}/elsewhere\"\n"),
+        )
+        .expect("parses");
+        let error = Config::from_layers(home(), &[project]).expect_err("refused");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
     }
 

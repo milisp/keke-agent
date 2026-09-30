@@ -503,6 +503,39 @@ both protocol versions, and HTTP+SSE in v1 (v2 has no SSE).
 - Values may use `${VAR}` references, expanded at spawn or request time as for
   configured servers.
 
+## Memory
+
+Persistent, per-agent memory: markdown notes the model reads and writes across
+sessions. Off unless a directory is named.
+
+```toml
+[memory]
+dir = "/var/lib/bots/ada/memory"   # absolute; unset = memory off
+summary_max_bytes = 8192            # 0..=65536; 0 injects no summary
+entry_max_bytes = 32768             # 1024..=1048576; larger writes are refused
+```
+
+`--memory-dir <PATH>` (env `KEKE_MEMORY_DIR`) overrides `dir` for one run, in
+the TUI, `keke resume`, `keke exec`, and `keke agent stdio` alike. A relative
+path is resolved against the process's current directory. `dir` in a file must
+be absolute, and a repository's `.keke/config.toml` may not set it.
+
+Use one directory per bot: a host running several agents (Codexia, for
+example) passes each its own `--memory-dir`. Each entry is `<dir>/<name>.md`,
+where `name` is lowercase letters, digits, `-` and `_` (up to 64 characters,
+starting with a letter or digit). The model gets `memory_read` and
+`memory_write`; neither needs approval.
+
+The system prompt carries a short summary — the entry names and first lines,
+cut to `summary_max_bytes` — taken **once when the session starts**. Writes
+during the session do not change it (that keeps the prompt cache warm), but
+`memory_read` always sees the current files and the next session's summary
+includes them.
+
+`sandbox_mode = "read_only"` governs the workspace and the commands the model
+runs. Memory is the agent's own state, outside the workspace, so the memory
+tools keep working under it.
+
 ## Config Layers
 
 Configuration is loaded from multiple layers, with later layers overriding earlier ones:
