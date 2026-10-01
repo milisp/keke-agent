@@ -35,6 +35,7 @@ pub(super) const SUCCESS: Color = Color::Green;
 #[derive(Debug, Default)]
 pub(crate) struct Rendered {
     pub lines: Vec<Line<'static>>,
+    pub copy_ranges: std::collections::BTreeMap<usize, (usize, usize)>,
     /// `(line index, cell key)` for every row a click may expand or collapse.
     pub toggles: Vec<(usize, usize)>,
     /// `(plan line, line index)` for the last plan drawn, so the frame can
@@ -175,8 +176,15 @@ pub(crate) fn render(
                 let open = full_transcript
                     || default_open(group, latest_command == Some(index))
                         ^ expanded.contains(&index);
-                out.lines
-                    .extend(group_lines(group, open, width, full_transcript));
+                let base = out.lines.len();
+                let (lines, ranges) = group_lines(group, open, width, full_transcript);
+                out.lines.extend(lines);
+                out.copy_ranges.extend(
+                    ranges
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(row, range)| range.map(|range| (base + row, range))),
+                );
                 index = end;
                 out.lines.push(Line::default());
                 continue;
@@ -238,7 +246,7 @@ fn group_lines(
     open: bool,
     width: usize,
     full_transcript: bool,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<Option<(usize, usize)>>) {
     let tools: Vec<&ToolCell> = group
         .iter()
         .filter_map(|cell| match cell {
@@ -247,7 +255,7 @@ fn group_lines(
         })
         .collect();
     let Some(first) = tools.first() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let has_running = tools
         .iter()
@@ -289,11 +297,12 @@ fn group_lines(
     };
 
     let mut lines = Vec::new();
+    let mut copy_ranges = Vec::new();
     if !full_transcript {
         lines.push(header(marker, title, &summary, open, style));
     }
     if !open {
-        return lines;
+        return (lines, copy_ranges);
     }
     if tools.len() > 1 && !same_name {
         // Consecutive reads or lists inside a mixed run collapse into one
@@ -331,7 +340,7 @@ fn group_lines(
                     Span::styled(format!("{verb} "), Style::new().fg(THINKING)),
                     Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
                 ]));
-                push_tool_detail(&mut lines, tool, width, full_transcript);
+                push_tool_detail(&mut lines, &mut copy_ranges, tool, width, full_transcript);
                 index += 1;
             }
         }
@@ -348,7 +357,7 @@ fn group_lines(
                 Span::styled(format!("    {glyph} "), style),
                 Span::styled(tool.summary.clone(), Style::new().fg(THINKING)),
             ]));
-            push_tool_detail(&mut lines, tool, width, full_transcript);
+            push_tool_detail(&mut lines, &mut copy_ranges, tool, width, full_transcript);
         }
     } else {
         if full_transcript {
@@ -358,9 +367,11 @@ fn group_lines(
                 Span::styled(first.summary.clone(), Style::new().fg(THINKING)),
             ]));
         }
-        push_tool_detail(&mut lines, first, width, full_transcript);
+        push_tool_detail(&mut lines, &mut copy_ranges, first, width, full_transcript);
     }
-    lines
+    // Most rows have no special selection policy.
+    copy_ranges.resize(lines.len(), None);
+    (lines, copy_ranges)
 }
 
 /// A call's expanded arguments and result, indented under its own line.
@@ -373,6 +384,7 @@ fn group_lines(
 /// just repeat that.
 fn push_tool_detail(
     lines: &mut Vec<Line<'static>>,
+    copy_ranges: &mut Vec<Option<(usize, usize)>>,
     tool: &ToolCell,
     width: usize,
     full_transcript: bool,
@@ -392,9 +404,9 @@ fn push_tool_detail(
     if let Some(detail) = &tool.detail {
         if crate::transcript::is_diff_tool(&tool.name) {
             if tool.name == "apply_patch" {
-                push_patch_block(lines, detail, width);
+                push_patch_block(lines, copy_ranges, detail, width);
             } else {
-                push_diff_block(lines, "      ", detail, width);
+                push_diff_block(lines, copy_ranges, "      ", detail, width);
             }
         } else if tool.name == "bash" && !full_transcript {
             push_limited_block(lines, "      ", detail, Style::new().fg(THINKING), width);
@@ -406,7 +418,12 @@ fn push_tool_detail(
 
 /// Draw an `apply_patch` result as file-scoped summaries followed by their
 /// diffs, so a multi-file patch can be reviewed one file at a time.
-fn push_patch_block(lines: &mut Vec<Line<'static>>, detail: &str, width: usize) {
+fn push_patch_block(
+    lines: &mut Vec<Line<'static>>,
+    copy_ranges: &mut Vec<Option<(usize, usize)>>,
+    detail: &str,
+    width: usize,
+) {
     for (index, section) in detail.split("\n\n").enumerate() {
         if index > 0 {
             lines.push(Line::default());
@@ -416,7 +433,7 @@ fn push_patch_block(lines: &mut Vec<Line<'static>>, detail: &str, width: usize) 
             continue;
         };
         push_block(lines, "      ", heading, Style::new().fg(THINKING), width);
-        push_diff_block(lines, "        ", hunk, width);
+        push_diff_block(lines, copy_ranges, "        ", hunk, width);
     }
 }
 

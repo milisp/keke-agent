@@ -191,6 +191,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     // selection its own rows before asking it to mark them.
     app.selection
         .set_rows(body.y, visible.iter().map(ToString::to_string).collect());
+    for (row, range) in rendered.copy_ranges.range(offset..offset + visible.len()) {
+        if let Ok(screen_row) = u16::try_from(row - offset) {
+            app.selection
+                .set_copy_range(body.y + screen_row, range.0, range.1);
+        }
+    }
     let visible: Vec<_> = visible
         .into_iter()
         .enumerate()

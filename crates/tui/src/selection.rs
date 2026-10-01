@@ -40,6 +40,9 @@ pub(crate) struct Selection {
     range: Option<(Point, Point)>,
     /// The plain text of each drawn row, keyed by its absolute screen row.
     rows: BTreeMap<u16, String>,
+    /// Character ranges included in copied text, keyed by row. Diff gutters
+    /// remain visible but are neither highlighted nor copied.
+    copy_ranges: BTreeMap<u16, (usize, usize)>,
 }
 
 impl Selection {
@@ -48,6 +51,7 @@ impl Selection {
     /// including ones contributed by [`Self::add_rows`].
     pub(crate) fn set_rows(&mut self, top: u16, rows: Vec<String>) {
         self.rows.clear();
+        self.copy_ranges.clear();
         self.add_rows(top, rows);
     }
 
@@ -60,6 +64,12 @@ impl Selection {
             };
             self.rows.insert(top.saturating_add(offset), row);
         }
+    }
+
+    /// Mark a row's selectable source range, leaving its displayed gutter out
+    /// of copied text. Coordinates are character indexes, not terminal cells.
+    pub(crate) fn set_copy_range(&mut self, row: u16, from: usize, to: usize) {
+        self.copy_ranges.insert(row, (from, to));
     }
 
     pub(crate) fn press(&mut self, at: Point) {
@@ -103,6 +113,7 @@ impl Selection {
     pub(crate) fn clear(&mut self) {
         *self = Self {
             rows: std::mem::take(&mut self.rows),
+            copy_ranges: std::mem::take(&mut self.copy_ranges),
             ..Self::default()
         };
     }
@@ -135,6 +146,10 @@ impl Selection {
                 } else {
                     width
                 };
+                let (select_from, select_to) =
+                    self.copy_ranges.get(&row).copied().unwrap_or((0, width));
+                let from = from.max(select_from);
+                let to = to.min(select_to);
                 (from < to).then_some((row, from, to))
             })
             .collect()

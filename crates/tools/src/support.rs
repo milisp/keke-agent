@@ -177,14 +177,9 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 /// rendered lines ride along in [`ToolResult::value`](keke_protocol::ToolResult)
 /// for a TUI or log viewer to display.
 ///
-/// Follows the layout `codex-rs`'s diff renderer settled on (line-number
-/// gutter sized to the diff's own widest number, `⋮` between hunks, no
-/// `---`/`+++`/`@@` unified-diff scaffolding) — with the sign moved in front
-/// of the gutter rather than after it. codex keeps its diff as live styled
-/// spans inside one process; this one has to survive a JSON round trip
-/// through [`ToolResult::value`](keke_protocol::ToolResult), and a context
-/// line's sign is a space, which a reader on the other side of that trip
-/// cannot tell apart from gutter padding unless the sign comes first.
+/// Uses two line-number columns (old and new), with `⋮` between hunks and no
+/// unified-diff scaffolding. Marker cells survive persistence so surfaces can
+/// style added and removed rows without treating source as diff syntax.
 #[derive(Debug, serde::Serialize)]
 pub struct LineDiff {
     pub added: usize,
@@ -194,8 +189,9 @@ pub struct LineDiff {
 
 struct DiffRow {
     /// `None` marks the `⋮` gap between two hunks.
-    marker: Option<char>,
-    line_number: Option<usize>,
+    marker: Option<()>,
+    old_line: Option<usize>,
+    new_line: Option<usize>,
     text: String,
 }
 
@@ -210,28 +206,33 @@ pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
         if group_index > 0 {
             rows.push(DiffRow {
                 marker: None,
-                line_number: None,
+                old_line: None,
+                new_line: None,
                 text: String::new(),
             });
         }
         for op in group {
             for change in diff.iter_changes(op) {
-                let (marker, line_number) = match change.tag() {
+                let (old_line, new_line) = match change.tag() {
                     similar::ChangeTag::Delete => {
                         removed += 1;
-                        ('-', change.old_index())
+                        (change.old_index(), None)
                     }
                     similar::ChangeTag::Insert => {
                         added += 1;
-                        ('+', change.new_index())
+                        (None, change.new_index())
                     }
-                    similar::ChangeTag::Equal => (' ', change.new_index()),
+                    similar::ChangeTag::Equal => (change.old_index(), change.new_index()),
                 };
-                let line_number = line_number.map(|index| index + 1);
-                max_line_number = max_line_number.max(line_number.unwrap_or(0));
+                let old_line = old_line.map(|index| index + 1);
+                let new_line = new_line.map(|index| index + 1);
+                max_line_number = max_line_number
+                    .max(old_line.unwrap_or(0))
+                    .max(new_line.unwrap_or(0));
                 rows.push(DiffRow {
-                    marker: Some(marker),
-                    line_number,
+                    marker: Some(()),
+                    old_line,
+                    new_line,
                     text: change.value().trim_end_matches('\n').to_string(),
                 });
             }
@@ -246,12 +247,13 @@ pub(crate) fn line_diff(before: &str, after: &str) -> LineDiff {
     for row in &rows {
         match row.marker {
             None => hunk.push_str(&format!("{:gutter_width$}  ⋮\n", "")),
-            Some(marker) => {
-                let line_number = row
-                    .line_number
-                    .map_or(String::new(), |number| number.to_string());
+            Some(_) => {
+                let old_line = row.old_line.map_or(String::new(), |n| n.to_string());
+                let new_line = row.new_line.map_or(String::new(), |n| n.to_string());
+                let old_marker = if row.new_line.is_none() { "-" } else { " " };
+                let new_marker = if row.old_line.is_none() { "+" } else { " " };
                 hunk.push_str(&format!(
-                    "{marker} {line_number:>gutter_width$} {}\n",
+                    "{old_marker}{old_line:>gutter_width$} {new_marker}{new_line:>gutter_width$}  {}\n",
                     row.text
                 ));
             }
@@ -294,8 +296,8 @@ mod tests {
 
         assert_eq!(diff.added, 1);
         assert_eq!(diff.removed, 1);
-        assert!(diff.hunk.contains("- 2 two"), "hunk was:\n{}", diff.hunk);
-        assert!(diff.hunk.contains("+ 2 TWO"), "hunk was:\n{}", diff.hunk);
+        assert!(diff.hunk.contains("-2     two"), "hunk was:\n{}", diff.hunk);
+        assert!(diff.hunk.contains("   +2  TWO"), "hunk was:\n{}", diff.hunk);
     }
 
     #[test]

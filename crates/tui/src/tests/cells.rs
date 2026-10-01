@@ -849,6 +849,135 @@ fn dragging_across_a_line_copies_what_was_dragged_over() {
     assert_eq!(app.take_pending_copy().as_deref(), Some("hello"));
 }
 
+/// A diff gutter is neither copied nor highlighted: what the mouse selects is
+/// exactly what the clipboard receives.
+#[test]
+fn dragging_over_a_diff_row_copies_code_without_gutter() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.selection
+        .set_rows(0, vec!["-  12 +  13  let answer = 42;".to_string()]);
+    app.selection.set_copy_range(0, 13, 30);
+
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        0,
+        0,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        29,
+        0,
+    ));
+    app.handle_mouse(mouse(
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+        29,
+        0,
+    ));
+
+    assert_eq!(app.take_pending_copy().as_deref(), Some("let answer = 42;"));
+    let highlighted = app
+        .selection
+        .highlight(0, ratatui::text::Line::raw("-  12 +  13  let answer = 42;"));
+    let selected: String = highlighted
+        .spans
+        .iter()
+        .filter(|span| {
+            span.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        })
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(selected, "let answer = 42;");
+}
+
+/// File headings, wrapped headings and scrolling must not shift a diff row's
+/// clipboard boundary onto a different rendered row.
+#[test]
+fn drawing_a_scrolled_multi_file_patch_copies_only_the_selected_source() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    for full_transcript in [false, true] {
+        let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+        app.apply(Update::ToolCallStarted(call("patch", "apply_patch")));
+        let hunk: String = (1..=30)
+            .map(|n| format!("    +{n:>2}  中文{n}\n"))
+            .collect();
+        app.apply(Update::ToolCallEnded(ToolResult {
+            id: ToolCallId::new("patch"),
+            status: ToolStatus::Ok,
+            content: vec![ContentBlock::text("updated two files")],
+            value: Some(serde_json::json!({"changes": [
+                {"path": "a/very/long/file/path/first.rs", "diff": {"added": 1, "removed": 0, "hunk": "   +1  first\n"}},
+                {"path": "second.rs", "diff": {"added": 30, "removed": 0, "hunk": hunk}},
+            ]})),
+        }));
+        if full_transcript {
+            app.handle_key(control('o'));
+        }
+        let Ok(mut terminal) = Terminal::new(TestBackend::new(40, 15)) else {
+            panic!("create test terminal");
+        };
+        assert!(
+            terminal
+                .draw(|frame| crate::draw::draw(frame, &mut app))
+                .is_ok()
+        );
+        app.scroll.scroll_up(3);
+        assert!(
+            terminal
+                .draw(|frame| crate::draw::draw(frame, &mut app))
+                .is_ok()
+        );
+        assert!(app.scroll.offset() > 0);
+
+        let buffer = terminal.backend().buffer();
+        let target = (0..15).find(|&row| {
+            // Wide glyphs leave a blank placeholder cell; concatenating the
+            // entire buffer row would insert a space inside each CJK word.
+            buffer[(17, row)].symbol() == "中"
+                && buffer[(19, row)].symbol() == "文"
+                && buffer[(21, row)].symbol() == "2"
+                && buffer[(22, row)].symbol() == "4"
+        });
+        let Some(row) = target else {
+            panic!("the scrolled diff should contain line 24: {buffer:?}");
+        };
+        app.handle_mouse(mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            0,
+            row,
+        ));
+        app.handle_mouse(mouse(
+            crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            39,
+            row,
+        ));
+        app.handle_mouse(mouse(
+            crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            39,
+            row,
+        ));
+        assert_eq!(app.take_pending_copy().as_deref(), Some("中文24"));
+        assert!(
+            terminal
+                .draw(|frame| crate::draw::draw(frame, &mut app))
+                .is_ok()
+        );
+        assert!(
+            !terminal.backend().buffer()[(8, row)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        assert!(
+            terminal.backend().buffer()[(17, row)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+    }
+}
+
 /// A drag down the screen takes the rows between its ends whole.
 #[test]
 fn dragging_over_several_rows_copies_them_in_reading_order() {

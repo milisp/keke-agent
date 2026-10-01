@@ -660,10 +660,7 @@ fn patch_diff(result: &ToolResult) -> Option<String> {
     for change in changes {
         let path = change.get("path")?.as_str()?;
         let diff = change.get("diff")?;
-        let hunk = diff.get("hunk")?.as_str()?.trim_end();
-        if hunk.is_empty() {
-            continue;
-        }
+        let hunk = diff.get("hunk")?.as_str()?.trim_end_matches('\n');
         let added = diff
             .get("added")
             .and_then(serde_json::Value::as_u64)
@@ -674,7 +671,15 @@ fn patch_diff(result: &ToolResult) -> Option<String> {
             .unwrap_or(0);
         let destination = change.get("moved_to").and_then(serde_json::Value::as_str);
         let heading = destination.map_or_else(|| path.to_string(), |to| format!("{path} → {to}"));
-        sections.push(format!("{heading} (+{added} -{removed})\n{hunk}"));
+        if hunk.is_empty() {
+            let kind = change
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("updated");
+            sections.push(format!("{heading} ({kind}, +{added} -{removed})"));
+        } else {
+            sections.push(format!("{heading} (+{added} -{removed})\n{hunk}"));
+        }
     }
     (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
@@ -691,7 +696,7 @@ fn diff_hunk(result: &ToolResult) -> Option<String> {
         .get("diff")?
         .get("hunk")?
         .as_str()?
-        .trim_end();
+        .trim_end_matches('\n');
     (!hunk.is_empty()).then(|| hunk.to_string())
 }
 
@@ -802,6 +807,48 @@ mod detail_line_tests {
             detail_line("write_file", &result).as_deref(),
             Some("edited file.rs (+1 -1, 1 replacement)")
         );
+    }
+
+    #[test]
+    fn diff_details_preserve_source_trailing_whitespace() {
+        let hunk = "   +1  hello  \t\n";
+        let result = result_with_value(serde_json::json!({
+            "diff": {"added": 1, "removed": 0, "hunk": hunk},
+        }));
+        for tool in ["edit", "write_file"] {
+            assert_eq!(
+                detail_line(tool, &result).as_deref(),
+                Some("   +1  hello  \t")
+            );
+        }
+        let result = result_with_value(serde_json::json!({
+            "changes": [{"path": "a.rs", "diff": {"added": 1, "removed": 0, "hunk": hunk}}],
+        }));
+        assert_eq!(
+            detail_line("apply_patch", &result).as_deref(),
+            Some("a.rs (+1 -0)\n   +1  hello  \t")
+        );
+    }
+
+    #[test]
+    fn mixed_patches_keep_moves_and_empty_file_changes() {
+        let result = result_with_value(serde_json::json!({
+            "changes": [
+                {"path": "old.rs", "moved_to": "new.rs", "kind": "updated", "diff": {"added": 0, "removed": 0, "hunk": ""}},
+                {"path": "empty.rs", "kind": "added", "diff": {"added": 0, "removed": 0, "hunk": ""}},
+                {"path": "deleted.rs", "kind": "deleted", "diff": {"added": 0, "removed": 0, "hunk": ""}},
+                {"path": "changed.rs", "kind": "updated", "diff": {"added": 1, "removed": 0, "hunk": "   +1  code\n"}},
+            ],
+        }));
+        let detail = detail_line("apply_patch", &result).unwrap();
+        for heading in [
+            "old.rs → new.rs",
+            "empty.rs (add",
+            "deleted.rs (delete",
+            "changed.rs",
+        ] {
+            assert!(detail.contains(heading), "{detail}");
+        }
     }
 
     #[test]
