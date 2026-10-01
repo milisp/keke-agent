@@ -729,9 +729,12 @@ fn check_project_sandbox(
             message: "a repository's config may not choose the memory directory; set it in $KEKE_HOME/config.toml or pass --memory-dir".to_string(),
         });
     }
+    // Auto also hands sandbox escapes to the guardian, so a repository must not
+    // move a user who is not already on Auto into it, whatever they chose.
+    let current_policy = beneath.approval_policy.unwrap_or_default();
     if let Some(asked) = project.approval_policy
-        && beneath.approval_policy.unwrap_or_default() == ApprovalPolicy::OnRequest
-        && asked != ApprovalPolicy::OnRequest
+        && ((current_policy == ApprovalPolicy::OnRequest && asked != ApprovalPolicy::OnRequest)
+            || (asked == ApprovalPolicy::Auto && current_policy != ApprovalPolicy::Auto))
     {
         return Err(ConfigError::Invalid {
             path: source.describe(),
@@ -950,6 +953,19 @@ mod tests {
             .expect_err("project skipped ordinary approval");
             assert!(error.to_string().contains("may not loosen"));
         }
+    }
+
+    #[test]
+    fn a_repository_cannot_move_the_user_into_auto() {
+        let error = Config::from_layers(
+            home(),
+            &[
+                layer("user", "approval_policy = \"accept_edits\"\n"),
+                project("approval_policy = \"auto\"\n"),
+            ],
+        )
+        .expect_err("project moved the user into auto");
+        assert!(error.to_string().contains("may not loosen"));
     }
 
     #[test]

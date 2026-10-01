@@ -9,6 +9,10 @@ pub struct ApprovalRequest {
     pub call: ToolCall,
     /// Why approval is required, shown to whoever decides.
     pub reason: String,
+    /// What the harness saw that the model's own words do not vouch for: for a
+    /// sandbox escape, the last sandboxed `bash` call and what it returned. A
+    /// reviewer weighing the model's justification needs the failure itself.
+    pub evidence: Option<String>,
 }
 
 /// The answer to an [`ApprovalRequest`].

@@ -126,6 +126,14 @@ pub enum SessionEvent {
         allow: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// The command under review, recorded for a sandbox escape only: what
+        /// the reviewer allowed to run unconfined belongs in the log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        /// The model's stated reason for stepping outside the sandbox — the
+        /// text the reviewer actually weighed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        justification: Option<String>,
     },
     /// Model-visible text an extension put in front of the model.
     ///

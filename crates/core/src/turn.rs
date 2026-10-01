@@ -26,6 +26,7 @@ use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
 use keke_provider_api::StreamChunk;
 use keke_provider_api::ToolSpec;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ListToolsContext;
 
 use crate::CoreError;
@@ -286,6 +287,13 @@ impl Session {
                         cancelled: Arc::clone(&self.cancelled),
                         policy: self.approval.get(),
                         memory: &self.approvals,
+                        evidence: tools
+                            .get(&call.name)
+                            .is_some_and(|tool| {
+                                tool.capabilities().approval == ApprovalRequirement::ReviewRequired
+                            })
+                            .then(|| escape_evidence(&self.history))
+                            .flatten(),
                     },
                 )
                 .await;
@@ -621,6 +629,55 @@ impl MessageAssembler {
 }
 
 /// Extract the tool calls a message is asking for.
+/// The last sandboxed `bash` call and what it returned, for the reviewer of a
+/// sandbox escape.
+///
+/// The model's justification says the sandbox got in the way; this is the
+/// harness's own record of whether it did. Only the tail of the output is kept
+/// — a failure is reported last — and it is still command output, so a
+/// reviewer must read it as data.
+fn escape_evidence(history: &[Message]) -> Option<String> {
+    const MAX_CHARS: usize = 2000;
+    for (index, message) in history.iter().enumerate().rev() {
+        for block in message.content.iter().rev() {
+            let ContentBlock::ToolCall(call) = block else {
+                continue;
+            };
+            if call.name != "bash" {
+                continue;
+            }
+            let result = history[index + 1..]
+                .iter()
+                .flat_map(|later| later.content.iter())
+                .find_map(|block| match block {
+                    ContentBlock::ToolResult(result) if result.id == call.id => Some(result),
+                    _ => None,
+                });
+            let Some(result) = result else {
+                continue;
+            };
+            let output: String = result
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let skipped = output.chars().count().saturating_sub(MAX_CHARS);
+            let tail: String = output.chars().skip(skipped).collect();
+            let command = call
+                .arguments
+                .get("command")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            return Some(format!("command: {command}\noutput:\n{tail}"));
+        }
+    }
+    None
+}
+
 fn tool_calls(message: &Message) -> Vec<ToolCall> {
     message
         .content
@@ -649,4 +706,65 @@ fn tool_specs(tools: &ToolSet) -> Vec<ToolSpec> {
             input_schema: tool.input_schema(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use keke_protocol::ToolResult;
+    use keke_protocol::ToolStatus;
+
+    use super::*;
+
+    fn exchange(id: &str, name: &str, command: &str, output: &str) -> [Message; 2] {
+        [
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: ToolCallId::new(id),
+                    name: name.to_string(),
+                    arguments: serde_json::json!({ "command": command }),
+                })],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult {
+                    id: ToolCallId::new(id),
+                    status: ToolStatus::Error,
+                    content: vec![ContentBlock::text(output)],
+                    value: None,
+                })],
+            },
+        ]
+    }
+
+    #[test]
+    fn escape_evidence_is_the_last_sandboxed_bash_call_and_its_output() {
+        let mut history = Vec::new();
+        history.extend(exchange("c1", "bash", "ls", "fine"));
+        history.extend(exchange("c2", "read_file", "x", "unrelated"));
+        history.extend(exchange(
+            "c3",
+            "bash",
+            "cargo fetch",
+            "Operation not permitted",
+        ));
+        assert_eq!(
+            escape_evidence(&history).as_deref(),
+            Some("command: cargo fetch\noutput:\nOperation not permitted")
+        );
+    }
+
+    #[test]
+    fn escape_evidence_keeps_the_tail_of_long_output() {
+        let output = format!("{}FAILED", "x".repeat(5000));
+        let history = exchange("c1", "bash", "make", &output).to_vec();
+        let evidence = escape_evidence(&history).expect("evidence");
+        assert!(evidence.ends_with("FAILED"));
+        assert!(evidence.chars().count() < 2100);
+    }
+
+    #[test]
+    fn no_sandboxed_bash_call_means_no_evidence() {
+        assert_eq!(escape_evidence(&[Message::user("hi")]), None);
+    }
 }

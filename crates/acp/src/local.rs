@@ -790,6 +790,7 @@ mod tests {
                 arguments: serde_json::json!({ "command": "rm -rf /" }),
             },
             reason: "runs a command".to_string(),
+            evidence: None,
         }
     }
 

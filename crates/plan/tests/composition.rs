@@ -179,6 +179,7 @@ async fn dispatch(harness: &Harness, call: &ToolCall, policy: ApprovalPolicy) ->
             cancelled: Arc::new(|| false),
             policy,
             memory: &harness.memory,
+            evidence: None,
         },
     )
     .await

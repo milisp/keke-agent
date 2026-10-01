@@ -83,6 +83,8 @@ pub struct Dispatch<'a> {
     pub policy: ApprovalPolicy,
     /// Standing permissions this session has already been given.
     pub memory: &'a ApprovalMemory,
+    /// What the reviewer should see beside the call, when the caller has it.
+    pub evidence: Option<String>,
 }
 
 /// What a dispatch produced.
@@ -104,6 +106,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         cancelled,
         policy,
         memory,
+        evidence,
     } = ctx;
 
     let Some(tool) = tools.get(&call.name) else {
@@ -153,6 +156,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         let request = ApprovalRequest {
             call: call.clone(),
             reason,
+            evidence,
         };
         match review(registry, ext_ctx, &request, policy, capabilities.approval).await {
             ApprovalDecision::Allow { note } => approval_note = note,
