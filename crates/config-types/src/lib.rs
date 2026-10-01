@@ -202,7 +202,7 @@ impl SandboxMode {
 pub struct SandboxPolicy {
     pub mode: SandboxMode,
     /// Whether Bash confined by an enforced sandbox skips ordinary
-    /// `on-request` approval. Escalation outside the sandbox still asks.
+    /// `on-request` approval. Escalation outside the sandbox still requires review.
     #[serde(default = "default_auto_approve_bash")]
     pub auto_approve_bash: bool,
     /// Off by default: a command that can reach the network can send the

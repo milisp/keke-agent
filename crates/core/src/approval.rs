@@ -30,6 +30,9 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
     if capabilities.approval == ApprovalRequirement::Always {
         return Some("needs a person's answer".to_string());
     }
+    if capabilities.approval == ApprovalRequirement::ReviewRequired {
+        return Some("runs a command outside the sandbox".to_string());
+    }
     if capabilities.approval == ApprovalRequirement::AutoApproved {
         return None;
     }
@@ -133,6 +136,21 @@ mod tests {
                 approval_reason(policy, &always).is_some(),
                 "{policy:?} answered for a person it should not have"
             );
+        }
+    }
+
+    #[test]
+    fn sandbox_escapes_require_review_under_every_policy() {
+        let mut escape = capabilities(ToolKind::Execute);
+        escape.approval = ApprovalRequirement::ReviewRequired;
+        for policy in [
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::AcceptEdits,
+            ApprovalPolicy::Auto,
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Never,
+        ] {
+            assert!(approval_reason(policy, &escape).is_some(), "{policy:?}");
         }
     }
 

@@ -142,8 +142,8 @@ already write, which is a boundary that would be claimed rather than kept. So
 there `Sandbox::is_enforced` is false and the tool pack makes every command
 a person's decision; the boundary is a person, and nothing calls it a
 sandbox. Where there is a sandbox, `bash_unsandboxed` is how a command steps
-out of it: every call asks, with the model's stated reason, as codex's
-`require_escalated` does.
+out of it: every call requires review with the model's stated reason. Auto
+uses the guardian reviewer; other policies require a person's answer.
 
 The sandbox is a setting a repository could otherwise switch off, so the
 project config layer may only tighten it — the same reasoning as the plugin

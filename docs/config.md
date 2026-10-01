@@ -386,13 +386,13 @@ With `approval_policy = "on_request"` and `workspace_write`, enforced sandboxed 
 an ordinary approval prompt when `auto_approve_bash = true`. Set it to `false`
 to put Bash through ordinary approval before it runs. Edit tools still follow the
 approval policy. This setting does not approve sandbox escapes: every
-`bash_unsandboxed` call asks explicitly. A repository may turn auto-approval
+`bash_unsandboxed` call requires review. A repository may turn auto-approval
 off, but may not turn it back on after the user turned it off.
 
 `approval_policy = "auto"` sends ordinary approval requests to the model-backed
 guardian reviewer. Its model defaults to the session model and can be selected
 with `[guardian] provider` and `model`. A failed or unclear review denies the
-call. Sandbox escapes still require a person's answer. `never` skips ordinary
+call. Sandbox escapes also go to the guardian, on every call. `never` skips ordinary
 approval entirely; it is not Auto mode.
 
 In Auto mode, `write_file`, `edit`, and `apply_patch` are decided by the paths
@@ -438,9 +438,10 @@ rest of the workspace.
 
 **Stepping outside.** When a command fails because of the sandbox — it needs
 the network or writes outside the workspace — the model can
-rerun it with `bash_unsandboxed`, giving a reason. You are asked every time, a
-standing "allow always" does not answer for you, and where nobody can answer
-(`keke exec`) it is refused.
+rerun it with `bash_unsandboxed`, giving a reason. In Auto mode the guardian
+reviews every escape; other policies ask you every time. A standing "allow
+always" never skips this review. If the required reviewer is unavailable,
+the call is refused; `keke exec` can review escapes in Auto mode.
 
 **`read_only` writes nowhere.** `write_file`, `edit`, and `apply_patch` write
 from keke's own process, where no sandbox reaches, so under `read_only` they

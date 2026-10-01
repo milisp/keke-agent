@@ -44,6 +44,7 @@ use keke_provider_api::ProviderInfo;
 use keke_provider_api::StreamChunk;
 use keke_provider_api::StreamEvent;
 use keke_provider_api::WireApi;
+use keke_tool::ApprovalRequirement;
 use keke_tool::ArcTool;
 use keke_tool::ListToolsContext;
 use keke_tool::Tool;
@@ -205,6 +206,38 @@ impl Tool for Overrunning {
 
 /// Claims to run commands, so the policy has something to object to.
 struct Dangerous;
+
+struct ReviewedCommand(ApprovalRequirement);
+
+impl Tool for ReviewedCommand {
+    type Args = EchoArgs;
+    type Output = EchoOut;
+
+    fn id(&self) -> ToolId {
+        Dangerous.id()
+    }
+
+    fn description(&self, ctx: &ListToolsContext) -> ToolDescription {
+        Dangerous.description(ctx)
+    }
+
+    fn capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities {
+            approval: self.0,
+            ..Dangerous.capabilities()
+        }
+    }
+
+    async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
+        Dangerous.run(ctx, args).await
+    }
+}
+
+impl ToolContributor for ReviewedCommand {
+    fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
+        vec![Arc::new(Self(self.0))]
+    }
+}
 
 impl Tool for Dangerous {
     type Args = EchoArgs;
@@ -1004,11 +1037,20 @@ async fn run_with_reviewer_kind(
     policy: ApprovalPolicy,
     automatic: bool,
 ) -> (Vec<SessionEvent>, Vec<String>) {
+    run_with_requirement(decision, policy, automatic, ApprovalRequirement::ByPolicy).await
+}
+
+async fn run_with_requirement(
+    decision: Option<ApprovalDecision>,
+    policy: ApprovalPolicy,
+    automatic: bool,
+    requirement: ApprovalRequirement,
+) -> (Vec<SessionEvent>, Vec<String>) {
     let harness = harness();
     let (provider, _seen) = ScriptedProvider::new(dangerous_calls());
 
     let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.tool_contributor(Arc::new(EchoPack));
+    extensions.tool_contributor(Arc::new(ReviewedCommand(requirement)));
     let asked = match decision {
         Some(decision) => {
             let (mut reviewer, asked) = Reviewer::new(decision);
@@ -1101,6 +1143,71 @@ async fn auto_uses_an_automatic_reviewer_but_never_skips_it() {
         asked.is_empty(),
         "Auto must not silently use the human bridge"
     );
+    assert_eq!(
+        statuses(&events),
+        vec![ToolStatus::Denied, ToolStatus::Denied]
+    );
+}
+
+#[tokio::test]
+async fn sandbox_escapes_are_reviewed_each_time_by_the_selected_reviewer() {
+    for (policy, automatic) in [
+        (ApprovalPolicy::Auto, true),
+        (ApprovalPolicy::OnRequest, false),
+        (ApprovalPolicy::AcceptEdits, false),
+        (ApprovalPolicy::OnFailure, false),
+        (ApprovalPolicy::Never, false),
+    ] {
+        let (events, asked) = run_with_requirement(
+            Some(ApprovalDecision::AllowAlways),
+            policy,
+            automatic,
+            ApprovalRequirement::ReviewRequired,
+        )
+        .await;
+        assert_eq!(asked, vec!["dangerous", "dangerous"], "{policy:?}");
+        assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+    }
+}
+
+#[tokio::test]
+async fn sandbox_escape_review_does_not_fall_back_to_the_wrong_reviewer() {
+    for (policy, automatic, requirement) in [
+        (
+            ApprovalPolicy::Auto,
+            false,
+            ApprovalRequirement::ReviewRequired,
+        ),
+        (
+            ApprovalPolicy::OnRequest,
+            true,
+            ApprovalRequirement::ReviewRequired,
+        ),
+        (ApprovalPolicy::Auto, true, ApprovalRequirement::Always),
+    ] {
+        let (events, asked) = run_with_requirement(
+            Some(ApprovalDecision::Allow { note: None }),
+            policy,
+            automatic,
+            requirement,
+        )
+        .await;
+        assert!(asked.is_empty());
+        assert_eq!(
+            statuses(&events),
+            vec![ToolStatus::Denied, ToolStatus::Denied]
+        );
+    }
+    let (events, asked) = run_with_requirement(
+        Some(ApprovalDecision::Deny {
+            reason: "unsafe escape".to_string(),
+        }),
+        ApprovalPolicy::Auto,
+        true,
+        ApprovalRequirement::ReviewRequired,
+    )
+    .await;
+    assert_eq!(asked, vec!["dangerous", "dangerous"]);
     assert_eq!(
         statuses(&events),
         vec![ToolStatus::Denied, ToolStatus::Denied]

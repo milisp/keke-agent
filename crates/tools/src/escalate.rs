@@ -1,10 +1,7 @@
-//! Where the sandbox stops, a person decides.
+//! Commands outside the sandbox require review on every call.
 //!
-//! codex's arrangement: a command the sandbox refuses is not retried bare on
-//! the model's say-so. The model asks — with a reason — and a person answers
-//! each time. That is what makes the sandbox's defaults bearable: `cargo add`
-//! needing the network is one approval rather than a reason to turn the
-//! sandbox off.
+//! Auto delegates to the guardian; other policies ask a person. Neither a
+//! permissive policy nor standing permission can skip this review.
 
 use std::sync::Arc;
 
@@ -27,7 +24,7 @@ use crate::bash::BashOutput;
 pub struct BashUnsandboxedArgs {
     /// Shell command line, run from the workspace root with no sandbox.
     pub command: String,
-    /// Why this cannot run in the sandbox, for the person deciding — what it
+    /// Why this cannot run in the sandbox, for the reviewer deciding — what it
     /// needs (the network, a path outside the workspace, `.git`) and why.
     pub justification: String,
     /// Wall-clock budget in milliseconds, as for `bash`.
@@ -39,9 +36,8 @@ pub struct BashUnsandboxedArgs {
 ///
 /// Offered only where the sandbox confines something; with nothing confined
 /// there is nothing to step outside of. Foreground only: a command allowed
-/// out of the sandbox is one a person approved for a reason they read, and a
-/// background task would go on running unconfined long after they stopped
-/// watching it.
+/// out of the sandbox is one approved for a stated reason, and a
+/// background task would go on running unconfined beyond the reviewed call.
 pub struct BashUnsandboxed {
     inner: Bash,
 }
@@ -74,8 +70,8 @@ impl Tool for BashUnsandboxed {
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
         ToolDescription::new(
-            "Run a shell command outside the sandbox. The person is asked every time and sees \
-             your justification, so use it only after `bash` failed because of the sandbox — \
+            "Run a shell command outside the sandbox. Every call is reviewed by the guardian in Auto \
+             mode, otherwise by a person, with your justification, so use it only after `bash` failed because of the sandbox — \
              the command needs the network or must write outside the workspace — and say which. \
              Never use it to avoid trying `bash` first.",
         )
@@ -83,7 +79,7 @@ impl Tool for BashUnsandboxed {
 
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities {
-            approval: ApprovalRequirement::Always,
+            approval: ApprovalRequirement::ReviewRequired,
             ..self.inner.capabilities()
         }
     }

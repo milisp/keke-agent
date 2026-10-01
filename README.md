@@ -68,7 +68,8 @@ all other settings are documented in [`docs/config.md`](docs/config.md).
 - **Sandboxing & approvals** — shell commands run under an OS sandbox
   (Seatbelt on macOS, Landlock + seccomp on Linux): by default they may write
   only inside the workspace, cannot touch `.git`, and cannot reach the
-  network; stepping outside asks you each time. On Windows, which has no
+  network; stepping outside is reviewed each time (by the guardian in Auto mode,
+  otherwise by you). On Windows, which has no
   sandbox, every command asks you instead. A repository's own config can
   tighten that but never loosen it. See
   [`docs/config.md`](docs/config.md#sandbox).

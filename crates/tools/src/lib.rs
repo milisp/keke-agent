@@ -390,7 +390,7 @@ mod tests {
                 offered(confining),
                 Some((
                     "bash_unsandboxed".to_string(),
-                    keke_tool::ApprovalRequirement::Always
+                    keke_tool::ApprovalRequirement::ReviewRequired
                 ))
             );
         } else {

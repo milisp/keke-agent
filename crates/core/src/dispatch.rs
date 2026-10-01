@@ -245,6 +245,8 @@ async fn review(
             !contributor.automatic()
         } else if policy == ApprovalPolicy::Auto {
             contributor.automatic()
+        } else if requirement == ApprovalRequirement::ReviewRequired {
+            !contributor.automatic()
         } else {
             contributor.on_request()
         };

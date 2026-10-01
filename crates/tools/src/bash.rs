@@ -150,8 +150,8 @@ impl Tool for Bash {
             text.push_str(&format!(
                 "\n\nCommands run in a sandbox: {limits}. When a command fails because of \
                  that — \"Operation not permitted\", \"Permission denied\", or a network error \
-                 — and it genuinely needs more, rerun it with `bash_unsandboxed`, which asks \
-                 the person first."
+                 — and it genuinely needs more, rerun it with `bash_unsandboxed`, which requires \
+                 review first (automatic in Auto mode, otherwise by a person)."
             ));
         }
         ToolDescription::new(text)

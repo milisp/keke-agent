@@ -328,7 +328,7 @@ pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
     match policy {
         ApprovalPolicy::OnRequest => "ask before edits and commands without sandbox auto-approval",
         ApprovalPolicy::AcceptEdits => "accept edits and scoped Git commits; ask for other escapes",
-        ApprovalPolicy::Auto => "automatic review for edits; sandbox escapes still ask",
+        ApprovalPolicy::Auto => "automatic review for edits and sandbox escapes",
         ApprovalPolicy::OnFailure => "legacy: skips ordinary approval checks",
         ApprovalPolicy::Never => "skip ordinary approvals; sandbox escapes still ask",
     }

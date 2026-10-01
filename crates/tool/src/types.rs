@@ -64,13 +64,10 @@ impl ToolKind {
 /// *asking is what they are for* — a tool that exists to put a decision in
 /// front of a person has done nothing if the policy answers for them.
 ///
-/// This is not a way to be stricter than the policy in general. It is a way for
-/// a tool to say that a policy answering on a person's behalf would make the
-/// call meaningless, which is a property of the tool rather than of the
-/// deployment. The other case is a tool that cannot provide the containment
-/// the policy was written assuming — a shell with no sandbox to run in, an
-/// edit under a mode that promised no writes — where a person is the only
-/// boundary left.
+/// Sandbox escapes require review even under a policy that skips ordinary
+/// approval. Human-only decisions remain separate: the policy cannot answer a
+/// question whose purpose is to get a person's assent, or replace the person
+/// who stands in for an unavailable sandbox.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ApprovalRequirement {
     /// The policy and the tool's kind decide, as usual.
@@ -87,6 +84,10 @@ pub enum ApprovalRequirement {
     ///
     /// Only a per-call answer can say this — see [`crate::Tool::call_approval`].
     Confined,
+    /// Review every call, including under policies that skip ordinary approval.
+    /// Auto uses an automatic reviewer; every other policy asks a person.
+    /// Standing permission never skips this review. Used for sandbox escapes.
+    ReviewRequired,
     /// A person is asked whatever the policy says, and a standing "allow
     /// always" does not answer for them either.
     ///
