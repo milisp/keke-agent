@@ -19,7 +19,7 @@ pub const DEFAULT_API_KEY_REF: &str = "XAI_API_KEY";
 /// with `426 Your Grok CLI version (none) is outdated`. It is the protocol
 /// generation this crate speaks, and a deployment that meets a raised gate
 /// before keke ships a new release needs to say so without forking the plugin.
-pub const DEFAULT_CLIENT_VERSION: &str = "0.1.202";
+pub const DEFAULT_CLIENT_VERSION: &str = "1.0.13";
 
 /// What keke calls itself to that proxy. The gate is on the version alone —
 /// this is honest attribution, not a passport, so keke does not pose as
