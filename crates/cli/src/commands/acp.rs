@@ -296,6 +296,14 @@ impl keke_acp::SessionFactory for EditorSessions {
             .and_then(|meta| meta.get("force"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        // `meta.persist: false` keeps the choice to this connection. A client
+        // that runs one process per bot, or only probes a route to list its
+        // models, must not rewrite the user's default route and model.
+        let persist = meta
+            .as_ref()
+            .and_then(|meta| meta.get("persist"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
         Box::pin(async move {
             let composed = Composed::build(
                 &self.config.home,
@@ -350,7 +358,9 @@ impl keke_acp::SessionFactory for EditorSessions {
             if let Ok(mut route) = self.route.lock() {
                 *route = Some(method_id.clone());
             }
-            self.remember_route(&composed, &method_id).await;
+            if persist {
+                self.remember_route(&composed, &method_id).await;
+            }
             Ok(())
         })
     }
