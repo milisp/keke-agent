@@ -78,6 +78,62 @@ impl Selection {
         self.range = None;
     }
 
+    /// Only an actual same-cell press/release may activate a link.
+    pub(crate) fn is_click(&self, at: Point) -> bool {
+        self.press == Some(at) && !self.dragged
+    }
+
+    /// Find a visible HTTP(S) destination under a terminal-cell coordinate.
+    /// Rows have no soft-wrap metadata, so do not join unrelated adjacent text.
+    pub(crate) fn link_at(&self, row: u16, column: u16) -> Option<String> {
+        let text = self.rows.get(&row)?;
+        let mut cell = 0;
+        let hit = text.char_indices().find_map(|(byte, ch)| {
+            let width = ch.width().unwrap_or(0);
+            let contains = (cell..cell + width).contains(&usize::from(column));
+            cell += width;
+            contains.then_some(byte)
+        })?;
+        for (start, _) in text.match_indices("http") {
+            let rest = &text[start..];
+            let scheme_len = if rest.starts_with("https://") {
+                8
+            } else if rest.starts_with("http://") {
+                7
+            } else {
+                continue;
+            };
+            let end = rest
+                .find(|ch: char| ch.is_whitespace() && !ch.is_control())
+                .unwrap_or(rest.len());
+            let token = &rest[..end];
+            if token.chars().any(char::is_control) {
+                continue;
+            }
+            let mut url = token.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', '>']);
+            // Keep balanced parentheses in paths, but discard prose wrappers.
+            loop {
+                let pair = match url.chars().next_back() {
+                    Some(')') => ('(', ')'),
+                    Some(']') => ('[', ']'),
+                    Some('}') => ('{', '}'),
+                    _ => break,
+                };
+                if url.chars().filter(|&c| c == pair.1).count()
+                    <= url.chars().filter(|&c| c == pair.0).count()
+                {
+                    break;
+                }
+                url = url[..url.len() - 1]
+                    .trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', '>']);
+            }
+            if url.len() > scheme_len && (start..start + url.len()).contains(&hit) {
+                return Some(url.to_owned());
+            }
+        }
+        None
+    }
+
     /// Extend the drag. Returns whether anything is selected yet.
     pub(crate) fn drag_to(&mut self, at: Point) -> bool {
         let Some(anchor) = self.press else {
@@ -227,4 +283,70 @@ fn char_at_cell(text: &str, cell: usize) -> usize {
         width += w;
     }
     text.chars().count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Selection;
+
+    #[test]
+    fn links_use_unicode_cell_coordinates() {
+        let mut selection = Selection::default();
+        selection.set_rows(5, vec!["界e\u{301} https://example.com/path".into()]);
+        assert_eq!(
+            selection.link_at(5, 4).as_deref(),
+            Some("https://example.com/path")
+        );
+        assert_eq!(selection.link_at(5, 0), None);
+        assert_eq!(selection.link_at(5, 3), None);
+        assert_eq!(selection.link_at(5, 100), None);
+        assert_eq!(selection.link_at(6, 4), None);
+    }
+
+    #[test]
+    fn prose_punctuation_is_not_part_of_a_link() {
+        let mut selection = Selection::default();
+        selection.set_rows(
+            0,
+            vec!["(http://example.com/a(b)). https://other.test!".into()],
+        );
+        assert_eq!(
+            selection.link_at(0, 1).as_deref(),
+            Some("http://example.com/a(b)")
+        );
+        assert_eq!(selection.link_at(0, 24), None);
+        assert_eq!(
+            selection.link_at(0, 27).as_deref(),
+            Some("https://other.test")
+        );
+    }
+
+    #[test]
+    fn controls_and_other_schemes_are_not_links() {
+        let mut selection = Selection::default();
+        for text in [
+            "https://example.com\u{1b}bad",
+            "http://host\tbad",
+            "file://host",
+            "javascript:bad",
+            "https://",
+        ] {
+            selection.set_rows(0, vec![text.into()]);
+            assert_eq!(selection.link_at(0, 0), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn drags_and_unpaired_releases_are_not_clicks() {
+        let mut selection = Selection::default();
+        assert!(!selection.is_click((0, 0)));
+        selection.press((0, 0));
+        assert!(selection.is_click((0, 0)));
+        assert!(!selection.is_click((0, 1)));
+        selection.drag_to((0, 1));
+        selection.drag_to((0, 0));
+        assert!(!selection.is_click((0, 0)));
+        selection.release();
+        assert!(!selection.is_click((0, 0)));
+    }
 }

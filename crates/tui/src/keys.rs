@@ -281,8 +281,18 @@ impl App {
                     self.selection.drag_to((mouse.row, mouse.column));
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
+                    let link = self
+                        .selection
+                        .is_click((mouse.row, mouse.column))
+                        .then(|| self.selection.link_at(mouse.row, mouse.column))
+                        .flatten();
                     if let Some(text) = self.selection.release() {
                         self.copy_selection(text);
+                    } else if let Some(url) = link {
+                        #[cfg(not(test))]
+                        let _ = keke_oauth::open_in_browser(&url);
+                        #[cfg(test)]
+                        let _ = url;
                     } else {
                         self.toggle_at(mouse.row);
                     }
@@ -322,8 +332,18 @@ impl App {
                 self.selection.drag_to((mouse.row, mouse.column));
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                let link = self
+                    .selection
+                    .is_click((mouse.row, mouse.column))
+                    .then(|| self.selection.link_at(mouse.row, mouse.column))
+                    .flatten();
                 if let Some(text) = self.selection.release() {
                     self.copy_selection(text);
+                } else if let Some(url) = link {
+                    #[cfg(not(test))]
+                    let _ = keke_oauth::open_in_browser(&url);
+                    #[cfg(test)]
+                    let _ = url;
                 } else {
                     self.toggle_at(mouse.row);
                 }
