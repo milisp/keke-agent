@@ -293,6 +293,11 @@ fn group_lines(
     let same_name = tools.iter().all(|tool| tool.name == first.name);
     let (title, summary) = if same_name {
         let (verb, noun) = verb(&first.name);
+        let verb = if first.name == "apply_patch" && has_running {
+            "Editing"
+        } else {
+            verb
+        };
         let summary = if tools.len() == 1 {
             first.summary.clone()
         } else {
@@ -681,6 +686,21 @@ mod grouping_tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn patch_titles_describe_file_edits_not_the_internal_tool_name() {
+        let mut cells = vec![tool("p1", "apply_patch", "2 files")];
+        let rendered = render(&cells, 80, &HashSet::new(), false);
+        let titles = header_titles(&rendered);
+        assert!(titles[0].contains("Edited 2 files"));
+        assert!(!titles[0].contains("apply_patch"));
+        let Cell::Tool(call) = &mut cells[0] else {
+            unreachable!()
+        };
+        call.state = CallState::Running;
+        let rendered = render(&cells, 80, &HashSet::new(), false);
+        assert!(header_titles(&rendered)[0].contains("Editing 2 files"));
     }
 
     #[test]

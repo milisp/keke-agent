@@ -544,6 +544,7 @@ pub(crate) fn verb(name: &str) -> (&str, &str) {
     match name {
         "read_file" => ("Read", "files"),
         "write_file" => ("Wrote", "files"),
+        "apply_patch" => ("Edited", "files"),
         "list_dir" => ("Listed", "directories"),
         "grep" => ("Searched", "patterns"),
         "bash" => ("Ran", "commands"),
@@ -576,6 +577,21 @@ const SALIENT: [&str; 6] = ["command", "path", "file_path", "pattern", "query", 
 pub(crate) fn headline(arguments: &serde_json::Value, cwd_prefix: &[String]) -> String {
     const PATH_KEYS: [&str; 2] = ["path", "file_path"];
     if let serde_json::Value::Object(fields) = arguments {
+        if let Some(patch) = fields.get("patch").and_then(serde_json::Value::as_str) {
+            let files: Vec<_> = patch
+                .lines()
+                .filter_map(|line| {
+                    ["*** Add File: ", "*** Update File: ", "*** Delete File: "]
+                        .iter()
+                        .find_map(|prefix| line.strip_prefix(prefix))
+                })
+                .collect();
+            match files.as_slice() {
+                [path] => return one_line(&relative_to_cwd(path, cwd_prefix), 120),
+                [] => {}
+                _ => return format!("{} files", files.len()),
+            }
+        }
         for key in SALIENT {
             if let Some(serde_json::Value::String(text)) = fields.get(key)
                 && !text.trim().is_empty()
@@ -720,14 +736,15 @@ fn patch_diff(result: &ToolResult) -> Option<String> {
             .unwrap_or(0);
         let destination = change.get("moved_to").and_then(serde_json::Value::as_str);
         let heading = destination.map_or_else(|| path.to_string(), |to| format!("{path} → {to}"));
+        let verb = match change.get("kind").and_then(serde_json::Value::as_str) {
+            Some("added") => "Added",
+            Some("deleted") => "Deleted",
+            _ => "Updated",
+        };
         if hunk.is_empty() {
-            let kind = change
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("updated");
-            sections.push(format!("{heading} ({kind}, +{added} -{removed})"));
+            sections.push(format!("{verb} {heading} (+{added} -{removed})"));
         } else {
-            sections.push(format!("{heading} (+{added} -{removed})\n{hunk}"));
+            sections.push(format!("{verb} {heading} (+{added} -{removed})\n{hunk}"));
         }
     }
     (!sections.is_empty()).then(|| sections.join("\n\n"))
@@ -884,8 +901,20 @@ mod detail_line_tests {
         }));
         assert_eq!(
             detail_line("apply_patch", &result).as_deref(),
-            Some("a.rs (+1 -0)\n   +1  hello  \t")
+            Some("Updated a.rs (+1 -0)\n   +1  hello  \t")
         );
+    }
+
+    #[test]
+    fn patch_headlines_name_files_instead_of_flattening_source() {
+        let arguments = serde_json::json!({
+            "patch": "*** Begin Patch\n*** Add File: src/new.rs\n+secret source\n*** End Patch"
+        });
+        assert_eq!(headline(&arguments, &["src".to_string()]), "new.rs");
+        let arguments = serde_json::json!({
+            "patch": "*** Begin Patch\n*** Update File: a.rs\n@@\n-old\n+new\n*** Delete File: b.rs\n*** End Patch"
+        });
+        assert_eq!(headline(&arguments, &[]), "2 files");
     }
 
     #[test]
@@ -900,10 +929,10 @@ mod detail_line_tests {
         }));
         let detail = detail_line("apply_patch", &result).unwrap();
         for heading in [
-            "old.rs → new.rs",
-            "empty.rs (add",
-            "deleted.rs (delete",
-            "changed.rs",
+            "Updated old.rs → new.rs (+0 -0)",
+            "Added empty.rs (+0 -0)",
+            "Deleted deleted.rs (+0 -0)",
+            "Updated changed.rs (+1 -0)",
         ] {
             assert!(detail.contains(heading), "{detail}");
         }
