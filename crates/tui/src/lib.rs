@@ -395,6 +395,7 @@ async fn event_loop(
         tokio::select! {
             () = tick => {
                 app.tick_file_search();
+                app.tick_subagent_recording();
                 app.fire_due_schedules();
             }
             Some(update) = updates.recv() => app.apply(update),

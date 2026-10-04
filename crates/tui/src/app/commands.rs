@@ -19,6 +19,7 @@ impl App {
             return;
         };
         match command.action.clone() {
+            SlashAction::Builtin(Builtin::Subagents) => self.subagents_command(arguments),
             SlashAction::Builtin(Builtin::Help) => {
                 let text = self.help_text();
                 self.transcript.push(Cell::Notice(text));

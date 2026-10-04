@@ -180,6 +180,9 @@ pub enum SessionEvent {
         /// The instruction the child was given. Model-visible input to the
         /// child, so it is logged in full rather than summarized.
         task: String,
+        /// A brief display label, separate from the child's full instruction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     /// A subagent finished, was cancelled, or timed out.
     SubagentEnd {

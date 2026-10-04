@@ -125,6 +125,39 @@ pub(super) async fn resume(
         }
     };
 
+    let parent = keke_core::session_summary(home, id)?;
+    let events = keke_core::read_log(&parent.path)?;
+    let mut child_tasks = std::collections::HashMap::new();
+    for envelope in events {
+        match envelope.event {
+            keke_protocol::SessionEvent::SubagentStart {
+                agent, task, title, ..
+            } => {
+                child_tasks.insert(agent, (task, title));
+            }
+            keke_protocol::SessionEvent::SubagentEnd {
+                agent,
+                session,
+                status,
+                ..
+            } => {
+                let status = match status.as_str() {
+                    "completed" => keke_subagent::AgentStatus::Completed,
+                    "timed_out" => keke_subagent::AgentStatus::TimedOut,
+                    "cancelled" => keke_subagent::AgentStatus::Cancelled,
+                    _ => keke_subagent::AgentStatus::Failed,
+                };
+                let path = session
+                    .and_then(|session| keke_core::session_summary(home, session).ok())
+                    .map(|summary| summary.path);
+                let (task, title) = child_tasks
+                    .remove(&agent)
+                    .unwrap_or_else(|| (agent.clone(), None));
+                composed.subagents.restore(agent, task, title, status, path);
+            }
+            _ => {}
+        }
+    }
     let resumed = keke_core::load_session(home, id)
         .with_context(|| format!("reading the log for session {id}"))?;
     // Where the session was started wins over where keke was invoked: resuming
@@ -252,6 +285,9 @@ pub(super) async fn tui(
         })),
     )
     .await?;
+    opened
+        .conversation
+        .set_subagent_transcripts(Arc::new(ChildTranscripts(Arc::clone(&composed.subagents))));
     crate::startup_trace::mark("local_with: done");
     // What this route is now being used with, so leaving it and coming back
     // later — which drops `model` from config.toml — lands here again.
@@ -382,6 +418,7 @@ fn subagent_views(
             let views = rows
                 .into_iter()
                 .map(|row| keke_acp::SubagentView {
+                    title: row.title,
                     id: row.id,
                     task: row.task,
                     status: row.status.map(|status| status.as_str().to_string()),
@@ -451,5 +488,29 @@ impl keke_tui::PromptRecorder for PromptLog {
         if let Err(error) = self.0.record(prompt) {
             tracing::warn!(%error, "could not record the prompt history");
         }
+    }
+}
+
+struct ChildTranscripts(Arc<keke_subagent::SubagentHost>);
+
+impl keke_acp::SubagentTranscripts for ChildTranscripts {
+    fn reset(&self) {
+        self.0.reset();
+    }
+
+    fn load(
+        &self,
+        id: String,
+    ) -> keke_acp::ConversationFuture<
+        '_,
+        Result<Vec<keke_protocol::SessionEvent>, keke_acp::ConversationError>,
+    > {
+        let host = Arc::clone(&self.0);
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || host.transcript(&id))
+                .await
+                .map_err(|error| keke_acp::ConversationError::Agent(error.to_string()))?
+                .map_err(keke_acp::ConversationError::Agent)
+        })
     }
 }

@@ -62,6 +62,9 @@ pub struct SpawnAgentArgs {
     /// The complete instruction for the subagent. It shares no history with
     /// this conversation, so everything it needs must be stated here.
     pub task: String,
+    /// A short task title of 3–6 words for the subagent list.
+    #[serde(default)]
+    pub title: Option<String>,
     /// Wait for the result instead of returning a handle. Leave this off only
     /// when several genuinely independent tasks benefit from parallelism.
     #[serde(default)]
@@ -105,12 +108,13 @@ pub struct SpawnAgent {
 }
 
 impl SpawnAgent {
-    fn record_start(&self, agent: &str, task: &str) {
+    fn record_start(&self, agent: &str, task: &str, title: Option<String>) {
         if let Some(turn) = self.ctx.turn() {
             self.ctx.record(SessionEvent::SubagentStart {
                 turn,
                 agent: agent.to_string(),
                 task: task.to_string(),
+                title,
             });
         }
     }
@@ -174,11 +178,26 @@ impl Tool for SpawnAgent {
             ));
         }
 
+        let title = args
+            .title
+            .map(|title| {
+                title
+                    .split_whitespace()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|title| !title.is_empty());
         let id = self
             .host
-            .spawn(self.ctx.session, task.clone(), Arc::clone(&ctx.cancelled))
+            .spawn_titled(
+                self.ctx.session,
+                task.clone(),
+                title.clone(),
+                Arc::clone(&ctx.cancelled),
+            )
             .map_err(tool_error)?;
-        self.record_start(&id, &task);
+        self.record_start(&id, &task, title);
 
         if !args.wait {
             return Ok(SpawnAgentOutput::Started { agent_id: id });

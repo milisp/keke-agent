@@ -225,6 +225,7 @@ struct Switches {
 
 /// A conversation with a session running in this process.
 pub struct LocalConversation {
+    transcripts: Mutex<Option<Arc<dyn crate::SubagentTranscripts>>>,
     /// `None` where the composition did not offer a sandbox choice.
     sandbox: Option<Arc<SandboxSwitch>>,
     commands: UnboundedSender<Command>,
@@ -472,6 +473,7 @@ async fn local_in(
             .map(|switch| switch.offered())
             .unwrap_or_default(),
         conversation: Arc::new(LocalConversation {
+            transcripts: Mutex::new(None),
             sandbox,
             commands,
             cancel: Mutex::new(Box::new(cancel)),
@@ -589,6 +591,32 @@ fn translate(turn: TurnUpdate) -> Update {
 }
 
 impl Conversation for LocalConversation {
+    fn set_subagent_transcripts(&self, source: Arc<dyn crate::SubagentTranscripts>) {
+        *self
+            .transcripts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    }
+
+    fn subagent_transcript(
+        &self,
+        id: String,
+    ) -> ConversationFuture<'_, Result<Vec<keke_protocol::SessionEvent>, ConversationError>> {
+        let source = self
+            .transcripts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Box::pin(async move {
+            match source {
+                Some(source) => source.load(id).await,
+                None => Err(ConversationError::Agent(
+                    "child transcripts are unavailable".to_string(),
+                )),
+            }
+        })
+    }
+
     fn prompt<'a>(&'a self, text: String) -> ConversationFuture<'a, Result<(), ConversationError>> {
         Box::pin(async move {
             let (done, answer) = oneshot::channel();
@@ -748,6 +776,14 @@ impl LocalConversation {
         // again — withdraw it before this conversation starts pointing at
         // a different session entirely.
         self.approvals.withdraw_all();
+        if let Some(source) = self
+            .transcripts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            source.reset();
+        }
         if let Ok(mut cancel) = self.cancel.lock() {
             *cancel = switches.cancel;
         }

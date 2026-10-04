@@ -53,6 +53,8 @@ impl PromptKind {
 /// The commands the surface implements itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
+    /// Opens the recorded child sessions, including completed work.
+    Subagents,
     Help,
     Clear,
     /// Retires the conversation the agent is holding and starts a fresh one:
@@ -220,6 +222,7 @@ impl SlashCommands {
 fn builtins() -> Vec<SlashCommand> {
     [
         (Builtin::Help, "help", "list the commands"),
+        (Builtin::Subagents, "subagents", "inspect running and completed subagents"),
         (Builtin::Clear, "clear", "clear the transcript on screen"),
         (
             Builtin::New,

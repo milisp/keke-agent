@@ -509,8 +509,8 @@ async fn a_finished_subagent_reaches_the_next_parent_request_without_collection(
         "delivered report remains unread"
     );
     assert!(
-        host.progress().is_empty(),
-        "delivered child remains in live rows"
+        host.progress().iter().all(|row| row.status.is_some()),
+        "delivered children should remain inspectable as completed rows"
     );
 
     session
@@ -550,7 +550,7 @@ async fn a_finished_subagent_reaches_the_next_parent_request_without_collection(
 /// the interface can see that the turn is doing something and what it is
 /// costing — the moment they can still decide to stop it.
 #[tokio::test]
-async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
+async fn a_collected_subagent_keeps_its_recorded_transcript_and_finished_row() {
     let harness = harness();
     let (provider, _seen) = ScriptedProvider::new(0);
     let mut extensions = ExtensionRegistryBuilder::new();
@@ -568,9 +568,10 @@ async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
 
     let cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
     let id = host
-        .spawn(
+        .spawn_titled(
             SessionId::new(),
             "SUB watched\nsecond line".to_string(),
+            Some("Inspect watched task".to_string()),
             cancelled,
         )
         .expect("spawns");
@@ -579,6 +580,7 @@ async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].id, id);
     assert_eq!(started[0].task, "SUB watched\nsecond line");
+    assert_eq!(started[0].title.as_deref(), Some("Inspect watched task"));
     // Still running: nothing may claim an outcome the child has not reached.
     assert_eq!(started[0].status, None);
 
@@ -606,8 +608,21 @@ async fn a_running_subagent_is_published_and_then_goes_when_it_is_collected() {
         finished.input_tokens > 0,
         "the child's context size is what the row reports; it was never observed"
     );
-    assert!(gone, "a collected subagent must leave the live rows");
-    assert!(host.progress().is_empty());
+    assert!(!gone, "collected children remain available for inspection");
+    assert_eq!(host.progress().len(), 1);
+    let events = host
+        .transcript(&id)
+        .expect("record remains after collection");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, keke_protocol::SessionEvent::TurnStart { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, keke_protocol::SessionEvent::ModelResponse { .. }))
+    );
 }
 
 #[tokio::test]
@@ -714,4 +729,27 @@ async fn a_collected_subagent_cannot_be_collected_twice() {
         matches!(again, Err(keke_subagent::SubagentError::Unknown(_))),
         "collecting a reported subagent again must name the id, not replay it"
     );
+}
+
+#[test]
+fn restored_children_remain_inspectable_until_the_parent_is_reset() {
+    let host = keke_subagent::SubagentHost::new(SubagentLimits::default());
+    host.restore(
+        "agent_9".to_string(),
+        "Full original task".to_string(),
+        Some("Review original task".to_string()),
+        keke_subagent::AgentStatus::Completed,
+        None,
+    );
+    assert!(host.outstanding().is_empty());
+    assert_eq!(
+        host.progress()[0].title.as_deref(),
+        Some("Review original task")
+    );
+    assert!(
+        host.transcript("agent_9").is_err(),
+        "a missing log must be reported"
+    );
+    host.reset();
+    assert!(host.progress().is_empty());
 }

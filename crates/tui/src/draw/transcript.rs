@@ -164,10 +164,14 @@ pub(crate) fn render(
                 // itself: `runs_with` is not reflexive for a diff tool (two
                 // edits never share a run), and testing offset 0 here would
                 // make the group empty and `index` would never advance.
-                let end = cells[index + 1..]
-                    .iter()
-                    .position(|cell| !runs_with(cell, &first.name))
-                    .map_or(cells.len(), |offset| index + 1 + offset);
+                let end = if full_transcript {
+                    index + 1
+                } else {
+                    cells[index + 1..]
+                        .iter()
+                        .position(|cell| !runs_with(cell, &first.name))
+                        .map_or(cells.len(), |offset| index + 1 + offset)
+                };
                 out.toggles.push((out.lines.len(), index));
                 let group = &cells[index..end];
                 // Full transcript mode is the escape hatch from the compact
@@ -390,8 +394,9 @@ fn push_tool_detail(
     full_transcript: bool,
 ) {
     if !tool.arguments.is_empty()
-        && !crate::transcript::is_diff_tool(&tool.name)
-        && !crate::transcript::is_exploration_tool(&tool.name)
+        && (full_transcript
+            || (!crate::transcript::is_diff_tool(&tool.name)
+                && !crate::transcript::is_exploration_tool(&tool.name)))
     {
         push_block(
             lines,
@@ -401,7 +406,9 @@ fn push_tool_detail(
             width,
         );
     }
-    if let Some(detail) = &tool.detail {
+    if let Some(detail) = &tool.detail
+        && (full_transcript || !crate::transcript::is_exploration_tool(&tool.name))
+    {
         if crate::transcript::is_diff_tool(&tool.name) {
             if tool.name == "apply_patch" {
                 push_patch_block(lines, copy_ranges, detail, width);

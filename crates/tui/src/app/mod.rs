@@ -223,8 +223,10 @@ pub struct App {
     /// same reason `toggles` exists: a click is a screen position and nothing
     /// else.
     subagent_rows: Vec<(u16, String)>,
-    /// Which subagent's task is open in full. Cleared when that subagent goes.
+    /// Which child's record is being inspected, independently of the parent view.
     subagent_detail: Option<String>,
+    pub(crate) subagent_history: Option<usize>,
+    pub(crate) subagent_recording: subagents::Recording,
     /// A word about something keke just did for the person at the keyboard —
     /// copied, resumed. It goes in the status bar and expires, never into
     /// the transcript: the transcript is the conversation, and a line in it
@@ -311,6 +313,8 @@ impl App {
                 subagent_since: std::collections::HashMap::new(),
                 subagent_rows: Vec::new(),
                 subagent_detail: None,
+                subagent_history: None,
+                subagent_recording: subagents::Recording::default(),
                 flash: None,
                 pending_copy: None,
                 pending_edit: None,
@@ -571,7 +575,10 @@ impl App {
     /// while it is live: an expired one must not keep an idle interface
     /// redrawing forever.
     pub fn is_timing(&self) -> bool {
-        self.started.is_some() || self.flash().is_some() || self.file_search.is_open()
+        self.started.is_some()
+            || self.flash().is_some()
+            || self.file_search.is_open()
+            || self.subagent_needs_poll()
     }
 
     /// How long the event loop may block before it must look at the app again.
@@ -687,14 +694,27 @@ impl App {
 
     /// The cells the reader has opened.
     pub(crate) fn expanded(&self) -> &std::collections::HashSet<usize> {
-        &self.expanded
+        if self.open_subagent().is_some() {
+            &self.subagent_recording.expanded
+        } else {
+            &self.expanded
+        }
     }
 
     pub(crate) fn full_transcript(&self) -> bool {
-        self.full_transcript
+        if self.open_subagent().is_some() {
+            !self.subagent_recording.compact
+        } else {
+            self.full_transcript
+        }
     }
 
     pub fn toggle_full_transcript(&mut self) {
+        if self.open_subagent().is_some() {
+            self.subagent_recording.compact = !self.subagent_recording.compact;
+            self.subagent_recording.scroll.follow();
+            return;
+        }
         self.full_transcript = !self.full_transcript;
         self.scroll.follow();
         self.set_flash(if self.full_transcript {
@@ -785,6 +805,7 @@ impl App {
             Update::SessionReset => {
                 self.transcript.clear();
                 self.set_subagents(Vec::new());
+                self.subagent_history = None;
                 self.scroll.follow();
                 self.turn = Turn::Idle;
                 self.started = None;

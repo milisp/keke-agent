@@ -209,9 +209,24 @@ ranks *below* `keke-subagent` for that reason, and it needs no part of the
 engine: a process and a capped buffer is the whole of it.
 
 Subagent reports are delivered automatically before the next parent model request
-through a step context contributor. Delivery consumes the report, clears its live
-row, and records both `SubagentEnd` and the model-visible `ContextMessage`. A
+through a step context contributor. Delivery consumes the report and records
+both `SubagentEnd` and the model-visible `ContextMessage`. Finished rows remain available for transcript inspection. A
 finished child never starts a parent turn on its own.
+
+The TUI lists running children immediately below its bottom status line, with
+short titles of at most four words and 24 display columns. Clicking a row
+or pressing `Ctrl+G` opens a full recorded transcript; `Ctrl+G` cycles running children,
+arrow keys and Page Up/Down scroll, Home/End jump, and Escape or `q` returns to
+the parent. Completion removes the live row and returns an open running-child
+view to the parent. `/subagents` opens the history picker, including completed
+children; selecting one reopens its record. The parent draft and scroll position
+stay intact. The conversation
+seam loads child `SessionEvent`s through a composition-owned reader, so neither
+the TUI nor ACP needs a dependency on the subagent host. The child uses the same transcript cells and renderer as the parent, including
+Markdown, tool expansion, and selection. `Ctrl+O` switches full and compact
+views. Recorded reasoning, tool arguments, and complete tool results remain
+accessible, including messages preceding compaction. Resuming a parent restores its recorded child
+rows and log access; starting a new session retires them.
 
 Nothing in it originates a turn. A background task's output reaches the model
 as an ordinary `task_output` tool result, which is already logged like any

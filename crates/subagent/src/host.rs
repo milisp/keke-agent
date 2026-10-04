@@ -83,6 +83,7 @@ pub struct Collected {
 /// change without the receiver having to diff anything.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentProgress {
+    pub title: Option<String>,
     pub id: AgentId,
     pub task: String,
     /// `None` while the child is still running.
@@ -135,6 +136,7 @@ pub struct SubagentHost {
     /// answered with nothing, which is what makes the tree one level deep by
     /// construction rather than by a depth counter someone can raise.
     children: Mutex<HashSet<SessionId>>,
+    logs: Mutex<HashMap<AgentId, std::path::PathBuf>>,
     /// Live rows, in the order they were started. Kept beside `slots` rather
     /// than derived from it because a slot is a join handle and a running task
     /// cannot be asked what it has spent so far.
@@ -155,6 +157,7 @@ impl SubagentHost {
             next: AtomicU64::new(1),
             slots: Mutex::new(HashMap::new()),
             children: Mutex::new(HashSet::new()),
+            logs: Mutex::new(HashMap::new()),
             progress: Mutex::new(Vec::new()),
             watchers: Mutex::new(Vec::new()),
         }
@@ -171,6 +174,61 @@ impl SubagentHost {
             watchers.push(tx);
         }
         rx
+    }
+
+    /// Retire children when their parent conversation is replaced.
+    pub fn reset(&self) {
+        if let Ok(mut slots) = self.slots.lock() {
+            for (_, slot) in slots.drain() {
+                slot.handle.abort();
+            }
+        }
+        self.update_progress(Vec::clear);
+    }
+
+    /// Restore a recorded child for inspection without restarting its work.
+    pub fn restore(
+        &self,
+        id: AgentId,
+        task: String,
+        title: Option<String>,
+        status: AgentStatus,
+        path: Option<std::path::PathBuf>,
+    ) {
+        if let Some(number) = id
+            .strip_prefix("agent_")
+            .and_then(|number| number.parse::<u64>().ok())
+        {
+            self.next.fetch_max(number + 1, Ordering::Relaxed);
+        }
+        if let Some(path) = path
+            && let Ok(mut logs) = self.logs.lock()
+        {
+            logs.insert(id.clone(), path);
+        }
+        self.update_progress(|rows| {
+            rows.push(AgentProgress {
+                id,
+                task,
+                title,
+                status: Some(status),
+                input_tokens: 0,
+            })
+        });
+    }
+
+    /// Read a child's full record, including after its report was collected.
+    pub fn transcript(&self, id: &str) -> Result<Vec<SessionEvent>, String> {
+        let path = self
+            .logs
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("no recorded transcript for subagent `{id}`"))?;
+        keke_core::read_log(&path)
+            .map(|events| events.into_iter().map(|event| event.event).collect())
+            .map_err(|error| error.to_string())
     }
 
     /// The live rows, oldest first.
@@ -244,6 +302,17 @@ impl SubagentHost {
         task: String,
         parent_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<AgentId, SubagentError> {
+        self.spawn_titled(parent, task, None, parent_cancelled)
+    }
+
+    /// Start a child with a short surface label separate from its instruction.
+    pub fn spawn_titled(
+        self: &Arc<Self>,
+        parent: SessionId,
+        task: String,
+        title: Option<String>,
+        parent_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<AgentId, SubagentError> {
         let recipe = self
             .recipe
             .get()
@@ -268,6 +337,7 @@ impl SubagentHost {
             rows.push(AgentProgress {
                 id: id.clone(),
                 task: task.clone(),
+                title,
                 status: None,
                 input_tokens: 0,
             });
@@ -298,15 +368,11 @@ impl SubagentHost {
     pub async fn collect(&self, id: &str) -> Result<AgentReport, SubagentError> {
         let slot = self.take_slot(id)?;
 
-        let report = slot
-            .handle
+        // Report delivery consumes the model's result, but the person may still
+        // reopen the child's durable transcript.
+        slot.handle
             .await
-            .map_err(|error| SubagentError::Lost(error.to_string()));
-        // The row goes when the report does. A subagent whose result is now in
-        // the transcript has nothing left to say from a status line, and a list
-        // that only grows is one a person stops reading.
-        self.update_progress(|rows| rows.retain(|row| row.id != id));
-        report
+            .map_err(|error| SubagentError::Lost(error.to_string()))
     }
 
     /// Wait up to `budget` for any of `ids` to finish, and take the report of
@@ -354,7 +420,6 @@ impl SubagentHost {
                 Ok(report) => collected.reports.push(report),
                 Err(error) => lost = Some(SubagentError::Lost(error)),
             }
-            self.update_progress(|rows| rows.retain(|row| row.id != id));
         }
 
         match lost {
@@ -393,7 +458,6 @@ impl SubagentHost {
                     session: None,
                 },
             };
-            self.update_progress(|rows| rows.retain(|row| row.id != id));
             reports.push(report);
         }
         reports
@@ -440,8 +504,7 @@ impl SubagentHost {
         });
     }
 
-    /// Mark a row done. It stays on screen until it is collected, which is what
-    /// gives a person the moment to see that it finished at all.
+    /// Mark a row done while keeping its transcript available for inspection.
     fn note_finished(&self, id: &str, status: AgentStatus) {
         self.update_progress(|rows| {
             if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
@@ -622,6 +685,9 @@ async fn run_one(
     });
 
     let log_path = session.log_path().display().to_string();
+    if let Ok(mut logs) = host.logs.lock() {
+        logs.insert(id.clone(), session.log_path().to_path_buf());
+    }
     let canceller = session.canceller();
     let watchdog = tokio::spawn(async move {
         while !parent_cancelled() {
@@ -724,7 +790,7 @@ impl keke_tasks::TaskSource for SubagentHost {
         };
         slot.handle.abort();
         drop(slots);
-        self.update_progress(|rows| rows.retain(|row| row.id != id));
+        self.note_finished(id, AgentStatus::Cancelled);
         true
     }
 }

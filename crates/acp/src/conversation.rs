@@ -80,10 +80,10 @@ pub enum Update {
     TurnEnded(StopReason),
     /// Every subagent currently worth showing, oldest first. A whole snapshot
     /// rather than per-agent deltas: the list is short, and a surface that
-    /// missed one delta would draw a subagent that finished long ago.
+    /// missed one delta would draw the wrong child status.
     ///
-    /// Empty means nothing is outstanding, which is a surface's cue to take the
-    /// section away entirely.
+    /// Finished children remain inspectable until the parent is reset. Empty
+    /// means there are no children to show.
     Subagents(Vec<SubagentView>),
     /// Every background task worth showing, oldest first, on the same terms as
     /// [`Update::Subagents`]: a whole snapshot, and empty means the section
@@ -125,7 +125,7 @@ pub enum Update {
     Rewound(Rewound),
 }
 
-/// One running subagent, as a client sees it.
+/// One running or recorded subagent, as a client sees it.
 ///
 /// Flat fields rather than the engine's own progress type, for the reason
 /// [`PluginCommand`] is flat: this crosses the seam to a surface that may be on
@@ -133,6 +133,8 @@ pub enum Update {
 /// than something to act on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubagentView {
+    /// Brief task label supplied when the child was started.
+    pub title: Option<String>,
     /// The handle the agent named it, which is also what a person sees if they
     /// go looking for it in the transcript.
     pub id: String,
@@ -280,8 +282,34 @@ pub enum PermissionAnswer {
     Deny,
 }
 
+/// Loads a child session's durable record without exposing storage to surfaces.
+/// Implementers preserve access after a report has been delivered to the parent.
+pub trait SubagentTranscripts: Send + Sync {
+    /// Retire child work and rows when the parent starts a fresh session.
+    fn reset(&self) {}
+    fn load(
+        &self,
+        id: String,
+    ) -> ConversationFuture<'_, Result<Vec<keke_protocol::SessionEvent>, ConversationError>>;
+}
+
 /// A live conversation with an agent.
 pub trait Conversation: Send + Sync {
+    /// Attach the composition's child transcript reader.
+    fn set_subagent_transcripts(&self, _source: Arc<dyn SubagentTranscripts>) {}
+
+    /// Read every recorded child event, including messages, reasoning and tool results.
+    fn subagent_transcript(
+        &self,
+        id: String,
+    ) -> ConversationFuture<'_, Result<Vec<keke_protocol::SessionEvent>, ConversationError>> {
+        Box::pin(async move {
+            Err(ConversationError::Agent(format!(
+                "no transcript available for subagent `{id}`"
+            )))
+        })
+    }
+
     /// Send a prompt and start a turn.
     fn prompt<'a>(&'a self, text: String) -> ConversationFuture<'a, Result<(), ConversationError>>;
 
@@ -492,6 +520,7 @@ pub struct ScriptedConversation {
     /// What a scripted agent pretends its snapshots hold: every turn carries
     /// one, and a restore would put these files back.
     snapshot_files: Arc<Mutex<Vec<String>>>,
+    transcripts: Mutex<std::collections::HashMap<String, Vec<keke_protocol::SessionEvent>>>,
 }
 
 impl ScriptedConversation {
@@ -517,9 +546,18 @@ impl ScriptedConversation {
                 routes: Arc::new(Mutex::new(Vec::new())),
                 rewinds: Arc::new(Mutex::new(Vec::new())),
                 snapshot_files: Arc::new(Mutex::new(Vec::new())),
+                transcripts: Mutex::new(std::collections::HashMap::new()),
             },
             receiver,
         )
+    }
+
+    /// Supply a durable child record for surface tests.
+    pub fn with_subagent_transcript(&self, id: String, events: Vec<keke_protocol::SessionEvent>) {
+        self.transcripts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, events);
     }
 
     /// Pretend every turn was snapshotted, and that a restore would put these
@@ -654,6 +692,22 @@ impl ScriptedConversation {
 }
 
 impl Conversation for ScriptedConversation {
+    fn subagent_transcript(
+        &self,
+        id: String,
+    ) -> ConversationFuture<'_, Result<Vec<keke_protocol::SessionEvent>, ConversationError>> {
+        Box::pin(async move {
+            self.transcripts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| {
+                    ConversationError::Agent(format!("no transcript available for subagent `{id}`"))
+                })
+        })
+    }
+
     fn prompt<'a>(&'a self, text: String) -> ConversationFuture<'a, Result<(), ConversationError>> {
         Box::pin(async move {
             if let Ok(mut seen) = self.prompts.lock() {

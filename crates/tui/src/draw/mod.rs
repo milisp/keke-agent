@@ -30,8 +30,8 @@ use crate::app::App;
 /// not do it by moving what they are reading — so it announces itself here,
 /// where the pointer already is when they decide to go back.
 fn below(frame: &mut Frame, body: ratatui::layout::Rect, app: &mut App) {
-    let hidden = app.scroll.below();
-    if app.scroll.is_following() || hidden == 0 || body.height == 0 {
+    let hidden = app.visible_scroll().below();
+    if app.visible_scroll().is_following() || hidden == 0 || body.height == 0 {
         app.set_follow_button(None);
         return;
     }
@@ -77,7 +77,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     // composer's row and the keyboard: there is nothing to type, and the
     // status bar's turn state is exactly what the panel is already saying.
     let blocked = app.turn() == crate::app::Turn::AwaitingPermission;
+    let inspecting = app.open_subagent().is_some();
     let full_transcript = app.full_transcript();
+    let transcript_only = full_transcript || inspecting;
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -87,50 +89,49 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             // open together (one needs the line to start with `/`, the other
             // needs an `@` with no preceding word character), so they share
             // one row of layout.
-            Constraint::Length(if full_transcript {
+            Constraint::Length(if transcript_only {
                 0
             } else {
                 menu::rows(app).max(file_search::rows(app))
             }),
             // The turn-status row appears above the composer only while a
             // turn runs, and collapses to nothing when idle.
-            Constraint::Length(if full_transcript {
+            Constraint::Length(if transcript_only {
                 0
             } else {
                 turn_status::rows(app)
             }),
-            Constraint::Length(if full_transcript {
-                0
-            } else {
-                subagents::rows(app)
-            }),
-            Constraint::Length(if full_transcript { 0 } else { tasks::rows(app) }),
+            Constraint::Length(if transcript_only { 0 } else { tasks::rows(app) }),
             Constraint::Length(
-                if full_transcript || (planning && !composing) || managing_mcp || blocked {
+                if transcript_only || (planning && !composing) || managing_mcp || blocked {
                     0
                 } else {
                     input::rows(app, frame.area().width)
                 },
             ),
-            Constraint::Length(if full_transcript {
+            Constraint::Length(if transcript_only {
                 0
             } else {
                 permission::rows(app)
             }),
-            Constraint::Length(if full_transcript {
+            Constraint::Length(if transcript_only {
                 0
             } else {
                 picker::rows(app, frame.area().height)
             }),
-            Constraint::Length(if full_transcript {
+            Constraint::Length(if transcript_only {
                 0
             } else {
                 rewind::rows(app, frame.area().height)
             }),
-            Constraint::Length(if full_transcript { 0 } else { plan::rows(app) }),
+            Constraint::Length(if transcript_only { 0 } else { plan::rows(app) }),
             Constraint::Length(u16::from(
-                full_transcript || (!planning && !managing_mcp && !blocked),
+                transcript_only
+                    || subagents::rows(app) > 0
+                    || (!planning && !managing_mcp && !blocked),
             )),
+            // Live child titles always follow the bottom status line.
+            Constraint::Length(if inspecting { 0 } else { subagents::rows(app) }),
         ])
         .split(frame.area());
 
@@ -139,7 +140,6 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         body,
         menu,
         turn,
-        agents,
         background,
         composer,
         approval,
@@ -147,25 +147,35 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         rewind_area,
         policies,
         footer,
+        agents,
     ) = (
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
         areas[9], areas[10], areas[11],
     );
 
-    let rendered = transcript::render(
-        app.transcript.cells(),
+    let mut rendered = transcript::render(
+        app.visible_transcript().cells(),
         body.width,
         app.expanded(),
         full_transcript,
     );
-    app.scroll
+    if inspecting {
+        if let Some(error) = &app.subagent_recording.error {
+            rendered.lines.push(ratatui::text::Line::raw(error.clone()));
+        } else if rendered.lines.is_empty() {
+            rendered
+                .lines
+                .push(ratatui::text::Line::raw("Loading recorded transcript…"));
+        }
+    }
+    app.visible_scroll_mut()
         .measure(rendered.lines.len(), usize::from(body.height));
     // `/view-plan` scrolls the last plan's first line into view; the plan is
     // in the scrollback now, so this is a transcript scroll like any other.
-    if let Some(line) = app.wanted_plan_line(&rendered.plan_lines) {
+    if !inspecting && let Some(line) = app.wanted_plan_line(&rendered.plan_lines) {
         app.reveal_plan_line(line);
     }
-    let offset = app.scroll.offset();
+    let offset = app.visible_scroll().offset();
 
     // A header only answers a click while it is on screen, so the map is of
     // this frame and is rebuilt whole every frame.
@@ -226,6 +236,89 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     rewind::draw(frame, rewind_area, app);
     plan::draw(frame, policies, app);
     status::draw(frame, footer, app);
-    // Last: the remaining overlay holds the keyboard, so nothing may be drawn over it.
-    subagents::detail(frame, app);
+    if inspecting {
+        subagents::navigation(frame, header, footer, app);
+    }
+    subagents::history(frame, app);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use keke_acp::{ScriptedConversation, SubagentView, Update};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn subagent_rows_are_below_the_status_bar_and_composer() {
+        let (conversation, _updates) = ScriptedConversation::new(Vec::new());
+        let (mut app, _local) = super::App::new(Arc::new(conversation));
+        app.apply(Update::Subagents(vec![SubagentView {
+            title: Some("Inspect parser".to_string()),
+            id: "parser".to_string(),
+            task: "Inspect parser".to_string(),
+            status: None,
+            input_tokens: 0,
+        }]));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        terminal
+            .draw(|frame| super::draw(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let last: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
+        assert!(last.contains("Inspect parser"), "{last}");
+        let status: String = (0..80).map(|x| buffer[(x, 22)].symbol()).collect();
+        let expected: String = super::status::spans(&app)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(status.trim_end(), expected.trim_end());
+        assert!(
+            app.open_subagent_at(23),
+            "click targets follow the bottom rows"
+        );
+    }
+    #[test]
+    fn running_titles_stay_directly_below_status_in_busy_full_and_approval_views() {
+        use keke_acp::PermissionId;
+        use keke_protocol::{ToolCall, ToolCallId};
+        for mode in ["busy", "full", "approval"] {
+            let (conversation, _updates) = ScriptedConversation::new(Vec::new());
+            let (mut app, _local) = super::App::new(Arc::new(conversation));
+            app.apply(Update::TurnStarted);
+            app.apply(Update::Subagents(vec![SubagentView {
+                title: Some("Inspect parser".to_string()),
+                id: "agent_1".to_string(),
+                task: "Long instructions must remain only in the child transcript".to_string(),
+                status: None,
+                input_tokens: 0,
+            }]));
+            if mode == "full" {
+                app.toggle_full_transcript();
+            }
+            if mode == "approval" {
+                app.apply(Update::PermissionRequested {
+                    id: PermissionId("permission".to_string()),
+                    call: ToolCall {
+                        id: ToolCallId::new("call"),
+                        name: "bash".to_string(),
+                        arguments: serde_json::json!({"command":"pwd"}),
+                    },
+                    reason: "approval test".to_string(),
+                });
+            }
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let title: String = (0..100).map(|x| buffer[(x, 29)].symbol()).collect();
+            assert!(title.contains("Inspect parser"), "{mode}: {title}");
+            assert!(!title.contains("Long instructions"));
+            let status: String = (0..100).map(|x| buffer[(x, 28)].symbol()).collect();
+            let expected: String = super::status::spans(&app)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(status.trim_end(), expected.trim_end(), "{mode}");
+        }
+    }
 }

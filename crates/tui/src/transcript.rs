@@ -10,6 +10,7 @@ use keke_acp::PermissionId;
 use keke_protocol::ContentBlock;
 use keke_protocol::Message;
 use keke_protocol::Role;
+use keke_protocol::SessionEvent;
 use keke_protocol::ToolCall;
 use keke_protocol::ToolCallId;
 use keke_protocol::ToolResult;
@@ -236,7 +237,7 @@ impl Transcript {
             id: call.id.clone(),
             name: display_tool_name(&call.name).to_string(),
             summary: headline(&call.arguments, &self.cwd_prefix),
-            arguments: expanded_arguments(&call.arguments, headline_key(&call.arguments)),
+            arguments: expanded_arguments(&call.arguments, None),
             state: CallState::Running,
             detail: None,
         }));
@@ -385,6 +386,75 @@ impl Transcript {
         self.seal();
     }
 
+    /// Replay recorded conversation through the same cells used by a live session.
+    ///
+    /// Request snapshots and compaction summaries are model context, rather
+    /// than new conversation: replaying them would duplicate messages or hide
+    /// the earlier conversation a person is opening this record to inspect.
+    pub fn replay_recorded(&mut self, events: &[SessionEvent]) {
+        for event in events {
+            match event {
+                SessionEvent::TurnStart { input, .. }
+                | SessionEvent::ModelResponse { message: input, .. }
+                | SessionEvent::ContextMessage { message: input, .. } => {
+                    self.replay_recorded_message(input);
+                }
+                SessionEvent::ToolCallStart { call, .. } => self.start_recorded_tool(call),
+                SessionEvent::ToolCallEnd { result, .. } => {
+                    self.finish_tool(result);
+                }
+                SessionEvent::HostedToolCall { name, query, .. } => {
+                    self.hosted_tool(name, query.as_deref());
+                }
+                SessionEvent::Error { message, .. } => self.push(Cell::Error(message.clone())),
+                SessionEvent::Rewound {
+                    history: Some(_), ..
+                } => {
+                    self.push(Cell::Notice("Conversation rewound".to_string()));
+                }
+                _ => {}
+            }
+        }
+        self.seal();
+    }
+
+    fn start_recorded_tool(&mut self, call: &ToolCall) {
+        // ModelResponse and ToolCallStart describe the same call. Only the
+        // latter can survive an interrupted response, so accept either source.
+        if !self
+            .cells
+            .iter()
+            .any(|cell| matches!(cell, Cell::Tool(tool) if tool.id == call.id))
+        {
+            self.start_tool(call);
+        }
+    }
+
+    fn replay_recorded_message(&mut self, message: &Message) {
+        if message.role == Role::System {
+            return;
+        }
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                    self.push(match message.role {
+                        Role::User => Cell::User(text.clone()),
+                        Role::Assistant => Cell::Assistant(text.clone()),
+                        _ => Cell::Notice(text.clone()),
+                    });
+                }
+                ContentBlock::Thinking { text, .. } if !text.trim().is_empty() => {
+                    self.push(Cell::Notice(format!("Thinking…\n{text}")));
+                }
+                ContentBlock::ToolCall(call) => self.start_recorded_tool(call),
+                ContentBlock::ToolResult(result) => {
+                    self.finish_tool(result);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// The newest thing on screen that can be opened, if there is one.
     ///
     /// The keyboard's answer to a click: the newest finished call or run.
@@ -522,22 +592,6 @@ pub(crate) fn headline(arguments: &serde_json::Value, cwd_prefix: &[String]) -> 
     summarize_arguments(arguments)
 }
 
-/// The field [`headline`] pulled out to stand alone, if any — so the
-/// expanded `key=value` dump can leave it out rather than repeating what the
-/// header already said.
-fn headline_key(arguments: &serde_json::Value) -> Option<&'static str> {
-    if let serde_json::Value::Object(fields) = arguments {
-        for key in SALIENT {
-            if let Some(serde_json::Value::String(text)) = fields.get(key)
-                && !text.trim().is_empty()
-            {
-                return Some(key);
-            }
-        }
-    }
-    None
-}
-
 /// Re-root a workspace-relative path so it reads against `cwd_prefix` — the
 /// directory the session was launched from — instead of the workspace root.
 ///
@@ -576,16 +630,17 @@ pub(crate) fn summarize_arguments(arguments: &serde_json::Value) -> String {
     one_line(&render_arguments(arguments, None, one_line_scalar), 160)
 }
 
-/// Every argument as `key=value`, for [`ToolCell::arguments`] — the expanded
-/// view, leaving out `skip` (the field the headline already showed, so this
-/// adds information instead of repeating the collapsed line verbatim:
-/// `command=... timeout=5` next to a header that already reads the command).
+/// Tool arguments for expansion. Callers may omit a field already shown in
+/// full elsewhere; transcript cells keep every field because a collapsed
+/// headline can truncate long commands or paths.
 ///
-/// Not squashed to one line: `push_block` reflows this like a paragraph, so a
-/// multi-line `command` or script argument reads as itself rather than one
-/// unreadable row of escaped whitespace.
+/// Preserve nested values and line breaks so expanding a call reveals the
+/// recorded arguments rather than another summary.
 pub(crate) fn expanded_arguments(arguments: &serde_json::Value, skip: Option<&str>) -> String {
-    render_arguments(arguments, skip, trimmed_scalar)
+    render_arguments(arguments, skip, |value| match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    })
 }
 
 fn render_arguments(
@@ -628,24 +683,18 @@ fn full_text(result: &ToolResult) -> Option<String> {
     let text = result
         .content
         .iter()
-        .find_map(|block| match block {
+        .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
-        })?
-        .trim();
-    (!text.is_empty()).then(|| text.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then(|| text.trim().to_string())
 }
 
-/// The result text shown once a call finishes, in the expanded view.
-///
-/// The headline already names what a read-only exploration call acted on —
-/// the file, the directory, the pattern — so its output would only repeat
-/// that as noise (a hit's raw `file:line:code` text, a directory listing, an
-/// empty line or a stray `use`). `read_file`, `list_dir`, and `grep` show
-/// nothing here; everything else reads fine as its own result text.
+/// Preserve tool output for expansion, preferring reviewable diffs for edits.
 fn detail_line(name: &str, result: &ToolResult) -> Option<String> {
     match name {
-        "read_file" | "list_dir" | "grep" => None,
         "edit" | "write_file" => diff_hunk(result).or_else(|| full_text(result)),
         "apply_patch" => patch_diff(result).or_else(|| full_text(result)),
         _ => full_text(result),
@@ -768,21 +817,30 @@ mod detail_line_tests {
     }
 
     #[test]
-    fn read_file_gets_no_detail() {
+    fn read_file_keeps_output_for_expansion() {
         let result = ToolResult::ok(ToolCallId::new("c1"), "1\thello\n2\tworld\n");
-        assert_eq!(detail_line("read_file", &result), None);
+        assert_eq!(
+            detail_line("read_file", &result).as_deref(),
+            Some("1\thello\n2\tworld")
+        );
     }
 
     #[test]
-    fn list_dir_gets_no_detail() {
+    fn list_dir_keeps_output_for_expansion() {
         let result = ToolResult::ok(ToolCallId::new("c1"), "src/\nCargo.toml\n");
-        assert_eq!(detail_line("list_dir", &result), None);
+        assert_eq!(
+            detail_line("list_dir", &result).as_deref(),
+            Some("src/\nCargo.toml")
+        );
     }
 
     #[test]
-    fn grep_gets_no_detail() {
+    fn grep_keeps_output_for_expansion() {
         let result = ToolResult::ok(ToolCallId::new("c1"), "src/lib.rs:1:foo\n");
-        assert_eq!(detail_line("grep", &result), None);
+        assert_eq!(
+            detail_line("grep", &result).as_deref(),
+            Some("src/lib.rs:1:foo")
+        );
     }
 
     #[test]
@@ -900,5 +958,129 @@ mod cwd_display_tests {
         let cwd_prefix = prefix(&["crates", "keke-tools"]);
         let arguments = serde_json::json!({"path": "crates/keke-tools/src/write_file.rs"});
         assert_eq!(headline(&arguments, &cwd_prefix), "src/write_file.rs");
+    }
+}
+
+#[cfg(test)]
+mod recorded_replay_tests {
+    use super::*;
+    use keke_protocol::{StopReason, TurnId, Usage};
+
+    #[test]
+    fn recorded_replay_keeps_conversation_before_compaction_without_snapshot_duplicates() {
+        let turn = TurnId::new();
+        let call = ToolCall {
+            id: ToolCallId::new("read"),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/main.rs", "options": {"lines": [1, 2]}}),
+        };
+        let reply = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::thinking("Inspect the file."),
+                ContentBlock::text("Reading."),
+                ContentBlock::ToolCall(call.clone()),
+            ],
+        };
+        let result = ToolResult {
+            id: call.id.clone(),
+            status: ToolStatus::Ok,
+            content: vec![
+                ContentBlock::text("first line"),
+                ContentBlock::text("second line"),
+            ],
+            value: None,
+        };
+        let events = vec![
+            SessionEvent::TurnStart {
+                turn,
+                input: Message::user("Find the entry point."),
+                approval_policy: None,
+            },
+            SessionEvent::ModelRequest {
+                turn,
+                messages: vec![Message::user("Find the entry point.")],
+                tools: vec![],
+                reasoning_effort: None,
+                model: None,
+            },
+            SessionEvent::ModelResponse {
+                turn,
+                message: reply,
+                stop_reason: StopReason::ToolUse,
+                usage: Usage::default(),
+            },
+            SessionEvent::ToolCallStart { turn, call },
+            SessionEvent::ToolCallEnd { turn, result },
+            SessionEvent::Compacted {
+                turn,
+                summary: Message::user("Summary"),
+                removed_messages: 3,
+            },
+        ];
+        let mut transcript = Transcript::default();
+        transcript.replay_recorded(&events);
+        assert_eq!(transcript.cells().len(), 4);
+        assert_eq!(
+            transcript.cells()[0],
+            Cell::User("Find the entry point.".into())
+        );
+        assert_eq!(
+            transcript.cells()[1],
+            Cell::Notice("Thinking…\nInspect the file.".into())
+        );
+        assert_eq!(transcript.cells()[2], Cell::Assistant("Reading.".into()));
+        let Cell::Tool(tool) = &transcript.cells()[3] else {
+            panic!("expected existing tool cell")
+        };
+        assert_eq!(tool.state, CallState::Finished(ToolStatus::Ok));
+        assert_eq!(tool.detail.as_deref(), Some("first line\nsecond line"));
+        assert!(tool.arguments.contains("path=src/main.rs"));
+        assert!(tool.arguments.contains("options={\"lines\":[1,2]}"));
+    }
+
+    #[test]
+    fn recorded_replay_keeps_messages_removed_by_a_rewind() {
+        let mut transcript = Transcript::default();
+        transcript.replay_recorded(&[
+            SessionEvent::TurnStart {
+                turn: TurnId::new(),
+                input: Message::user("Original prompt"),
+                approval_policy: None,
+            },
+            SessionEvent::Rewound {
+                scope: keke_protocol::RewindScope::Conversation,
+                history: Some(vec![]),
+                prompt: "Original prompt".into(),
+                removed_messages: 1,
+                restored_files: vec![],
+                undo: None,
+            },
+        ]);
+        assert_eq!(
+            transcript.cells(),
+            &[
+                Cell::User("Original prompt".into()),
+                Cell::Notice("Conversation rewound".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn recorded_replay_keeps_an_interrupted_tool_visibly_unfinished() {
+        let mut transcript = Transcript::default();
+        transcript.replay_recorded(&[SessionEvent::ToolCallStart {
+            turn: TurnId::new(),
+            call: ToolCall {
+                id: ToolCallId::new("pending"),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "echo first\necho second"}),
+            },
+        }]);
+        let Cell::Tool(tool) = &transcript.cells()[0] else {
+            panic!("expected existing tool cell")
+        };
+        assert_eq!(tool.state, CallState::Running);
+        assert_eq!(tool.arguments, "command=echo first\necho second");
     }
 }

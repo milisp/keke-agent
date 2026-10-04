@@ -17,6 +17,7 @@ pub use conversation::RewindPoint;
 pub use conversation::Rewound;
 pub use conversation::ScriptedConversation;
 pub use conversation::SessionListing;
+pub use conversation::SubagentTranscripts;
 pub use conversation::SubagentView;
 pub use conversation::TaskView;
 pub use conversation::Update;

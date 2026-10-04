@@ -10,6 +10,19 @@ use crate::transcript::Cell;
 
 use super::App;
 
+#[derive(Default)]
+pub(crate) struct Recording {
+    pub error: Option<String>,
+    pub scroll: crate::scroll::Scrollback,
+    pub transcript: crate::transcript::Transcript,
+    pub expanded: std::collections::HashSet<usize>,
+    pub compact: bool,
+    loaded: bool,
+    pending:
+        Option<tokio::sync::oneshot::Receiver<Result<Vec<keke_protocol::SessionEvent>, String>>>,
+    refreshed: Option<Instant>,
+}
+
 impl App {
     /// The subagents to draw, oldest first.
     #[must_use]
@@ -23,15 +36,23 @@ impl App {
         for row in &rows {
             self.subagent_since.entry(row.id.clone()).or_insert(now);
         }
-        // An agent that left the snapshot has been collected: its result is in
-        // the transcript now, so the row, its clock, and any popup opened on it
-        // all go together.
+        let completed_while_open = self.open_subagent().is_some_and(|agent| {
+            agent.status.is_none()
+                && rows
+                    .iter()
+                    .any(|row| row.id == agent.id && row.status.is_some())
+        });
+        if completed_while_open {
+            self.close_subagent();
+        }
+        // A replacement parent can retire all of its children at once; the
+        // old clocks and inspector must leave with those rows.
         self.subagent_since
             .retain(|id, _| rows.iter().any(|row| &row.id == id));
         if let Some(open) = &self.subagent_detail
             && !rows.iter().any(|row| &row.id == open)
         {
-            self.subagent_detail = None;
+            self.close_subagent();
         }
         self.subagents = rows;
     }
@@ -47,7 +68,7 @@ impl App {
         self.subagent_rows = rows;
     }
 
-    /// The subagent whose task is open in full, if one is.
+    /// The subagent whose recorded transcript is open, if one is.
     #[must_use]
     pub fn open_subagent(&self) -> Option<&keke_acp::SubagentView> {
         let open = self.subagent_detail.as_ref()?;
@@ -63,18 +84,166 @@ impl App {
             return false;
         };
         let id = id.clone();
-        self.subagent_detail = if self.subagent_detail.as_ref() == Some(&id) {
-            None
+        if self.subagent_detail.as_ref() == Some(&id) {
+            self.close_subagent();
         } else {
-            Some(id)
-        };
+            self.show_subagent(id);
+        }
         true
     }
 
-    /// Close the subagent popup, reporting whether one was open — so escape can
+    /// Close the subagent transcript, reporting whether one was open — so escape can
     /// fall through to whatever it means when none is.
     pub fn close_subagent(&mut self) -> bool {
-        self.subagent_detail.take().is_some()
+        let open = self.subagent_detail.take().is_some();
+        if open {
+            self.subagent_recording = Recording::default();
+            self.selection.clear();
+        }
+        open
+    }
+
+    fn show_subagent(&mut self, id: String) {
+        self.subagent_history = None;
+        self.subagent_detail = Some(id);
+        self.subagent_recording = Recording::default();
+        self.selection.clear();
+        self.tick_subagent_recording();
+    }
+
+    /// Open the first child, or cycle through all children while inspecting one.
+    pub(crate) fn cycle_subagent(&mut self) {
+        let candidates: Vec<_> = self
+            .subagents
+            .iter()
+            .filter(|agent| agent.status.is_none())
+            .map(|agent| agent.id.clone())
+            .collect();
+        if candidates.is_empty() {
+            self.set_flash("no running subagents — /subagents opens history");
+            return;
+        }
+        let next = self
+            .subagent_detail
+            .as_ref()
+            .and_then(|id| candidates.iter().position(|agent| agent == id))
+            .map_or(0, |index| (index + 1) % candidates.len());
+        self.show_subagent(candidates[next].clone());
+    }
+
+    pub(crate) fn subagents_command(&mut self, arguments: &str) {
+        let id = arguments.trim();
+        if !id.is_empty() {
+            if self.subagents.iter().any(|agent| agent.id == id) {
+                self.show_subagent(id.to_string());
+            } else {
+                self.set_flash(format!("unknown subagent: {id}"));
+            }
+        } else if self.subagents.is_empty() {
+            self.set_flash("no subagents recorded");
+        } else {
+            self.subagent_history = Some(0);
+        }
+    }
+
+    pub(crate) fn move_subagent_history(&mut self, delta: isize) {
+        if let Some(index) = &mut self.subagent_history {
+            *index = index
+                .saturating_add_signed(delta)
+                .min(self.subagents.len().saturating_sub(1));
+        }
+    }
+
+    pub(crate) fn select_subagent_history(&mut self) {
+        if let Some(index) = self.subagent_history
+            && let Some(agent) = self.subagents.get(index)
+        {
+            self.show_subagent(agent.id.clone());
+        }
+    }
+
+    pub(crate) fn subagent_needs_poll(&self) -> bool {
+        self.open_subagent()
+            .is_some_and(|agent| agent.status.is_none() || !self.subagent_recording.loaded)
+    }
+
+    /// Read the durable log off the UI thread and refresh while it is open.
+    pub(crate) fn tick_subagent_recording(&mut self) {
+        let Some(id) = self.subagent_detail.clone() else {
+            return;
+        };
+        if let Some(pending) = &mut self.subagent_recording.pending {
+            match pending.try_recv() {
+                Ok(result) => {
+                    match result {
+                        Ok(events) => {
+                            self.subagent_recording.transcript =
+                                crate::transcript::Transcript::default();
+                            self.subagent_recording.transcript.replay_recorded(&events);
+                            self.subagent_recording.error = None;
+                        }
+                        Err(error) => self.subagent_recording.error = Some(error),
+                    }
+                    self.subagent_recording.pending = None;
+                    self.subagent_recording.loaded = true;
+                    self.subagent_recording.refreshed = Some(Instant::now());
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.subagent_recording.pending = None;
+                    self.subagent_recording.error = Some("transcript reader stopped".to_string());
+                    self.subagent_recording.refreshed = Some(Instant::now());
+                }
+            }
+        }
+        let status = self.open_subagent().and_then(|agent| agent.status.clone());
+        if self.subagent_recording.loaded && status.is_some() {
+            return;
+        }
+        if self
+            .subagent_recording
+            .refreshed
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let conversation = std::sync::Arc::clone(&self.conversation);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.subagent_recording.pending = Some(receiver);
+        runtime.spawn(async move {
+            let result = conversation
+                .subagent_transcript(id)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+    }
+
+    pub(crate) fn visible_transcript(&self) -> &crate::transcript::Transcript {
+        if self.open_subagent().is_some() {
+            &self.subagent_recording.transcript
+        } else {
+            &self.transcript
+        }
+    }
+
+    pub(crate) fn visible_scroll(&self) -> &crate::scroll::Scrollback {
+        if self.open_subagent().is_some() {
+            &self.subagent_recording.scroll
+        } else {
+            &self.scroll
+        }
+    }
+
+    pub(crate) fn visible_scroll_mut(&mut self) -> &mut crate::scroll::Scrollback {
+        if self.open_subagent().is_some() {
+            &mut self.subagent_recording.scroll
+        } else {
+            &mut self.scroll
+        }
     }
 
     /// Told by `draw` which rows this frame's expandable headers landed on.
@@ -99,7 +268,7 @@ impl App {
     /// The keyboard's answer to the click: what a person wants right after a
     /// run of calls scrolls past is that run, not one chosen from a list.
     pub fn toggle_last_expandable(&mut self) {
-        let Some(key) = self.transcript.last_expandable() else {
+        let Some(key) = self.visible_transcript().last_expandable() else {
             self.set_flash("nothing to expand");
             return;
         };
@@ -107,8 +276,13 @@ impl App {
     }
 
     fn toggle_expanded(&mut self, key: usize) {
-        if !self.expanded.remove(&key) {
-            self.expanded.insert(key);
+        let expanded = if self.open_subagent().is_some() {
+            &mut self.subagent_recording.expanded
+        } else {
+            &mut self.expanded
+        };
+        if !expanded.remove(&key) {
+            expanded.insert(key);
         }
     }
 
@@ -124,7 +298,7 @@ impl App {
     /// what a person reaches for after reading an answer is that answer.
     pub fn copy_last_reply(&mut self) {
         let reply = self
-            .transcript
+            .visible_transcript()
             .cells()
             .iter()
             .rev()

@@ -33,7 +33,10 @@ impl App {
     /// characters race the redraw. Ignored while a permission prompt owns the
     /// keyboard, where the composer is not taking input anyway.
     pub fn handle_paste(&mut self, text: &str) {
-        if self.open_permission_id().is_some() {
+        if self.open_permission_id().is_some()
+            || self.open_subagent().is_some()
+            || self.subagent_history.is_some()
+        {
             return;
         }
         self.input.insert_str(text);
@@ -48,6 +51,38 @@ impl App {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        if self.subagent_history.is_some() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.move_subagent_history(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_subagent_history(1),
+                KeyCode::Enter => self.select_subagent_history(),
+                KeyCode::Esc | KeyCode::Char('q') => self.subagent_history = None,
+                _ => {}
+            }
+            return;
+        }
+        if self.open_subagent().is_some() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.close_subagent();
+                }
+                KeyCode::Char('g') if control => self.cycle_subagent(),
+                KeyCode::Char('o') if control => self.toggle_full_transcript(),
+                KeyCode::Tab => self.toggle_last_expandable(),
+                KeyCode::Char('l') if control => self.subagent_recording.scroll.follow(),
+                KeyCode::Up | KeyCode::Char('k') => self.subagent_recording.scroll.scroll_up(1),
+                KeyCode::Down | KeyCode::Char('j') => self.subagent_recording.scroll.scroll_down(1),
+                KeyCode::PageUp => self.subagent_recording.scroll.page_up(),
+                KeyCode::PageDown => self.subagent_recording.scroll.page_down(),
+                KeyCode::Home => self.subagent_recording.scroll.scroll_up(usize::MAX),
+                KeyCode::End => self.subagent_recording.scroll.follow(),
+                KeyCode::Char('c') if control => self.interrupt(),
+                _ => {}
+            }
+            self.selection.clear();
+            return;
+        }
 
         // Whichever overlay is up owns the keyboard, letters
         // included: it filters as you type, and a keystroke that went into the
@@ -76,6 +111,7 @@ impl App {
         match key.code {
             KeyCode::Char('c') if control => self.interrupt(),
             KeyCode::Char('g') if control && self.plan_review().is_some() => self.edit_plan(),
+            KeyCode::Char('g') if control => self.cycle_subagent(),
             // Before the interrupt: a visible overlay owns escape, the way the
             // model picker above does. A subagent popup is open exactly while
             // the turn is busy, so without this it could never be closed.
@@ -212,6 +248,49 @@ impl App {
     /// a button back to the bottom: the pointer is already there when a reader
     /// decides they are done looking back.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.subagent_history.is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.move_subagent_history(-1),
+                MouseEventKind::ScrollDown => self.move_subagent_history(1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.open_subagent_at(mouse.row);
+                }
+                _ => {}
+            }
+            return;
+        }
+        if self.open_subagent().is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.selection.clear();
+                    self.subagent_recording.scroll.scroll_up(WHEEL_LINES);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.selection.clear();
+                    self.subagent_recording.scroll.scroll_down(WHEEL_LINES);
+                }
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.hit_follow_button(mouse.column, mouse.row) =>
+                {
+                    self.subagent_recording.scroll.follow();
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.selection.press((mouse.row, mouse.column))
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.selection.drag_to((mouse.row, mouse.column));
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if let Some(text) = self.selection.release() {
+                        self.copy_selection(text);
+                    } else {
+                        self.toggle_at(mouse.row);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         match mouse.kind {
             // Scrolling moves what the rows hold out from under a selection
             // pinned to them, so it drops it rather than keeping a highlight
