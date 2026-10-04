@@ -207,12 +207,11 @@ fn diff_columns(line: &str, width: usize) -> Option<(String, &str, char)> {
     if bytes.get(first_end) != Some(&b' ') || line.get(second_end..second_end + 2)? != "  " {
         return None;
     }
+    // One line-number column: a removed row keeps its old number, context
+    // and added rows show the new one.
+    let number = if marker == '-' { old } else { new }.trim_start_matches(' ');
     Some((
-        format!(
-            "{old}{} {new}{}  ",
-            char::from(bytes[0]),
-            char::from(bytes[second_start])
-        ),
+        format!("{number:>width$}{marker} "),
         line.get(second_end + 2..)?,
         marker,
     ))
@@ -363,8 +362,8 @@ mod tests {
         assert_eq!(diff_gutter_width(&hunk), Some(3));
         let (lines, source) = source_rows(&hunk, 80);
         assert_eq!(source, ["  indented", "plain", "replacement"]);
-        assert_eq!(lines[0].spans[1].content, " 12-       ");
-        assert_eq!(lines[1].spans[1].content, "123-       ");
+        assert_eq!(lines[0].spans[1].content, " 12- ");
+        assert_eq!(lines[1].spans[1].content, "123- ");
     }
 
     #[test]
@@ -440,8 +439,8 @@ mod tests {
             "-12      old\n    +13  new",
             20,
         );
-        assert_eq!(lines[0].spans[1].content, "12-      ");
-        assert_eq!(lines[1].spans[1].content, "    13+  ");
-        assert_eq!(ranges[0], Some((9, 12)));
+        assert_eq!(lines[0].spans[1].content, "12- ");
+        assert_eq!(lines[1].spans[1].content, "13+ ");
+        assert_eq!(ranges[0], Some((4, 7)));
     }
 }

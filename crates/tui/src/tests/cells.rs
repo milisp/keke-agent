@@ -936,10 +936,10 @@ fn drawing_a_scrolled_multi_file_patch_copies_only_the_selected_source() {
         let target = (0..15).find(|&row| {
             // Wide glyphs leave a blank placeholder cell; concatenating the
             // entire buffer row would insert a space inside each CJK word.
-            buffer[(17, row)].symbol() == "中"
-                && buffer[(19, row)].symbol() == "文"
-                && buffer[(21, row)].symbol() == "2"
-                && buffer[(22, row)].symbol() == "4"
+            buffer[(12, row)].symbol() == "中"
+                && buffer[(14, row)].symbol() == "文"
+                && buffer[(16, row)].symbol() == "2"
+                && buffer[(17, row)].symbol() == "4"
         });
         let Some(row) = target else {
             panic!("the scrolled diff should contain line 24: {buffer:?}");
@@ -971,7 +971,7 @@ fn drawing_a_scrolled_multi_file_patch_copies_only_the_selected_source() {
                 .contains(ratatui::style::Modifier::REVERSED)
         );
         assert!(
-            terminal.backend().buffer()[(17, row)]
+            terminal.backend().buffer()[(12, row)]
                 .modifier
                 .contains(ratatui::style::Modifier::REVERSED)
         );
