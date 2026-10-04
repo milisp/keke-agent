@@ -78,6 +78,45 @@ impl ToolContributor for SubagentTools {
     }
 }
 
+struct CompletedReports {
+    host: Arc<SubagentHost>,
+}
+
+impl keke_plugin_api::ContextContributor for CompletedReports {
+    fn contribute_step_context<'a>(
+        &'a self,
+        ctx: &'a ExtensionContext,
+    ) -> keke_plugin_api::ExtFuture<'a, Vec<keke_plugin_api::ContextFragment>> {
+        Box::pin(async move {
+            if self.host.is_child(ctx.session) {
+                return Vec::new();
+            }
+            // Completion is delivered at a model boundary, never by starting
+            // a new turn behind the person's back.
+            let reports = self.host.collect_ready().await;
+            reports
+                .into_iter()
+                .map(|report| {
+                    if let Some(turn) = ctx.turn() {
+                        ctx.record(host::end_event(turn, &report));
+                    }
+                    keke_plugin_api::ContextFragment::new(
+                        format!("subagent-result/{}", report.id),
+                        100,
+                        format!(
+                            "Subagent {} [{}] ({} tokens)\n{}",
+                            report.id,
+                            report.status.as_str(),
+                            report.usage.total(),
+                            report.summary
+                        ),
+                    )
+                })
+                .collect()
+        })
+    }
+}
+
 /// Register the subagent tools and return the host they share.
 ///
 /// The caller must then hand the host the session recipe children are built
@@ -94,6 +133,9 @@ pub fn install(
     limits: SubagentLimits,
 ) -> Arc<SubagentHost> {
     let host = Arc::new(SubagentHost::new(limits));
+    registry.context_contributor(Arc::new(CompletedReports {
+        host: Arc::clone(&host),
+    }));
     registry.tool_contributor(Arc::new(SubagentTools {
         host: Arc::clone(&host),
     }));

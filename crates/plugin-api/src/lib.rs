@@ -49,6 +49,16 @@ pub trait ToolContributor: Send + Sync {
 /// engine records contributed fragments as session events for exactly that
 /// reason.
 pub trait ContextContributor: Send + Sync {
+    /// New context available before each model request, including the first.
+    /// Return only newly available fragments; the engine appends them to history
+    /// as messages and logs them for resume.
+    fn contribute_step_context<'a>(
+        &'a self,
+        _ctx: &'a ExtensionContext,
+    ) -> ExtFuture<'a, Vec<ContextFragment>> {
+        Box::pin(async { Vec::new() })
+    }
+
     /// Fragments injected once per turn.
     fn contribute_turn_context<'a>(
         &'a self,

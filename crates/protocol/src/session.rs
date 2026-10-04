@@ -137,7 +137,7 @@ pub enum SessionEvent {
     },
     /// Model-visible text an extension put in front of the model.
     ///
-    /// A `ContextContributor`'s fragment reaches the request inside the *system*
+    /// A turn context fragment reaches the request inside the *system*
     /// prompt, which `ModelRequest` does not carry — it records `messages` and
     /// `tools`. Without a line of its own, a fragment that changed how the model
     /// behaved would be nowhere in the log, and *model-visible implies logged*
@@ -149,6 +149,12 @@ pub enum SessionEvent {
         /// The fragment's stable name, as its contributor gave it.
         name: String,
         text: String,
+    },
+    /// New model-visible context appended to conversation history by an extension.
+    ContextMessage {
+        turn: TurnId,
+        name: String,
+        message: Message,
     },
     /// History was compacted; `summary` replaced the elided messages.
     Compacted {

@@ -96,8 +96,8 @@ pub struct AgentProgress {
 /// A subagent that has not been collected yet.
 ///
 /// The join handle is the whole state: a finished child's report sits in it
-/// until someone asks, so a model that spawns without waiting still gets the
-/// result whenever it comes back rather than losing it to a reaper.
+/// until collected explicitly or delivered at the next parent model request.
+/// A model that spawns without waiting must not lose the result to a reaper.
 struct Slot {
     task: String,
     handle: tokio::task::JoinHandle<AgentReport>,
@@ -361,6 +361,42 @@ impl SubagentHost {
             Some(error) => Err(error),
             None => Ok(collected),
         }
+    }
+
+    /// Take completed reports without waiting for running children.
+    pub(crate) async fn collect_ready(&self) -> Vec<AgentReport> {
+        let ready = {
+            let Ok(mut slots) = self.slots.lock() else {
+                return Vec::new();
+            };
+            let mut ids: Vec<_> = slots
+                .iter()
+                .filter(|(_, slot)| slot.handle.is_finished())
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.sort();
+            ids.into_iter()
+                .filter_map(|id| slots.remove(&id).map(|slot| (id, slot)))
+                .collect::<Vec<_>>()
+        };
+        let mut reports = Vec::new();
+        for (id, slot) in ready {
+            let report = match slot.handle.await {
+                Ok(report) => report,
+                Err(error) => AgentReport {
+                    id: id.clone(),
+                    task: slot.task,
+                    status: AgentStatus::Failed,
+                    summary: format!("the subagent task was lost: {error}"),
+                    usage: Usage::default(),
+                    log_path: String::new(),
+                    session: None,
+                },
+            };
+            self.update_progress(|rows| rows.retain(|row| row.id != id));
+            reports.push(report);
+        }
+        reports
     }
 
     fn take_slot(&self, id: &str) -> Result<Slot, SubagentError> {

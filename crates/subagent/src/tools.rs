@@ -80,7 +80,7 @@ impl ToolOutput for SpawnAgentOutput {
     fn render(&self) -> Vec<ContentBlock> {
         match self {
             Self::Started { agent_id } => vec![ContentBlock::text(format!(
-                "{agent_id} started. Call `collect_agent` for its result."
+                "{agent_id} started. Its result is delivered automatically before a subsequent model request; call `collect_agent` to wait for it."
             ))],
             Self::Finished(report) => vec![ContentBlock::text(render_one(report))],
         }
@@ -141,7 +141,8 @@ impl Tool for SpawnAgent {
              of its own, so state the task completely. Up to {} run at once; further ones wait \
              their turn. Set `wait` to block for the result, or leave it off only when starting \
              several genuinely independent tasks that benefit from parallelism; otherwise wait \
-             for the result. Started ones are gathered with `collect_agent`, which returns \
+             for the result. Finished reports are delivered automatically before the next model request. Use \
+             `collect_agent` to wait for outstanding work; it returns \
              whichever finishes first rather than blocking on the slowest.",
             self.host.limits().max_concurrent
         ))

@@ -208,6 +208,11 @@ kinds and a model does not have to remember which verb goes with which. It
 ranks *below* `keke-subagent` for that reason, and it needs no part of the
 engine: a process and a capped buffer is the whole of it.
 
+Subagent reports are delivered automatically before the next parent model request
+through a step context contributor. Delivery consumes the report, clears its live
+row, and records both `SubagentEnd` and the model-visible `ContextMessage`. A
+finished child never starts a parent turn on its own.
+
 Nothing in it originates a turn. A background task's output reaches the model
 as an ordinary `task_output` tool result, which is already logged like any
 other, so invariant 6 needs no new `SessionEvent` to hold it. Waking an idle

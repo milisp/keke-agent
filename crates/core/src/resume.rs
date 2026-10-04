@@ -474,7 +474,8 @@ pub fn history_from_log(events: &[SessionEvent]) -> Vec<Message> {
                 flush(&mut history, &mut results);
                 history.push(input.clone());
             }
-            SessionEvent::ModelResponse { message, .. } => {
+            SessionEvent::ModelResponse { message, .. }
+            | SessionEvent::ContextMessage { message, .. } => {
                 flush(&mut history, &mut results);
                 history.push(message.clone());
             }
@@ -563,6 +564,28 @@ mod tests {
     /// A call the model made and the answer it got are both model-visible, so
     /// both have to be there — a resumed session that dropped the result would
     /// send a call nobody answered.
+    #[test]
+    fn extension_context_after_a_request_survives_resume() {
+        let turn = TurnId::new();
+        let input = Message::user("delegate");
+        let report = Message::user("subagent result");
+        let events = vec![
+            SessionEvent::ModelRequest {
+                turn,
+                messages: vec![input.clone()],
+                tools: Vec::new(),
+                reasoning_effort: None,
+                model: None,
+            },
+            SessionEvent::ContextMessage {
+                turn,
+                name: "subagent-result/agent_1".into(),
+                message: report.clone(),
+            },
+        ];
+        assert_eq!(history_from_log(&events), vec![input, report]);
+    }
+
     #[test]
     fn the_tail_after_the_last_request_is_replayed() {
         let turn = TurnId::new();

@@ -454,6 +454,98 @@ async fn the_parents_model_is_told_what_the_subagent_found() {
     assert!(carried, "the subagent's answer never reached the parent");
 }
 
+#[tokio::test]
+async fn a_finished_subagent_reaches_the_next_parent_request_without_collection() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(0);
+    let (mut session, host) =
+        parent_with_host(&harness, provider, SubagentLimits::default(), true).await;
+    let mut rows = host.subscribe();
+    let id = host
+        .spawn(session.id(), "SUB automatic".to_string(), never_cancelled())
+        .expect("spawns");
+
+    // Observe completion without consuming its report: this is the unread
+    // state that must clear when the parent next talks to its model.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let snapshot = rows.recv().await.expect("progress published");
+            if snapshot.iter().any(|row| {
+                row.id == id && row.status == Some(keke_subagent::AgentStatus::Completed)
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("child completes");
+    assert_eq!(host.outstanding(), vec![id.clone()]);
+
+    session
+        .run_turn(Message::user("SUB parent follow-up"))
+        .await
+        .expect("parent completes without calling collect_agent");
+
+    {
+        let requests = seen.lock().expect("lock");
+        let request = requests
+            .iter()
+            .find(|request| request.tools.iter().any(|tool| tool.name == "spawn_agent"))
+            .expect("parent request");
+        assert!(
+            request
+                .system
+                .as_deref()
+                .is_some_and(|text| text.contains("finished: SUB automatic"))
+                || request
+                    .messages
+                    .iter()
+                    .any(|message| message.text().contains("finished: SUB automatic")),
+            "the next parent request omitted the completed child's answer"
+        );
+    }
+    assert!(
+        host.outstanding().is_empty(),
+        "delivered report remains unread"
+    );
+    assert!(
+        host.progress().is_empty(),
+        "delivered child remains in live rows"
+    );
+
+    session
+        .run_turn(Message::user("SUB another parent follow-up"))
+        .await
+        .expect("next turn completes");
+    {
+        let requests = seen.lock().expect("lock");
+        let request = requests.last().expect("later parent request");
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|message| message.text().contains("finished: SUB automatic")),
+            "delivered report disappeared on the next turn"
+        );
+    }
+    let log = read_log(session.log_path()).expect("reads");
+    let events: Vec<_> = log.iter().map(|entry| entry.event.clone()).collect();
+    assert!(
+        keke_core::history_from_log(&events)
+            .iter()
+            .any(|message| message.text().contains("finished: SUB automatic")),
+        "resume loses the delivered report"
+    );
+    let ended: Vec<_> = log
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            SessionEvent::SubagentEnd { agent, summary, .. } if agent == &id => Some(summary),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ended, vec![&"finished: SUB automatic".to_string()]);
+}
+
 /// A delegated task shows up as a live row while it runs, so a person watching
 /// the interface can see that the turn is doing something and what it is
 /// costing — the moment they can still decide to stop it.

@@ -164,6 +164,24 @@ impl Session {
         let mut last_logged: Option<(Option<keke_protocol::ReasoningEffort>, String)> = None;
 
         for step in 0..MAX_STEPS_PER_TURN {
+            let mut fragments = Vec::new();
+            for contributor in self.registry.context_contributors() {
+                fragments.extend(contributor.contribute_step_context(ext_ctx).await);
+            }
+            fragments.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
+            for fragment in fragments {
+                let message = Message::user(fragment.text);
+                self.log(SessionEvent::ContextMessage {
+                    turn,
+                    name: fragment.name,
+                    message: message.clone(),
+                })
+                .await?;
+                self.history.push(message);
+            }
+            for event in ext_ctx.drain_events() {
+                self.log(event).await?;
+            }
             let request = ModelRequest {
                 model: self.model.get().to_string(),
                 system: Some(system.clone()),
