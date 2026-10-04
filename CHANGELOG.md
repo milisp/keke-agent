@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.35] - 2026-10-03
+
+### Added
+- Subagents can be resumed, and their transcripts and history can be inspected
+  in the TUI.
+
+## [0.1.34] - 2026-10-02
+
+### Fixed
+- ACP editor session configuration and persistence handling.
+
+## [0.1.33] - 2026-10-01
+
+### Added
+- Guardian review of sandbox escapes, including in Auto mode.
+
+### Changed
+- Improved TUI diff rendering and selection.
+
+## [0.1.32] - 2026-09-29
+
+### Added
+- Per-agent persistent memory, selectable sandbox modes over ACP and
+  `--sandbox`, and support for MCP servers supplied by ACP clients.
+
+### Fixed
+- Tool names are rewritten to vendor-valid form at the wire boundary.
+
+## [0.1.31] - 2026-09-29
+
+### Added
+- Accept-edits approval policy and scoped Git tools.
+- Patch validation and approval handling; apply-patch diffs are rendered in
+  the transcript.
+- Automatic approval review and sandboxed Bash policy.
+
+### Changed
+- Refactored sandbox command execution and hid sandbox escalation in tool
+  labels.
+
+## [0.1.30] - 2026-09-25
+
+### Added
+- Automatic approval review, sandboxed Bash, patch validation, and scoped Git
+  tools.
+
+### Changed
+- Refactored sandbox command execution and improved apply-patch transcript
+  rendering.
+
 ## [0.1.29] - 2026-09-24
 
 ### Added
