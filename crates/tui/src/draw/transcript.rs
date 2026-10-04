@@ -172,7 +172,6 @@ pub(crate) fn render(
                         .position(|cell| !runs_with(cell, &first.name))
                         .map_or(cells.len(), |offset| index + 1 + offset)
                 };
-                out.toggles.push((out.lines.len(), index));
                 let group = &cells[index..end];
                 // Full transcript mode is the escape hatch from the compact
                 // view: a group header must never hide its individual calls.
@@ -182,6 +181,11 @@ pub(crate) fn render(
                         ^ expanded.contains(&index);
                 let base = out.lines.len();
                 let (lines, ranges) = group_lines(group, open, width, full_transcript);
+                // A click belongs to the whole cell, even when its header has
+                // scrolled out of view. Selection drags are handled before
+                // these targets are consulted by the mouse handler.
+                out.toggles
+                    .extend((base..base + lines.len()).map(|row| (row, index)));
                 out.lines.extend(lines);
                 out.copy_ranges.extend(
                     ranges
@@ -664,6 +668,11 @@ mod grouping_tests {
         rendered
             .toggles
             .iter()
+            .enumerate()
+            .filter(|(position, (_, key))| {
+                *position == 0 || rendered.toggles[*position - 1].1 != *key
+            })
+            .map(|(_, target)| target)
             .map(|(line, _)| {
                 rendered.lines[*line]
                     .spans
@@ -672,6 +681,27 @@ mod grouping_tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn every_expanded_cell_row_is_a_fold_target_but_its_separator_is_not() {
+        let cells = vec![
+            tool("c1", "read_file", "a.rs"),
+            tool("c2", "read_file", "b.rs"),
+        ];
+        let expanded = HashSet::new();
+        let rendered = render(&cells, 80, &expanded, false);
+        assert!(rendered.toggles.len() > 1, "the cell has detail rows");
+        assert_eq!(
+            rendered.toggles,
+            (0..rendered.lines.len() - 1)
+                .map(|row| (row, 0))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            render(&cells, 80, &HashSet::from([0]), false).toggles.len(),
+            1
+        );
     }
 
     #[test]
@@ -702,7 +732,7 @@ mod grouping_tests {
             tool("c3", "read_file", "b.rs"),
         ];
         let rendered = render(&cells, 80, &HashSet::new(), false);
-        assert_eq!(rendered.toggles.len(), 1, "one collapsed run, not three");
+        assert_eq!(header_titles(&rendered).len(), 1, "one run, not three");
         let titles = header_titles(&rendered);
         assert!(titles[0].contains("Explored"), "got {titles:?}");
         assert!(titles[0].contains("3 steps"), "got {titles:?}");
@@ -724,7 +754,7 @@ mod grouping_tests {
             tool("c2", "read_file", "b.rs"),
         ];
         let rendered = render(&cells, 80, &HashSet::new(), false);
-        assert_eq!(rendered.toggles.len(), 1);
+        assert_eq!(header_titles(&rendered).len(), 1);
         let titles = header_titles(&rendered);
         assert!(titles[0].contains("Read"), "got {titles:?}");
         assert!(titles[0].contains("2 files"), "got {titles:?}");
@@ -752,7 +782,11 @@ mod grouping_tests {
     fn bash_does_not_join_an_exploration_run() {
         let cells = vec![tool("c1", "read_file", "a.rs"), tool("c2", "bash", "ls")];
         let rendered = render(&cells, 80, &HashSet::new(), false);
-        assert_eq!(rendered.toggles.len(), 2, "bash stays its own group");
+        assert_eq!(
+            header_titles(&rendered).len(),
+            2,
+            "bash stays its own group"
+        );
     }
 
     #[test]
@@ -769,7 +803,7 @@ mod grouping_tests {
             .collect();
         let rendered = render(&cells, 80, &HashSet::new(), false);
         let lines: Vec<_> = rendered.lines.iter().map(|line| line.to_string()).collect();
-        assert_eq!(rendered.toggles.len(), 10);
+        assert_eq!(header_titles(&rendered).len(), 10);
         assert_eq!(
             lines.iter().filter(|line| line.contains("output ")).count(),
             1
