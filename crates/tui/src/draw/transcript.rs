@@ -466,10 +466,10 @@ fn push_tool_detail(
             } else {
                 push_limited_block(lines, "    ", detail, Style::new().fg(THINKING), width);
             }
-            if let Some(line) = lines.get_mut(start) {
-                if let Some(prefix) = line.spans.first_mut() {
-                    prefix.content = "  └ ".into();
-                }
+            if let Some(line) = lines.get_mut(start)
+                && let Some(prefix) = line.spans.first_mut()
+            {
+                prefix.content = "  └ ".into();
             }
         }
         return;
