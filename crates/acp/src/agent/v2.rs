@@ -159,7 +159,8 @@ pub(super) fn agent(
                                 ),
                             ),
                         )
-                        .auth_methods(auth_methods(factory.as_ref())),
+                        .auth_methods(auth_methods(factory.as_ref()))
+                        .meta(super::mcp_policy_meta(factory.as_ref())),
                     )
                 }
             },

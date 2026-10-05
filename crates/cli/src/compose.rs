@@ -438,6 +438,8 @@ pub(crate) struct Settings<'a> {
     /// MCP servers the session's client supplied; empty for every surface
     /// that has no client to supply any.
     pub client_mcp: &'a [keke_plugin::ResolvedMcpServer],
+    /// Select sources before MCP registration, independently of plugin trust.
+    pub mcp_policy: crate::cli::McpPolicy,
 }
 
 impl<'a> From<&'a keke_config::Config> for Settings<'a> {
@@ -453,6 +455,7 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             model: &config.model,
             sandbox: &config.sandbox,
             client_mcp: &[],
+            mcp_policy: crate::cli::McpPolicy::Merge,
         }
     }
 }
@@ -518,6 +521,7 @@ impl Composed {
             model,
             sandbox,
             client_mcp,
+            mcp_policy,
         } = settings;
         // Resolution finds every plugin; this holds back the programs of the
         // ones nobody vouched for. A plugin under the workspace is content the
@@ -525,9 +529,16 @@ impl Composed {
         // what it ships.
         let (plugins, withheld) = crate::plugins::discover_trusted(home)?;
         crate::plugins::report_withheld(&withheld);
+        // Keep trusted non-MCP contributions, but never register excluded
+        // servers: discovery starts processes when the registry is queried.
+        let no_mcp = keke_plugin::PluginSet::default();
+        let mcp_plugins = match mcp_policy {
+            crate::cli::McpPolicy::Merge => &plugins,
+            crate::cli::McpPolicy::ClientOnly => &no_mcp,
+        };
         crate::client_mcp::refuse_collisions(
             client_mcp,
-            plugins
+            mcp_plugins
                 .mcp_servers()
                 .filter(|server| !server.disabled)
                 .map(|server| server.name.as_str()),
@@ -732,7 +743,7 @@ impl Composed {
         // `client_mcp`.
         keke_mcp::install_with_servers(
             &mut extensions,
-            &plugins,
+            mcp_plugins,
             client_mcp.to_vec(),
             keke_mcp::McpOptions {
                 auth: Some(keke_mcp::AuthHome::new(home)),
