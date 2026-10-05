@@ -100,8 +100,9 @@ impl ModelProvider for DeclaredProvider {
 
     fn stream<'a>(
         &'a self,
-        request: ModelRequest,
+        mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
+        apply_openrouter_cache_affinity(&self.info.base_url, &mut request);
         Box::pin(async move { self.client.stream(self.api, request).await })
     }
 
@@ -295,12 +296,28 @@ fn build_http_client(
 /// pointing keke at OpenRouter gets attribution without hand-writing
 /// `headers` for it; `extra_headers` still lets a declared `headers` entry
 /// override either name.
-fn openrouter_attribution_headers(base_url: &str) -> Vec<(String, String)> {
-    let is_openrouter = reqwest::Url::parse(base_url)
+fn is_openrouter(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| host == "openrouter.ai");
-    if !is_openrouter {
+        .is_some_and(|host| host == "openrouter.ai")
+}
+
+fn apply_openrouter_cache_affinity(base_url: &str, request: &mut ModelRequest) {
+    if is_openrouter(base_url)
+        && let Some(id) = request.session_id
+    {
+        // OpenRouter uses this body field for sticky provider routing, including
+        // automatic caches that need no explicit content breakpoints.
+        request
+            .vendor_params
+            .entry("session_id")
+            .or_insert_with(|| serde_json::json!(id.to_string()));
+    }
+}
+
+fn openrouter_attribution_headers(base_url: &str) -> Vec<(String, String)> {
+    if !is_openrouter(base_url) {
         return Vec::new();
     }
     vec![
@@ -430,6 +447,77 @@ mod tests {
                 ("X-Title".to_string(), "keke".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn openrouter_cache_routing_follows_the_session_across_tool_steps() {
+        let id = keke_protocol::SessionId::new();
+        let mut request = ModelRequest {
+            session_id: Some(id),
+            model: "qwen/qwen3.8-27b:free".to_string(),
+            messages: vec![keke_protocol::Message::user("add two numbers")],
+            ..ModelRequest::default()
+        };
+        apply_openrouter_cache_affinity("https://openrouter.ai/api/v1", &mut request);
+        let first = keke_wire::chat_completions_body(&request, true);
+        let call_id = keke_protocol::ToolCallId::new("add-1");
+        request.messages.extend([
+            keke_protocol::Message {
+                role: keke_protocol::Role::Assistant,
+                content: vec![keke_protocol::ContentBlock::ToolCall(
+                    keke_protocol::ToolCall {
+                        id: call_id.clone(),
+                        name: "add".to_string(),
+                        arguments: serde_json::json!({"a": 1, "b": 2}),
+                    },
+                )],
+            },
+            keke_protocol::Message {
+                role: keke_protocol::Role::Tool,
+                content: vec![keke_protocol::ContentBlock::ToolResult(
+                    keke_protocol::ToolResult::ok(call_id, "3"),
+                )],
+            },
+        ]);
+        apply_openrouter_cache_affinity("https://openrouter.ai/api/v1", &mut request);
+        let next = keke_wire::chat_completions_body(&request, true);
+        assert_eq!(first["session_id"], id.to_string());
+        assert_eq!(next["session_id"], first["session_id"]);
+        assert_eq!(next["messages"][2]["role"], "tool");
+        assert_eq!(next["messages"][2]["content"], "3");
+
+        let mut other = ModelRequest {
+            session_id: Some(keke_protocol::SessionId::new()),
+            ..ModelRequest::default()
+        };
+        apply_openrouter_cache_affinity("https://openrouter.ai/api/v1", &mut other);
+        assert_ne!(other.vendor_params["session_id"], first["session_id"]);
+    }
+
+    #[test]
+    fn openrouter_affinity_is_scoped_and_preserves_an_explicit_override() {
+        for base_url in [
+            "https://gateway.example/v1",
+            "https://openrouter.ai.example/v1",
+            "https://openrouter.ai@gateway.example/v1",
+        ] {
+            let mut request = ModelRequest {
+                session_id: Some(keke_protocol::SessionId::new()),
+                ..ModelRequest::default()
+            };
+            apply_openrouter_cache_affinity(base_url, &mut request);
+            assert!(!request.vendor_params.contains_key("session_id"));
+        }
+        let mut standalone = ModelRequest::default();
+        apply_openrouter_cache_affinity("https://openrouter.ai/api/v1", &mut standalone);
+        assert!(!standalone.vendor_params.contains_key("session_id"));
+        standalone.session_id = Some(keke_protocol::SessionId::new());
+        standalone.vendor_params.insert(
+            "session_id".to_string(),
+            serde_json::json!("explicit-scope"),
+        );
+        apply_openrouter_cache_affinity("https://openrouter.ai/api/v1", &mut standalone);
+        assert_eq!(standalone.vendor_params["session_id"], "explicit-scope");
     }
 
     #[test]
