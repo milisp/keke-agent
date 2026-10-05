@@ -315,6 +315,31 @@ fn group_lines(
 
     let mut lines = Vec::new();
     let mut copy_ranges = Vec::new();
+    if first.name == "bash" {
+        if open {
+            let command = if first.arguments.is_empty() {
+                &first.summary
+            } else {
+                &first.arguments
+            };
+            push_block(
+                &mut lines,
+                &format!("{marker} {title} "),
+                command,
+                Style::new(),
+                width,
+            );
+            if !full_transcript && let Some(line) = lines.first_mut() {
+                line.spans
+                    .push(Span::styled("  ▾", Style::new().fg(THINKING)));
+            }
+            push_tool_detail(&mut lines, &mut copy_ranges, first, width, full_transcript);
+        } else {
+            lines.push(header(marker, title, &summary, false, style));
+        }
+        copy_ranges.resize(lines.len(), None);
+        return (lines, copy_ranges);
+    }
     if !full_transcript {
         lines.push(header(marker, title, &summary, open, style));
     }
@@ -406,8 +431,23 @@ fn push_tool_detail(
     width: usize,
     full_transcript: bool,
 ) {
+    if tool.name == "bash" {
+        if let Some(detail) = &tool.detail {
+            let start = lines.len();
+            if full_transcript {
+                push_block(lines, "    ", detail, Style::new().fg(THINKING), width);
+            } else {
+                push_limited_block(lines, "    ", detail, Style::new().fg(THINKING), width);
+            }
+            if let Some(line) = lines.get_mut(start) {
+                if let Some(prefix) = line.spans.first_mut() {
+                    prefix.content = "  └ ".into();
+                }
+            }
+        }
+        return;
+    }
     if !tool.arguments.is_empty()
-        && (tool.name != "bash" || full_transcript || tool.arguments != tool.summary)
         && (full_transcript
             || (!crate::transcript::is_diff_tool(&tool.name)
                 && !crate::transcript::is_exploration_tool(&tool.name)))
@@ -429,8 +469,6 @@ fn push_tool_detail(
             } else {
                 push_diff_block(lines, copy_ranges, "      ", detail, width);
             }
-        } else if tool.name == "bash" && !full_transcript {
-            push_limited_block(lines, "      ", detail, Style::new().fg(THINKING), width);
         } else {
             push_block(lines, "      ", detail, Style::new().fg(THINKING), width);
         }
@@ -904,6 +942,30 @@ mod grouping_tests {
     }
 
     #[test]
+    fn expanded_shell_shows_input_once_and_branches_output() {
+        let mut cell = tool("shell", "bash", "echo first echo second");
+        let Cell::Tool(command) = &mut cell else {
+            unreachable!()
+        };
+        command.arguments = "echo first\necho second".into();
+        command.detail = Some("first\nsecond".into());
+        for full in [false, true] {
+            let rendered = render(&[cell.clone()], 80, &HashSet::new(), full);
+            let text = rendered
+                .lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(text.matches("echo first").count(), 1, "{text}");
+            assert_eq!(text.matches("echo second").count(), 1, "{text}");
+            assert!(text.contains("Ran echo first"), "{text}");
+            assert!(text.contains("└ first"), "{text}");
+            assert!(!text.contains("Output"), "{text}");
+        }
+    }
+
+    #[test]
     fn command_outputs_are_separated_with_a_blank_line_in_both_views() {
         let cells = vec![
             tool("c1", "bash", "echo one"),
@@ -925,7 +987,8 @@ mod grouping_tests {
             let Some(second) = second else {
                 panic!("got {lines:?}");
             };
-            assert!(second > 0 && lines[second - 1].is_empty(), "got {lines:?}");
+            let header = second;
+            assert!(header > 0 && lines[header - 1].is_empty(), "got {lines:?}");
         }
     }
 }
