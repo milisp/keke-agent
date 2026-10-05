@@ -34,6 +34,7 @@ impl App {
     /// keyboard, where the composer is not taking input anyway.
     pub fn handle_paste(&mut self, text: &str) {
         if self.open_permission_id().is_some()
+            || self.task_viewer.is_some()
             || self.open_subagent().is_some()
             || self.subagent_history.is_some()
         {
@@ -51,6 +52,44 @@ impl App {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        if self.task_viewer.is_some() {
+            match key.code {
+                KeyCode::Esc => self.task_viewer = None,
+                KeyCode::Up => {
+                    self.task_scroll = Some(
+                        self.task_scroll
+                            .unwrap_or(self.task_offset)
+                            .saturating_sub(1),
+                    )
+                }
+                KeyCode::PageUp => {
+                    self.task_scroll = Some(
+                        self.task_scroll
+                            .unwrap_or(self.task_offset)
+                            .saturating_sub(10),
+                    )
+                }
+                KeyCode::Down => {
+                    self.task_scroll = Some(
+                        self.task_scroll
+                            .unwrap_or(self.task_offset)
+                            .saturating_add(1),
+                    )
+                }
+                KeyCode::PageDown => {
+                    self.task_scroll = Some(
+                        self.task_scroll
+                            .unwrap_or(self.task_offset)
+                            .saturating_add(10),
+                    )
+                }
+                KeyCode::Home => self.task_scroll = Some(0),
+                KeyCode::End => self.task_scroll = None,
+                _ => {}
+            }
+            return;
+        }
 
         if self.subagent_history.is_some() {
             match key.code {
@@ -248,6 +287,44 @@ impl App {
     /// a button back to the bottom: the pointer is already there when a reader
     /// decides they are done looking back.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.task_viewer.is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.task_scroll = Some(
+                        self.task_scroll
+                            .unwrap_or(self.task_offset)
+                            .saturating_sub(3),
+                    )
+                }
+                MouseEventKind::ScrollDown => {
+                    self.task_scroll = Some(
+                        self.task_scroll
+                            .unwrap_or(self.task_offset)
+                            .saturating_add(3),
+                    )
+                }
+                _ => {}
+            }
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some((_, id)) = self.task_rows.iter().find(|(area, _)| {
+                area.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+            })
+        {
+            self.task_viewer = Some(id.clone());
+            self.task_scroll = None;
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.shell_button.is_some_and(|area| {
+                area.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+            })
+        {
+            self.tasks_expanded = !self.tasks_expanded;
+            self.selection.clear();
+            return;
+        }
         if self.subagent_history.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => self.move_subagent_history(-1),

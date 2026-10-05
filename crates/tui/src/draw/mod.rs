@@ -63,6 +63,10 @@ fn below(frame: &mut Frame, body: ratatui::layout::Rect, app: &mut App) {
 /// viewport decides what to show; scrolling anchors to wrapped lines rather
 /// than to cells, which is the only way a long tool result scrolls smoothly.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
+    if app.task_viewer.is_some() {
+        tasks::viewer(frame, app);
+        return;
+    }
     // While a plan waits, the screen belongs to it: the composer has nothing
     // to say until a comment is being written, and the status bar's policy is
     // exactly what the panel below the plan is asking about.
@@ -101,7 +105,6 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 turn_status::rows(app)
             }),
-            Constraint::Length(if transcript_only { 0 } else { tasks::rows(app) }),
             Constraint::Length(
                 if transcript_only || (planning && !composing) || managing_mcp || blocked {
                     0
@@ -109,6 +112,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
                     input::rows(app, frame.area().width)
                 },
             ),
+            Constraint::Length(if transcript_only { 0 } else { tasks::rows(app) }),
             Constraint::Length(if transcript_only {
                 0
             } else {
@@ -140,8 +144,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         body,
         menu,
         turn,
-        background,
         composer,
+        background,
         approval,
         picker_area,
         rewind_area,
@@ -248,6 +252,106 @@ mod tests {
 
     use keke_acp::{ScriptedConversation, SubagentView, Update};
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn shell_row_opens_read_only_view_and_escape_restores_draft() {
+        use crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        let (conversation, _) = ScriptedConversation::new(Vec::new());
+        let (mut app, _) = super::App::new(Arc::new(conversation));
+        app.apply(Update::Tasks(vec![keke_acp::TaskView {
+            id: "command_1".into(),
+            kind: "command".into(),
+            description: "sleep 10".into(),
+            status: "running".into(),
+        }]));
+        app.input.set_text("draft");
+        app.tasks_expanded = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let row = app.task_rows[0].0;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: row.x,
+            row: row.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.task_viewer.as_deref(), Some("command_1"));
+        assert!(
+            app.next_wakeup(std::time::Duration::from_millis(100))
+                .is_some()
+        );
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        app.handle_paste("not inserted");
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.task_offset = 20;
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.task_scroll, Some(19));
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.task_scroll, None);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.task_viewer.is_none());
+        assert_eq!(app.input.text(), "draft");
+    }
+
+    #[test]
+    fn shell_chip_toggles_details_below_composer_without_consuming_tasks() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let (conversation, _updates) = ScriptedConversation::new(Vec::new());
+        let (mut app, _local) = super::App::new(Arc::new(conversation));
+        app.apply(Update::Tasks(vec![keke_acp::TaskView {
+            id: "command_1".into(),
+            kind: "command".into(),
+            description: "cargo test".into(),
+            status: "running".into(),
+        }]));
+        app.input.set_text("composer marker");
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        assert_eq!(super::tasks::rows(&app), 0);
+        let chip = app.shell_button.expect("shell hit target");
+        let spans = super::status::spans(&app);
+        let shell = spans
+            .iter()
+            .find(|span| span.content.contains("1 shell"))
+            .unwrap();
+        assert_eq!(shell.style.fg, Some(ratatui::style::Color::Blue));
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: chip.x,
+            row: chip.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle_mouse(click);
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..24)
+            .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let composer = rows
+            .iter()
+            .position(|row| row.contains("composer marker"))
+            .unwrap();
+        let detail = rows
+            .iter()
+            .position(|row| row.contains("cargo test"))
+            .unwrap();
+        assert!(detail > composer);
+        assert_eq!(app.tasks().len(), 1);
+        app.handle_mouse(click);
+        assert_eq!(super::tasks::rows(&app), 0);
+        app.apply(Update::Tasks(vec![keke_acp::TaskView {
+            id: "command_1".into(),
+            kind: "command".into(),
+            description: "cargo test".into(),
+            status: "exited".into(),
+        }]));
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        assert!(app.shell_button.is_none());
+        assert!(app.tasks().is_empty());
+        assert!(app.task_since.is_empty());
+    }
 
     #[test]
     fn subagent_rows_are_below_the_status_bar_and_composer() {

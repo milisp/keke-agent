@@ -21,8 +21,18 @@ pub(crate) fn tokens(count: u64) -> String {
     }
 }
 
-pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(Paragraph::new(Line::from(spans(app))), area);
+pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+    let spans = spans(app);
+    let mut x = area.x;
+    app.shell_button = None;
+    for span in &spans {
+        let width = u16::try_from(span.width()).unwrap_or(u16::MAX);
+        if span.content.ends_with(" shell ") && area.height > 0 && x < area.right() {
+            app.shell_button = Some(Rect::new(x, area.y, width.min(area.right() - x), 1));
+        }
+        x = x.saturating_add(width);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// The bar's spans, built apart from the frame so what a person reads there can
@@ -86,6 +96,12 @@ pub(crate) fn spans(app: &App) -> Vec<Span<'static>> {
     if let Some(level) = app.reasoning_effort() {
         spans.push(Span::styled(
             format!("· {level} "),
+            Style::new().fg(Color::Blue),
+        ));
+    }
+    if !app.tasks().is_empty() {
+        spans.push(Span::styled(
+            format!("· {} shell ", app.tasks().len()),
             Style::new().fg(Color::Blue),
         ));
     }

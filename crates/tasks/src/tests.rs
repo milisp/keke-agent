@@ -1,6 +1,28 @@
 //! What a background command promises: it starts, it keeps what it says, it
 //! stops when asked, and reading it twice does not repeat itself.
 
+#[tokio::test]
+async fn preview_survives_agent_reads_and_does_not_consume_output() {
+    let (tasks, _dir, root) = host(BackgroundLimits::default());
+    let id = tasks
+        .spawn("printf 'hello\\n'".to_string(), &root)
+        .expect("spawn");
+    settle(&tasks, &id).await;
+    // Exit and pipe draining are independent; wait for the reader too.
+    for _ in 0..100 {
+        if tasks.preview(&id).unwrap().text.contains("hello") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let preview = tasks.preview(&id).unwrap().text;
+    assert_eq!(preview.trim(), "hello");
+    assert_eq!(tasks.preview(&id).unwrap().text, preview);
+    assert_eq!(tasks.take_output(&id).unwrap().text, preview);
+    assert_eq!(tasks.preview(&id).unwrap().text, preview);
+    assert!(tasks.take_output(&id).unwrap().text.is_empty());
+}
+
 use std::sync::Arc;
 use std::time::Duration;
 

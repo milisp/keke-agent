@@ -214,6 +214,13 @@ pub struct App {
     /// Background commands, as the session last reported them. A whole
     /// snapshot each time, so nothing here has to be reconciled.
     tasks: Vec<keke_acp::TaskView>,
+    pub(crate) task_since: std::collections::HashMap<String, Instant>,
+    pub(crate) tasks_expanded: bool,
+    pub(crate) task_rows: Vec<(ratatui::layout::Rect, String)>,
+    pub(crate) task_viewer: Option<String>,
+    pub(crate) task_scroll: Option<usize>,
+    pub(crate) task_offset: usize,
+    pub(crate) shell_button: Option<ratatui::layout::Rect>,
     /// When each subagent id was first seen here. The duration on a row is
     /// measured against this rather than against a timestamp the agent sends,
     /// because a surface across a pipe has no shared clock to compare with —
@@ -310,6 +317,13 @@ impl App {
                 toggles: Vec::new(),
                 subagents: Vec::new(),
                 tasks: Vec::new(),
+                task_since: std::collections::HashMap::new(),
+                tasks_expanded: false,
+                task_rows: Vec::new(),
+                task_viewer: None,
+                task_scroll: None,
+                task_offset: 0,
+                shell_button: None,
                 subagent_since: std::collections::HashMap::new(),
                 subagent_rows: Vec::new(),
                 subagent_detail: None,
@@ -588,7 +602,7 @@ impl App {
     /// what a person notices on a laptop.
     #[must_use]
     pub fn next_wakeup(&self, tick: Duration) -> Option<Duration> {
-        let timing = self.is_timing().then_some(tick);
+        let timing = (self.is_timing() || self.task_viewer.is_some()).then_some(tick);
         // A due loop that cannot fire yet must not be woken for: while a turn
         // holds it up, waking on its deadline is a spin at zero delay. The
         // turn's own tick is what brings us back to look again.
@@ -798,11 +812,26 @@ impl App {
             Update::Subagents(rows) => {
                 self.set_subagents(rows);
             }
-            Update::Tasks(rows) => self.tasks = rows,
+            Update::Tasks(rows) => {
+                self.tasks = rows.into_iter().filter(|task| task.is_running()).collect();
+                self.task_since
+                    .retain(|id, _| self.tasks.iter().any(|task| &task.id == id));
+                for task in &self.tasks {
+                    self.task_since
+                        .entry(task.id.clone())
+                        .or_insert_with(Instant::now);
+                }
+                if self.tasks.is_empty() {
+                    self.tasks_expanded = false;
+                    self.shell_button = None;
+                }
+            }
             Update::RewindPoints(points) => self.offer_rewind_points(points),
             Update::RewindPreview { turn, files } => self.preview_rewind(turn, files),
             Update::Rewound(rewound) => self.report_rewind(&rewound),
             Update::SessionReset => {
+                self.task_viewer = None;
+                self.task_rows.clear();
                 self.transcript.clear();
                 self.set_subagents(Vec::new());
                 self.subagent_history = None;
@@ -937,6 +966,10 @@ impl App {
     #[must_use]
     pub fn tasks(&self) -> &[keke_acp::TaskView] {
         &self.tasks
+    }
+
+    pub(crate) fn task_preview(&self, id: &str) -> Option<keke_acp::TaskPreview> {
+        self.conversation.task_preview(id)
     }
 
     /// Ctrl-C: stop the turn, or leave if there is nothing to stop.

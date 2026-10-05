@@ -295,6 +295,14 @@ pub trait SubagentTranscripts: Send + Sync {
 
 /// A live conversation with an agent.
 pub trait Conversation: Send + Sync {
+    /// Attach the composition-owned, non-consuming shell output reader.
+    fn set_task_previews(&self, _source: Arc<dyn TaskPreviews>) {}
+
+    /// Read a bounded output tail without taking output from the agent.
+    fn task_preview(&self, _id: &str) -> Option<TaskPreview> {
+        None
+    }
+
     /// Attach the composition's child transcript reader.
     fn set_subagent_transcripts(&self, _source: Arc<dyn SubagentTranscripts>) {}
 
@@ -464,6 +472,17 @@ pub trait Conversation: Send + Sync {
         nth: usize,
         scope: RewindScope,
     ) -> ConversationFuture<'_, Result<Option<Rewound>, ConversationError>>;
+}
+
+/// Composition-owned reader; implementations must never consume agent output.
+pub trait TaskPreviews: Send + Sync {
+    fn preview(&self, id: &str) -> Option<TaskPreview>;
+}
+
+/// The retained bounded tail of a shell's combined output.
+pub struct TaskPreview {
+    pub text: String,
+    pub dropped: u64,
 }
 
 /// One place a conversation can be wound back to, as a surface sees it.

@@ -225,6 +225,7 @@ struct Switches {
 
 /// A conversation with a session running in this process.
 pub struct LocalConversation {
+    task_previews: Mutex<Option<Arc<dyn crate::TaskPreviews>>>,
     transcripts: Mutex<Option<Arc<dyn crate::SubagentTranscripts>>>,
     /// `None` where the composition did not offer a sandbox choice.
     sandbox: Option<Arc<SandboxSwitch>>,
@@ -474,6 +475,7 @@ async fn local_in(
             .unwrap_or_default(),
         conversation: Arc::new(LocalConversation {
             transcripts: Mutex::new(None),
+            task_previews: Mutex::new(None),
             sandbox,
             commands,
             cancel: Mutex::new(Box::new(cancel)),
@@ -591,6 +593,17 @@ fn translate(turn: TurnUpdate) -> Update {
 }
 
 impl Conversation for LocalConversation {
+    fn set_task_previews(&self, source: Arc<dyn crate::TaskPreviews>) {
+        *self
+            .task_previews
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    }
+
+    fn task_preview(&self, id: &str) -> Option<crate::TaskPreview> {
+        self.task_previews.lock().ok()?.as_ref()?.preview(id)
+    }
+
     fn set_subagent_transcripts(&self, source: Arc<dyn crate::SubagentTranscripts>) {
         *self
             .transcripts

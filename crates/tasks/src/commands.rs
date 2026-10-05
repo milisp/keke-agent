@@ -49,6 +49,8 @@ struct Slot {
     /// Output not yet read, oldest first. A deque because the cap is enforced
     /// by dropping from the front, which is the end nobody wants.
     pending: VecDeque<u8>,
+    preview: VecDeque<u8>,
+    preview_dropped: u64,
     /// How much has been dropped to stay under the cap, over the task's life.
     dropped: u64,
     /// Set while the child is running, taken to stop it.
@@ -60,6 +62,12 @@ impl Slot {
     fn push(&mut self, line: &str, cap: usize) {
         self.pending.extend(line.as_bytes());
         self.pending.push_back(b'\n');
+        self.preview.extend(line.as_bytes());
+        self.preview.push_back(b'\n');
+        while self.preview.len() > cap {
+            self.preview.pop_front();
+            self.preview_dropped += 1;
+        }
         while self.pending.len() > cap {
             self.pending.pop_front();
             self.dropped += 1;
@@ -136,6 +144,17 @@ impl BackgroundTasks {
         self.limits
     }
 
+    /// A bounded tail for human inspection, independent of agent consumption.
+    pub fn preview(&self, id: &str) -> Option<TaskOutput> {
+        let slots = self.slots.lock().ok()?;
+        let slot = slots.get(id)?;
+        Some(TaskOutput {
+            text: String::from_utf8_lossy(&slot.preview.iter().copied().collect::<Vec<_>>())
+                .into_owned(),
+            dropped: slot.preview_dropped,
+        })
+    }
+
     fn running_count(&self) -> u8 {
         let Ok(slots) = self.slots.lock() else {
             return 0;
@@ -186,6 +205,8 @@ impl BackgroundTasks {
                     command,
                     state: TaskState::Running,
                     pending: VecDeque::new(),
+                    preview: VecDeque::new(),
+                    preview_dropped: 0,
                     dropped: 0,
                     kill: Some(kill),
                 },
@@ -366,5 +387,30 @@ impl TaskSource for BackgroundTasks {
         drop(slots);
         self.publish();
         true
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn preview_keeps_a_bounded_tail_after_consumption() {
+        let mut slot = Slot {
+            command: String::new(),
+            state: TaskState::Running,
+            pending: VecDeque::new(),
+            preview: VecDeque::new(),
+            preview_dropped: 0,
+            dropped: 0,
+            kill: None,
+        };
+        slot.push("abcdef", 4);
+        assert_eq!(slot.take_output().text, "def\n");
+        slot.push("xy", 4);
+        assert_eq!(slot.preview.iter().copied().collect::<Vec<_>>(), b"\nxy\n");
+        assert_eq!(slot.preview_dropped, 6);
+        assert_eq!(slot.take_output().text, "xy\n");
+        assert_eq!(slot.preview.len(), 4);
     }
 }

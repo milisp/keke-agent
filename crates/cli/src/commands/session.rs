@@ -288,6 +288,9 @@ pub(super) async fn tui(
     opened
         .conversation
         .set_subagent_transcripts(Arc::new(ChildTranscripts(Arc::clone(&composed.subagents))));
+    opened
+        .conversation
+        .set_task_previews(Arc::new(ShellPreviews(Arc::clone(&composed.background))));
     crate::startup_trace::mark("local_with: done");
     // What this route is now being used with, so leaving it and coming back
     // later — which drops `model` from config.toml — lands here again.
@@ -492,6 +495,17 @@ impl keke_tui::PromptRecorder for PromptLog {
 }
 
 struct ChildTranscripts(Arc<keke_subagent::SubagentHost>);
+
+struct ShellPreviews(Arc<keke_tasks::BackgroundTasks>);
+
+impl keke_acp::TaskPreviews for ShellPreviews {
+    fn preview(&self, id: &str) -> Option<keke_acp::TaskPreview> {
+        self.0.preview(id).map(|output| keke_acp::TaskPreview {
+            text: output.text,
+            dropped: output.dropped,
+        })
+    }
+}
 
 impl keke_acp::SubagentTranscripts for ChildTranscripts {
     fn reset(&self) {

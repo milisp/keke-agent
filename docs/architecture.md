@@ -229,6 +229,14 @@ accessible, including messages preceding compaction. Resuming a parent restores 
 rows and log access; starting a new session retires them.
 
 Nothing in it originates a turn. A background task's output reaches the model
+through the consuming task tools. Human inspection uses a separate bounded tail
+(the same configured output byte cap), exposed by a composition-owned
+`TaskPreviews` reader through `Conversation`. Clicking a running shell row opens
+a read-only viewer; it refreshes on the surface timer, follows the tail until
+scrolled, and Escape restores the composer. Preview reads neither consume nor
+deliver model-visible output. The reader is optional for remote conversations.
+
+A background task's output reaches the model
 as an ordinary `task_output` tool result, which is already logged like any
 other, so invariant 6 needs no new `SessionEvent` to hold it. Waking an idle
 agent when a task finishes would be model-visible input arriving outside a
