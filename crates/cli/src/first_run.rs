@@ -507,6 +507,7 @@ fn pick_local(routes: &[Route]) -> Result<Option<Picked>> {
             headers: Default::default(),
             web_search: None,
             service_tier: None,
+            prompt_cache_ttl: None,
         }),
     }))
 }
@@ -657,6 +658,7 @@ fn pick_keyed_preset(
             headers: Default::default(),
             web_search: None,
             service_tier: None,
+            prompt_cache_ttl: None,
         }),
     }))
 }
@@ -756,6 +758,7 @@ fn declare(taken: &[Route], need: CredentialNeed) -> Result<Option<ProviderDecla
         headers: Default::default(),
         web_search: None,
         service_tier: None,
+        prompt_cache_ttl: None,
     }))
 }
 
@@ -908,6 +911,7 @@ mod tests {
             headers: Default::default(),
             web_search: None,
             service_tier: None,
+            prompt_cache_ttl: None,
         };
         let table = toml::to_string(&declared).expect("renders");
         let document = format!("provider = \"nvidia\"\n\n[providers.nvidia]\n{table}");

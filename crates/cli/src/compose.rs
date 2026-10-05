@@ -92,6 +92,7 @@ fn builtin(route: &str, kind: &str) -> keke_config_types::ProviderDeclaration {
         headers: std::collections::BTreeMap::new(),
         web_search: None,
         service_tier: None,
+        prompt_cache_ttl: None,
     }
 }
 
@@ -301,6 +302,7 @@ impl Vendors {
                 crate::api_key::KeyHeader::XApiKey,
                 Arc::clone(&self.credentials),
             )),
+            declaration.prompt_cache_ttl,
         ))
     }
 

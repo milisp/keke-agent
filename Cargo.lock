@@ -2215,6 +2215,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "keke-auth-api",
+ "keke-config-types",
  "keke-protocol",
  "keke-provider-api",
  "reqwest",

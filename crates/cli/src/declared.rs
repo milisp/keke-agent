@@ -147,8 +147,12 @@ impl ModelProvider for DeclaredProvider {
 
 /// Wrap a `WireClient` as a provider, for a vendor whose only behavior is its
 /// endpoint and credential — including compiled-in ones like codex.
-pub(crate) fn wire_provider(info: ProviderInfo, auth: Arc<dyn AuthProvider>) -> ArcProvider {
-    wire_provider_with(info, auth, false)
+pub(crate) fn wire_provider(
+    info: ProviderInfo,
+    auth: Arc<dyn AuthProvider>,
+    ttl: Option<keke_config_types::PromptCacheTtl>,
+) -> ArcProvider {
+    wire_provider_with(info, auth, false, ttl)
 }
 
 /// [`wire_provider`] for an endpoint that fixes its own sampling — a
@@ -158,8 +162,9 @@ pub(crate) fn wire_provider_with(
     info: ProviderInfo,
     auth: Arc<dyn AuthProvider>,
     sampling_is_fixed: bool,
+    ttl: Option<keke_config_types::PromptCacheTtl>,
 ) -> ArcProvider {
-    wire_provider_cached(info, auth, sampling_is_fixed, None)
+    wire_provider_cached(info, auth, sampling_is_fixed, None, ttl)
 }
 
 /// [`wire_provider_with`] with a model-list cache under keke's home.
@@ -168,11 +173,15 @@ pub(crate) fn wire_provider_cached(
     auth: Arc<dyn AuthProvider>,
     sampling_is_fixed: bool,
     cache: Option<CatalogCache>,
+    ttl: Option<keke_config_types::PromptCacheTtl>,
 ) -> ArcProvider {
     let api = info.wire_api;
     let mut client = WireClient::new(info.base_url.clone(), auth);
     if sampling_is_fixed {
         client = client.with_fixed_sampling();
+    }
+    if api == WireApi::Messages {
+        client = client.with_messages_cache(ttl.unwrap_or_default());
     }
     Arc::new(DeclaredProvider {
         info,
@@ -231,8 +240,11 @@ pub(crate) fn provider_for_cached(
         headers.push((name, value));
     }
     let api = info.wire_api;
-    let client =
+    let mut client =
         WireClient::with_http_client(info.base_url.clone(), auth, http).with_extra_headers(headers);
+    if api == WireApi::Messages {
+        client = client.with_messages_cache(declaration.prompt_cache_ttl.unwrap_or_default());
+    }
     Ok(Arc::new(DeclaredProvider {
         info,
         api,
@@ -393,7 +405,24 @@ mod tests {
             headers,
             web_search: None,
             service_tier: None,
+            prompt_cache_ttl: None,
         }
+    }
+
+    #[test]
+    fn messages_cache_lifetime_is_validated_in_configuration() {
+        use keke_config_types::PromptCacheTtl;
+        for (value, expected) in [
+            ("off", PromptCacheTtl::Off),
+            ("5m", PromptCacheTtl::FiveMinutes),
+            ("1h", PromptCacheTtl::OneHour),
+        ] {
+            let declaration: ProviderDeclaration =
+                toml::from_str(&format!("prompt_cache_ttl = \"{value}\""))
+                    .expect("supported cache lifetime");
+            assert_eq!(declaration.prompt_cache_ttl, Some(expected));
+        }
+        assert!(toml::from_str::<ProviderDeclaration>("prompt_cache_ttl = \"2h\"").is_err());
     }
 
     #[test]

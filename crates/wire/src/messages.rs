@@ -77,6 +77,14 @@ fn thinking_budget(effort: ReasoningEffort) -> u32 {
 /// Build a `/messages` body.
 #[must_use]
 pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
+    messages_body_with_cache(request, stream, keke_config_types::PromptCacheTtl::Off)
+}
+
+pub(crate) fn messages_body_with_cache(
+    request: &ModelRequest,
+    stream: bool,
+    ttl: keke_config_types::PromptCacheTtl,
+) -> Value {
     let request = &*crate::tool_names::wire_request(request);
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
@@ -123,7 +131,71 @@ pub fn messages_body(request: &ModelRequest, stream: bool) -> Value {
         }
     }
     crate::merge_vendor_params(&mut body, request);
+    apply_cache_breakpoints(&mut body, ttl);
     Value::Object(body)
+}
+
+fn apply_cache_breakpoints(body: &mut Map<String, Value>, ttl: keke_config_types::PromptCacheTtl) {
+    use keke_config_types::PromptCacheTtl;
+    let marker = match ttl {
+        PromptCacheTtl::Off => return,
+        PromptCacheTtl::FiveMinutes => json!({"type": "ephemeral"}),
+        PromptCacheTtl::OneHour => json!({"type": "ephemeral", "ttl": "1h"}),
+    };
+    let mut budget = 4;
+    if let Some(tool) = body
+        .get_mut("tools")
+        .and_then(Value::as_array_mut)
+        .and_then(|tools| tools.last_mut())
+    {
+        tool["cache_control"] = marker.clone();
+        budget -= 1;
+    }
+    // The engine freezes this system context for the session. Keep its own
+    // breakpoint so a changing conversation tail cannot discard its reuse.
+    if let Some(system) = body.get_mut("system")
+        && let Some(text) = system.as_str().filter(|text| !text.is_empty())
+    {
+        *system = json!([{"type": "text", "text": text, "cache_control": marker.clone()}]);
+        budget -= 1;
+    }
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        let last = messages.len().saturating_sub(1);
+        for (index, message) in messages.iter_mut().enumerate().rev() {
+            if budget == 0 {
+                break;
+            }
+            let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            // An unfinished tool-use turn is cached after its results arrive.
+            if blocks.iter().any(|block| block["type"] == "tool_use") {
+                continue;
+            }
+            let has_result = blocks.iter().any(|block| block["type"] == "tool_result");
+            let endpoint = index == last || has_result || message["role"] == "assistant";
+            if !endpoint {
+                continue;
+            }
+            let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if let Some(block) = blocks.iter_mut().rev().find(|block| {
+                // A merged user turn can also contain the next prompt. Keep
+                // older tool boundaries on the completed result itself.
+                (!has_result || index == last || block["type"] == "tool_result")
+                    && matches!(
+                        block["type"].as_str(),
+                        Some("text" | "image" | "tool_result")
+                    )
+                    && (block["type"] != "text"
+                        || block["text"].as_str().is_some_and(|text| !text.is_empty()))
+            }) {
+                block["cache_control"] = marker.clone();
+                budget -= 1;
+            }
+        }
+    }
 }
 
 /// Tools carry their schema under `input_schema`, with no `function` envelope.
@@ -304,6 +376,8 @@ struct WireUsage {
     output_tokens: u64,
     #[serde(default)]
     cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
 }
 
 struct OpenCall {
@@ -369,8 +443,10 @@ impl Decoder {
     fn absorb(&mut self, usage: &WireUsage) {
         // Anthropic reports input counts once at the start and output counts
         // again at the end, so this is a merge rather than a replacement.
-        if usage.input_tokens > 0 {
-            self.usage.input_tokens = usage.input_tokens;
+        let total_input =
+            usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+        if total_input > 0 {
+            self.usage.input_tokens = total_input;
         }
         if usage.output_tokens > 0 {
             self.usage.output_tokens = usage.output_tokens;

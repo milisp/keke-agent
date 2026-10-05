@@ -98,12 +98,27 @@ to be exported would spend the wrong quota under the wrong identity.
 | `headers` | No | Extra HTTP headers sent with every request |
 | `web_search` | No | The vendor's own web search — see below. Off unless set |
 | `service_tier` | No | Which queue turns start out routed at — `fast` or `flex`. Unset leaves the endpoint's own routing |
+| `prompt_cache_ttl` | No | Messages-wire cache breakpoints: `5m` (default), `1h`, or `off`. Other wire formats keep their own cache routing |
 
 A block named after a built-in route — `grok`, `codex`, `anthropic`, `ollama` —
 configures that built-in rather than replacing it, so `kind` only needs stating
 when you want a different one. Every other route defaults to
 `openai-compatible` and needs a `base_url`.
 
+### Prompt Caching
+
+Messages endpoints cache the final tool definition, the system prompt, and recent
+completed message boundaries, with at most four breakpoints. Thinking blocks keep
+their original signatures and receive no direct cache marker. Set
+`prompt_cache_ttl = "off"` for gateways that do not support explicit caching.
+
+```toml
+[providers.anthropic]
+prompt_cache_ttl = "5m"   # "1h" extends retention; "off" omits markers
+```
+
+Codex, Grok, and OpenRouter use the session identity for their respective routing
+fields instead. A routing key helps reuse but cannot guarantee a cache hit.
 ### Fast Mode
 
 A `codex` instance can buy its turns at a different speed. `fast` asks for

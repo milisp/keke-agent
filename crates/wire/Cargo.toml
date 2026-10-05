@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 keke-auth-api = { workspace = true }
+keke-config-types = { workspace = true }
 keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 eventsource-stream = { workspace = true }

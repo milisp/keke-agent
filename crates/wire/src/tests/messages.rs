@@ -36,6 +36,132 @@ use super::stream_response;
 
 const API: WireApi = WireApi::Messages;
 
+fn cache_markers(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Object(object) => {
+            usize::from(object.contains_key("cache_control"))
+                + object.values().map(cache_markers).sum::<usize>()
+        }
+        serde_json::Value::Array(values) => values.iter().map(cache_markers).sum(),
+        _ => 0,
+    }
+}
+
+#[test]
+fn cache_breakpoints_follow_completed_tool_turns_without_changing_history() {
+    use keke_config_types::PromptCacheTtl;
+    let mut request = request();
+    request.system = Some("stable system".to_string());
+    request.tools.push(ToolSpec {
+        name: "read_file".to_string(),
+        description: "Read a file.".to_string(),
+        input_schema: json!({"type":"object"}),
+    });
+    request.messages.clear();
+    for turn in 0..6 {
+        let id = ToolCallId::new(format!("call-{turn}"));
+        request.messages.extend([
+            Message::user(format!("turn {turn}")),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        text: "reasoning".to_string(),
+                        signature: Some("signed".to_string()),
+                    },
+                    ContentBlock::ToolCall(ToolCall {
+                        id: id.clone(),
+                        name: "read_file".to_string(),
+                        arguments: json!({"path":"fixture.txt"}),
+                    }),
+                ],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult::ok(id, "result"))],
+            },
+        ]);
+    }
+    let history = request.messages.clone();
+    let body =
+        crate::messages::messages_body_with_cache(&request, true, PromptCacheTtl::FiveMinutes);
+    assert_eq!(cache_markers(&body), 4);
+    assert_eq!(
+        body["tools"]
+            .as_array()
+            .expect("tools")
+            .last()
+            .expect("tool")["cache_control"],
+        json!({"type":"ephemeral"})
+    );
+    assert_eq!(
+        body["system"][0]["cache_control"],
+        json!({"type":"ephemeral"})
+    );
+    let messages = body["messages"].as_array().expect("messages");
+    let endpoints: Vec<_> = messages
+        .iter()
+        .flat_map(|message| message["content"].as_array().expect("blocks"))
+        .filter(|block| block.get("cache_control").is_some())
+        .collect();
+    assert_eq!(endpoints.len(), 2);
+    assert!(endpoints.iter().all(|block| block["type"] == "tool_result"));
+    assert_eq!(endpoints[0]["tool_use_id"], "call-4");
+    assert_eq!(endpoints[1]["tool_use_id"], "call-5");
+    for block in messages
+        .iter()
+        .flat_map(|message| message["content"].as_array().expect("blocks"))
+    {
+        if block["type"] == "thinking" {
+            assert_eq!(block["signature"], "signed");
+            assert!(block.get("cache_control").is_none());
+        }
+    }
+    assert_eq!(request.messages, history);
+    assert_eq!(
+        body,
+        crate::messages::messages_body_with_cache(&request, true, PromptCacheTtl::FiveMinutes)
+    );
+}
+
+#[test]
+fn cache_lifetime_can_be_disabled_or_extended_without_crossing_wires() {
+    use keke_config_types::PromptCacheTtl;
+    let request = request();
+    let off = crate::messages::messages_body_with_cache(&request, true, PromptCacheTtl::Off);
+    assert_eq!(cache_markers(&off), 0);
+    assert_eq!(off, crate::messages_body(&request, true));
+    let hour = crate::messages::messages_body_with_cache(&request, true, PromptCacheTtl::OneHour);
+    assert_eq!(
+        hour["messages"][0]["content"][0]["cache_control"],
+        json!({"type":"ephemeral","ttl":"1h"})
+    );
+    assert_eq!(
+        cache_markers(&crate::chat_completions_body(&request, true)),
+        0
+    );
+    assert_eq!(
+        cache_markers(&crate::responses_body(&request, true, false)),
+        0
+    );
+}
+
+#[tokio::test]
+async fn configured_messages_cache_reaches_the_endpoint() {
+    let server = serve(sse(&stop("end_turn"))).await;
+    let (client, _auth) = client_over(&server);
+    let client = client.with_messages_cache(keke_config_types::PromptCacheTtl::OneHour);
+    let chunks = collect_ok(&client, API).await;
+    assert_ends_with_one_done(&chunks);
+    let requests = server.received_requests().await.expect("recorded");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    assert!(cache_markers(&body) > 0);
+    assert_eq!(
+        body["messages"][0]["content"][0]["cache_control"]["ttl"],
+        "1h"
+    );
+}
+
 async fn serve(body: String) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -153,7 +279,7 @@ async fn a_stream_that_stops_early_is_retryable_rather_than_malformed() {
 async fn usage_is_reported() {
     let server = serve(sse(&[
         json!({"type":"message_start","message":{"usage":{
-            "input_tokens":7,"cache_read_input_tokens":4
+            "input_tokens":7,"cache_read_input_tokens":4,"cache_creation_input_tokens":3
         }}})
         .to_string(),
         json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}})
@@ -168,7 +294,7 @@ async fn usage_is_reported() {
     // Input counts arrive at the start and output counts at the end, so the two
     // halves have to be merged rather than the later one replacing the earlier.
     assert!(chunks.contains(&StreamChunk::Usage(Usage {
-        input_tokens: 7,
+        input_tokens: 14,
         output_tokens: 2,
         cached_input_tokens: 4,
         reasoning_tokens: 0,

@@ -72,6 +72,7 @@ pub struct WireClient {
     /// headers, so a request never loses its authorization to a
     /// misconfigured extra one.
     extra_headers: Vec<(String, String)>,
+    messages_cache_ttl: keke_config_types::PromptCacheTtl,
 }
 
 impl WireClient {
@@ -85,6 +86,7 @@ impl WireClient {
             auth,
             sampling_is_fixed: false,
             extra_headers: Vec::new(),
+            messages_cache_ttl: keke_config_types::PromptCacheTtl::Off,
         }
     }
 
@@ -93,6 +95,13 @@ impl WireClient {
     #[must_use]
     pub fn with_fixed_sampling(mut self) -> Self {
         self.sampling_is_fixed = true;
+        self
+    }
+
+    /// Configure explicit cache breakpoints for the Messages format only.
+    #[must_use]
+    pub fn with_messages_cache(mut self, ttl: keke_config_types::PromptCacheTtl) -> Self {
+        self.messages_cache_ttl = ttl;
         self
     }
 
@@ -118,6 +127,7 @@ impl WireClient {
             auth,
             sampling_is_fixed: false,
             extra_headers: Vec::new(),
+            messages_cache_ttl: keke_config_types::PromptCacheTtl::Off,
         }
     }
 
@@ -161,7 +171,10 @@ impl WireClient {
                 "/responses",
                 responses_body(&request, true, self.sampling_is_fixed),
             ),
-            WireApi::Messages => ("/messages", messages_body(&request, true)),
+            WireApi::Messages => (
+                "/messages",
+                messages::messages_body_with_cache(&request, true, self.messages_cache_ttl),
+            ),
             WireApi::Custom => return Err(custom_unsupported()),
         };
 
