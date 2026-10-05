@@ -173,6 +173,7 @@ pub(crate) fn render(
                         .map_or(cells.len(), |offset| index + 1 + offset)
                 };
                 let group = &cells[index..end];
+                let expandable = group.len() > 1 || crate::transcript::has_compact_detail(first);
                 // Full transcript mode is the escape hatch from the compact
                 // view: a group header must never hide its individual calls.
                 // Manual fold state belongs to the compact view only.
@@ -184,8 +185,10 @@ pub(crate) fn render(
                 // A click belongs to the whole cell, even when its header has
                 // scrolled out of view. Selection drags are handled before
                 // these targets are consulted by the mouse handler.
-                out.toggles
-                    .extend((base..base + lines.len()).map(|row| (row, index)));
+                if expandable && !full_transcript {
+                    out.toggles
+                        .extend((base..base + lines.len()).map(|row| (row, index)));
+                }
                 out.lines.extend(lines);
                 out.copy_ranges.extend(
                     ranges
@@ -229,7 +232,13 @@ pub(crate) fn render(
 
 /// The one line a collapsed thing shows, with the marker that says which way
 /// it opens.
-fn header(marker: &str, title: &str, summary: &str, open: bool, style: Style) -> Line<'static> {
+fn header(
+    marker: &str,
+    title: &str,
+    summary: &str,
+    open: Option<bool>,
+    style: Style,
+) -> Line<'static> {
     let mut spans = vec![
         Span::styled(format!("{marker} "), style),
         Span::styled(title.to_string(), style.add_modifier(Modifier::BOLD)),
@@ -238,10 +247,12 @@ fn header(marker: &str, title: &str, summary: &str, open: bool, style: Style) ->
         spans.push(Span::raw(" "));
         spans.push(Span::styled(summary.to_string(), Style::new().fg(THINKING)));
     }
-    spans.push(Span::styled(
-        if open { "  ▾" } else { "  ▸" }.to_string(),
-        Style::new().fg(THINKING),
-    ));
+    if let Some(open) = open {
+        spans.push(Span::styled(
+            if open { "  ▾" } else { "  ▸" }.to_string(),
+            Style::new().fg(THINKING),
+        ));
+    }
     Line::from(spans)
 }
 
@@ -265,6 +276,7 @@ fn group_lines(
     let Some(first) = tools.first() else {
         return (Vec::new(), Vec::new());
     };
+    let expandable = tools.len() > 1 || crate::transcript::has_compact_detail(first);
     let has_running = tools
         .iter()
         .any(|tool| matches!(tool.state, CallState::Running));
@@ -329,19 +341,34 @@ fn group_lines(
                 Style::new(),
                 width,
             );
-            if !full_transcript && let Some(line) = lines.first_mut() {
+            if !full_transcript
+                && expandable
+                && let Some(line) = lines.first_mut()
+            {
                 line.spans
                     .push(Span::styled("  ▾", Style::new().fg(THINKING)));
             }
             push_tool_detail(&mut lines, &mut copy_ranges, first, width, full_transcript);
         } else {
-            lines.push(header(marker, title, &summary, false, style));
+            lines.push(header(
+                marker,
+                title,
+                &summary,
+                expandable.then_some(false),
+                style,
+            ));
         }
         copy_ranges.resize(lines.len(), None);
         return (lines, copy_ranges);
     }
     if !full_transcript {
-        lines.push(header(marker, title, &summary, open, style));
+        lines.push(header(
+            marker,
+            title,
+            &summary,
+            expandable.then_some(open),
+            style,
+        ));
     }
     if !open {
         return (lines, copy_ranges);
@@ -714,16 +741,15 @@ mod grouping_tests {
 
     fn header_titles(rendered: &Rendered) -> Vec<String> {
         rendered
-            .toggles
+            .lines
             .iter()
-            .enumerate()
-            .filter(|(position, (_, key))| {
-                *position == 0 || rendered.toggles[*position - 1].1 != *key
+            .filter(|line| {
+                line.spans
+                    .first()
+                    .is_some_and(|span| !span.content.starts_with(' '))
             })
-            .map(|(_, target)| target)
-            .map(|(line, _)| {
-                rendered.lines[*line]
-                    .spans
+            .map(|line| {
+                line.spans
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect::<String>()
@@ -781,7 +807,7 @@ mod grouping_tests {
         ];
         let rendered = render(&cells, 80, &HashSet::new(), false);
         assert_eq!(
-            rendered.toggles.len(),
+            header_titles(&rendered).len(),
             3,
             "each edit is its own group, not folded with the other"
         );
@@ -808,6 +834,8 @@ mod grouping_tests {
         let titles = header_titles(&rendered);
         assert!(titles[0].contains("Read"), "got {titles:?}");
         assert!(titles[0].contains("a.rs"), "got {titles:?}");
+        assert!(!titles[0].contains('▾') && !titles[0].contains('▸'));
+        assert!(rendered.toggles.is_empty());
     }
 
     #[test]

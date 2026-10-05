@@ -475,12 +475,20 @@ impl Transcript {
             .find_map(|(index, cell)| match cell {
                 Cell::Tool(tool) if !matches!(tool.state, CallState::Running) => {
                     if tool.name == "bash" {
-                        return Some(index);
+                        return has_compact_detail(tool).then_some(index);
                     }
                     // Only the first call of a run carries the header.
                     match index.checked_sub(1).map(|before| &self.cells[before]) {
                         Some(before) if groups_with(before, &tool.name) => None,
-                        _ => Some(index),
+                        _ if has_compact_detail(tool)
+                            || self
+                                .cells
+                                .get(index + 1)
+                                .is_some_and(|next| groups_with(next, &tool.name)) =>
+                        {
+                            Some(index)
+                        }
+                        _ => None,
                     }
                 }
                 _ => None,
@@ -515,6 +523,17 @@ fn display_tool_name(name: &str) -> &str {
 pub(crate) fn groups_with(cell: &Cell, anchor: &str) -> bool {
     matches!(cell, Cell::Tool(tool)
         if !matches!(tool.state, CallState::Running) && same_run(&tool.name, anchor))
+}
+
+/// Whether a single call has a body in the compact transcript.
+pub(crate) fn has_compact_detail(tool: &ToolCell) -> bool {
+    if is_exploration_tool(&tool.name) {
+        return false;
+    }
+    tool.detail
+        .as_ref()
+        .is_some_and(|detail| !detail.is_empty())
+        || (tool.name != "bash" && !is_diff_tool(&tool.name) && !tool.arguments.is_empty())
 }
 
 /// A read-only exploration tool: safe to fold into one "Exploring" run
