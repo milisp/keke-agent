@@ -295,6 +295,10 @@ fn group_lines(
         let (verb, noun) = verb(&first.name);
         let verb = if first.name == "apply_patch" && has_running {
             "Editing"
+        } else if first.name == "bash" && has_running {
+            "Running"
+        } else if first.name == "bash" && status == ToolStatus::Error {
+            "Failed"
         } else {
             verb
         };
@@ -403,6 +407,7 @@ fn push_tool_detail(
     full_transcript: bool,
 ) {
     if !tool.arguments.is_empty()
+        && (tool.name != "bash" || full_transcript || tool.arguments != tool.summary)
         && (full_transcript
             || (!crate::transcript::is_diff_tool(&tool.name)
                 && !crate::transcript::is_exploration_tool(&tool.name)))

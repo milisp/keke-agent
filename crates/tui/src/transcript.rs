@@ -237,7 +237,16 @@ impl Transcript {
             id: call.id.clone(),
             name: display_tool_name(&call.name).to_string(),
             summary: headline(&call.arguments, &self.cwd_prefix),
-            arguments: expanded_arguments(&call.arguments, None),
+            // Shell controls belong in the event log, not beside stdout.
+            arguments: if display_tool_name(&call.name) == "bash" {
+                call.arguments
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            } else {
+                expanded_arguments(&call.arguments, None)
+            },
             state: CallState::Running,
             detail: None,
         }));
@@ -1096,6 +1105,26 @@ mod recorded_replay_tests {
     }
 
     #[test]
+    fn shell_display_keeps_the_command_without_execution_controls() {
+        let mut transcript = Transcript::default();
+        transcript.start_tool(&ToolCall {
+            id: ToolCallId::new("shell"),
+            name: "bash_unsandboxed".into(),
+            arguments: serde_json::json!({
+                "command": "echo first\necho second",
+                "background": false,
+                "timeout_ms": 1000,
+                "justification": "needs network"
+            }),
+        });
+        let Cell::Tool(tool) = &transcript.cells()[0] else {
+            panic!("expected shell cell")
+        };
+        assert_eq!(tool.name, "bash");
+        assert_eq!(tool.arguments, "echo first\necho second");
+    }
+
+    #[test]
     fn recorded_replay_keeps_an_interrupted_tool_visibly_unfinished() {
         let mut transcript = Transcript::default();
         transcript.replay_recorded(&[SessionEvent::ToolCallStart {
@@ -1110,6 +1139,6 @@ mod recorded_replay_tests {
             panic!("expected existing tool cell")
         };
         assert_eq!(tool.state, CallState::Running);
-        assert_eq!(tool.arguments, "command=echo first\necho second");
+        assert_eq!(tool.arguments, "echo first\necho second");
     }
 }
