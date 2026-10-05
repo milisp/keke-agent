@@ -276,7 +276,10 @@ fn installed_tools(url: &str, auth: AuthHome, client_only: bool) -> Vec<String> 
         }
         (PluginSet::default(), extra)
     } else {
-        (PluginSet::compose(vec![plugin]).expect("composes"), Vec::new())
+        (
+            PluginSet::compose(vec![plugin]).expect("composes"),
+            Vec::new(),
+        )
     };
     let mut builder = ExtensionRegistryBuilder::new();
     keke_mcp::install_with_servers(

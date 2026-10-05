@@ -512,8 +512,8 @@ mod tests {
 
     #[tokio::test]
     async fn configured_headers_reach_http_posts_and_sse_gets_and_posts() {
-        use wiremock::{Mock, MockServer, ResponseTemplate};
         use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         for sse in [false, true] {
             let server = MockServer::start().await;
@@ -521,9 +521,11 @@ mod tests {
                 Mock::given(method("GET"))
                     .and(path("/events"))
                     .and(header("x-fixture", "forwarded"))
-                    .respond_with(ResponseTemplate::new(200)
-                        .insert_header("content-type", "text/event-stream")
-                        .set_body_string("event: endpoint\ndata: /messages\n\n"))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .insert_header("content-type", "text/event-stream")
+                            .set_body_string("event: endpoint\ndata: /messages\n\n"),
+                    )
                     .expect(1)
                     .mount(&server)
                     .await;
@@ -537,14 +539,26 @@ mod tests {
                 .await;
             let headers = vec![("x-fixture".to_string(), "forwarded".to_string())];
             let connection = if sse {
-                HttpConnection::sse(&format!("{}/events", server.uri()), headers, None, "original", 1000)
-                    .await
-                    .expect("event stream opens with configured headers")
+                HttpConnection::sse(
+                    &format!("{}/events", server.uri()),
+                    headers,
+                    None,
+                    "original",
+                    1000,
+                )
+                .await
+                .expect("event stream opens with configured headers")
             } else {
-                HttpConnection::streamable(&format!("{}/messages", server.uri()), headers, None, "original")
-                    .expect("HTTP connection")
+                HttpConnection::streamable(
+                    &format!("{}/messages", server.uri()),
+                    headers,
+                    None,
+                    "original",
+                )
+                .expect("HTTP connection")
             };
-            connection.notify("notifications/initialized", json!({}))
+            connection
+                .notify("notifications/initialized", json!({}))
                 .await
                 .expect("configured headers reach the POST endpoint");
             server.verify().await;
