@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.37] - 2026-10-05
+
+### Added
+- Configurable Messages prompt caching and session-level prompt cache affinity.
+- A yellow new-session hint when an observed prompt cache is lost.
+- ACP MCP source isolation with a negotiated client-only policy.
+
+### Changed
+- Improved cancellable subagent collection.
+
+### Fixed
+- Grok prompt cache affinity on both inference wires and stable OpenRouter
+  cache routing across session requests.
+- Messages input token accounting with prompt caching enabled.
+
+## [0.1.36] - 2026-10-05
+
+### Added
+- Task management in the session TUI.
+- Markdown table rendering and clickable URLs in the TUI.
+
+### Changed
+- Improved shell tool transcript display.
+- Patches are presented as file changes instead of tool arguments.
+
+### Fixed
+- Expanded tool cells can be collapsed from any row, and tools without compact
+  details no longer show fold indicators.
+- Diff gutter line number rendering.
+
 ## [0.1.35] - 2026-10-03
 
 ### Added
