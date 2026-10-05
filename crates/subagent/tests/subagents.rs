@@ -731,6 +731,57 @@ async fn a_collected_subagent_cannot_be_collected_twice() {
     );
 }
 
+#[tokio::test]
+async fn dropping_a_wait_preserves_the_child_and_its_report() {
+    let harness = harness();
+    let (provider, _) = ScriptedProvider::new(500);
+    let (session, host) =
+        parent_with_host(&harness, provider, SubagentLimits::default(), true).await;
+    let other = host
+        .spawn(
+            session.id(),
+            "SUB retained too".to_string(),
+            never_cancelled(),
+        )
+        .unwrap();
+    let waiter = tokio::spawn({
+        let host = host.clone();
+        let other = other.clone();
+        async move {
+            host.collect_within(&[other], std::time::Duration::from_secs(5))
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    waiter.abort();
+    let _ = waiter.await;
+    assert!(host.outstanding().contains(&other));
+    assert_eq!(
+        host.collect(&other).await.unwrap().summary,
+        "finished: SUB retained too"
+    );
+}
+
+#[tokio::test]
+async fn a_child_can_be_killed_while_its_report_is_being_awaited() {
+    use keke_tasks::TaskSource;
+    let harness = harness();
+    let (provider, _) = ScriptedProvider::new(500);
+    let (session, host) =
+        parent_with_host(&harness, provider, SubagentLimits::default(), true).await;
+    let id = host
+        .spawn(session.id(), "SUB kill".to_string(), never_cancelled())
+        .unwrap();
+    let waiter = tokio::spawn({
+        let host = host.clone();
+        let id = id.clone();
+        async move { host.collect(&id).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(host.kill(&id));
+    assert!(waiter.await.unwrap().is_err());
+}
+
 #[test]
 fn restored_children_remain_inspectable_until_the_parent_is_reset() {
     let host = keke_subagent::SubagentHost::new(SubagentLimits::default());

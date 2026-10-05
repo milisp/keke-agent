@@ -213,6 +213,14 @@ through a step context contributor. Delivery consumes the report and records
 both `SubagentEnd` and the model-visible `ContextMessage`. Finished rows remain available for transcript inspection. A
 finished child never starts a parent turn on its own.
 
+When required child reports block further work, the parent should use a long
+`collect_agent` wait rather than end its turn or repeatedly poll the model.
+Both spawn-with-wait and collect respond to parent cancellation. Waiting borrows
+task slots with drop-safe restoration; separate abort handles keep children
+stoppable while their reports are being awaited. Queued children check parent
+cancellation before obtaining a concurrency permit. The child runtime budget
+starts after permit acquisition and session construction, not while queued.
+
 The TUI lists running children immediately below its bottom status line, with
 short titles of at most four words and 24 display columns. Clicking a row
 or pressing `Ctrl+G` opens a full recorded transcript; `Ctrl+G` cycles running children,

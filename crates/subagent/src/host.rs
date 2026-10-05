@@ -104,6 +104,29 @@ struct Slot {
     handle: tokio::task::JoinHandle<AgentReport>,
 }
 
+// A waiter borrows ownership, but cancellation must not detach the child or
+// discard its report when the waiting future is dropped.
+struct HeldSlots<'a> {
+    host: &'a SubagentHost,
+    slots: Vec<(AgentId, Slot)>,
+}
+
+impl Drop for HeldSlots<'_> {
+    fn drop(&mut self) {
+        for (id, slot) in self.slots.drain(..) {
+            self.host.return_slot(id, slot);
+        }
+    }
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Why a spawn or collect could not be served.
 #[derive(Debug, thiserror::Error)]
 pub enum SubagentError {
@@ -132,6 +155,7 @@ pub struct SubagentHost {
     permits: Arc<Semaphore>,
     next: AtomicU64,
     slots: Mutex<HashMap<AgentId, Slot>>,
+    aborts: Mutex<HashMap<AgentId, tokio::task::AbortHandle>>,
     /// The sessions this host created. A subagent asking for its tool set is
     /// answered with nothing, which is what makes the tree one level deep by
     /// construction rather than by a depth counter someone can raise.
@@ -156,6 +180,7 @@ impl SubagentHost {
             permits: Arc::new(Semaphore::new(usize::from(limits.max_concurrent))),
             next: AtomicU64::new(1),
             slots: Mutex::new(HashMap::new()),
+            aborts: Mutex::new(HashMap::new()),
             children: Mutex::new(HashSet::new()),
             logs: Mutex::new(HashMap::new()),
             progress: Mutex::new(Vec::new()),
@@ -178,6 +203,11 @@ impl SubagentHost {
 
     /// Retire children when their parent conversation is replaced.
     pub fn reset(&self) {
+        if let Ok(mut aborts) = self.aborts.lock() {
+            for (_, abort) in aborts.drain() {
+                abort.abort();
+            }
+        }
         if let Ok(mut slots) = self.slots.lock() {
             for (_, slot) in slots.drain() {
                 slot.handle.abort();
@@ -333,6 +363,10 @@ impl SubagentHost {
             parent_cancelled,
         ));
 
+        if let Ok(mut aborts) = self.aborts.lock() {
+            aborts.insert(id.clone(), handle.abort_handle());
+        }
+
         self.update_progress(|rows| {
             rows.push(AgentProgress {
                 id: id.clone(),
@@ -367,12 +401,19 @@ impl SubagentHost {
     /// A model choosing what to do next wants [`Self::collect_within`].
     pub async fn collect(&self, id: &str) -> Result<AgentReport, SubagentError> {
         let slot = self.take_slot(id)?;
+        let mut held = HeldSlots {
+            host: self,
+            slots: vec![(id.to_string(), slot)],
+        };
 
         // Report delivery consumes the model's result, but the person may still
         // reopen the child's durable transcript.
-        slot.handle
+        let result = (&mut held.slots[0].1.handle)
             .await
-            .map_err(|error| SubagentError::Lost(error.to_string()))
+            .map_err(|error| SubagentError::Lost(error.to_string()));
+        held.slots.clear();
+        self.forget_abort(id);
+        result
     }
 
     /// Wait up to `budget` for any of `ids` to finish, and take the report of
@@ -393,29 +434,28 @@ impl SubagentHost {
     ) -> Result<Collected, SubagentError> {
         // Taken up front so that a second waiter cannot be handed the same
         // child, and so an unknown id fails before anyone waits on anything.
-        let mut held: Vec<(AgentId, Slot)> = Vec::with_capacity(ids.len());
+        let mut held = HeldSlots {
+            host: self,
+            slots: Vec::with_capacity(ids.len()),
+        };
         for id in ids {
             match self.take_slot(id) {
-                Ok(slot) => held.push((id.clone(), slot)),
-                Err(error) => {
-                    for (id, slot) in held {
-                        self.return_slot(id, slot);
-                    }
-                    return Err(error);
-                }
+                Ok(slot) => held.slots.push((id.clone(), slot)),
+                Err(error) => return Err(error),
             }
         }
 
-        let mut finished = wait_for_first(&mut held, budget).await;
+        let mut finished = wait_for_first(&mut held.slots, budget).await;
 
         let mut collected = Collected::default();
         let mut lost = None;
-        for (id, slot) in held {
+        for (id, slot) in held.slots.drain(..) {
             let Some(outcome) = finished.remove(&id) else {
                 collected.pending.push(id.clone());
                 self.return_slot(id, slot);
                 continue;
             };
+            self.forget_abort(&id);
             match outcome {
                 Ok(report) => collected.reports.push(report),
                 Err(error) => lost = Some(SubagentError::Lost(error)),
@@ -446,6 +486,7 @@ impl SubagentHost {
         };
         let mut reports = Vec::new();
         for (id, slot) in ready {
+            self.forget_abort(&id);
             let report = match slot.handle.await {
                 Ok(report) => report,
                 Err(error) => AgentReport {
@@ -476,6 +517,12 @@ impl SubagentHost {
     fn return_slot(&self, id: AgentId, slot: Slot) {
         if let Ok(mut slots) = self.slots.lock() {
             slots.insert(id, slot);
+        }
+    }
+
+    fn forget_abort(&self, id: &str) {
+        if let Ok(mut aborts) = self.aborts.lock() {
+            aborts.remove(id);
         }
     }
 
@@ -640,7 +687,21 @@ async fn run_one(
 
     // Acquired before the session is built: a queued subagent should not have
     // opened a rollout log it is not yet running in.
-    let Ok(_permit) = permits.acquire().await else {
+    let acquire = permits.acquire();
+    tokio::pin!(acquire);
+    let permit = loop {
+        if parent_cancelled() {
+            return failed(
+                AgentStatus::Cancelled,
+                "the parent turn was cancelled before this subagent started".to_string(),
+            );
+        }
+        tokio::select! {
+            permit = &mut acquire => break permit,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(CANCEL_POLL_MILLIS)) => {}
+        }
+    };
+    let Ok(_permit) = permit else {
         return failed(
             AgentStatus::Failed,
             "the subagent pool was shut down".to_string(),
@@ -672,7 +733,7 @@ async fn run_one(
     // answered without the subagent tools, so it cannot fork further.
     host.adopt(session.id());
 
-    let meter = tokio::spawn({
+    let meter = AbortOnDrop(tokio::spawn({
         let host = Arc::clone(&host);
         let id = id.clone();
         async move {
@@ -682,24 +743,24 @@ async fn run_one(
                 }
             }
         }
-    });
+    }));
 
     let log_path = session.log_path().display().to_string();
     if let Ok(mut logs) = host.logs.lock() {
         logs.insert(id.clone(), session.log_path().to_path_buf());
     }
     let canceller = session.canceller();
-    let watchdog = tokio::spawn(async move {
+    let watchdog = AbortOnDrop(tokio::spawn(async move {
         while !parent_cancelled() {
             tokio::time::sleep(std::time::Duration::from_millis(CANCEL_POLL_MILLIS)).await;
         }
         canceller();
-    });
+    }));
 
     let outcome =
         tokio::time::timeout(timeout, session.run_turn(Message::user(task.clone()))).await;
-    watchdog.abort();
-    meter.abort();
+    drop(watchdog);
+    drop(meter);
 
     let (status, summary, usage) = match outcome {
         Ok(Ok(turn)) => (
@@ -782,14 +843,14 @@ impl keke_tasks::TaskSource for SubagentHost {
     }
 
     fn kill(&self, id: &str) -> bool {
-        let Ok(mut slots) = self.slots.lock() else {
+        let Ok(aborts) = self.aborts.lock() else {
             return false;
         };
-        let Some(slot) = slots.remove(id) else {
+        let Some(abort) = aborts.get(id) else {
             return false;
         };
-        slot.handle.abort();
-        drop(slots);
+        abort.abort();
+        drop(aborts);
         self.note_finished(id, AgentStatus::Cancelled);
         true
     }

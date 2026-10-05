@@ -55,6 +55,12 @@ fn tool_error(error: SubagentError) -> ToolError {
     }
 }
 
+async fn until_cancelled(ctx: &ToolCallContext) {
+    while !ctx.is_cancelled() {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 // --- spawn ------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -203,7 +209,10 @@ impl Tool for SpawnAgent {
             return Ok(SpawnAgentOutput::Started { agent_id: id });
         }
 
-        let report = self.host.collect(&id).await.map_err(tool_error)?;
+        let report = tokio::select! {
+            result = self.host.collect(&id) => result.map_err(tool_error)?,
+            () = until_cancelled(&ctx) => return Err(ToolError::custom("cancelled", "subagent wait cancelled")),
+        };
         self.record_end(&report);
         Ok(SpawnAgentOutput::Finished(Box::new(ReportedAgent::from(
             &report,
@@ -244,8 +253,10 @@ impl ToolOutput for CollectAgentOutput {
         let mut sections: Vec<String> = self.agents.iter().map(render_one).collect();
         if !self.pending.is_empty() {
             sections.push(format!(
-                "Still running: {}. Call `collect_agent` again to keep waiting, or do other work \
-                 first.",
+                "Still running: {}. Do independent work if available; otherwise use a long \
+                 `collect_agent` wait if these results are needed to finish the task. Do not \
+                 repeatedly use short waits or end the turn while required results are pending. \
+                 Completion does not start a new parent turn.",
                 self.pending.join(", ")
             ));
         }
@@ -276,7 +287,10 @@ impl Tool for CollectAgent {
              first comes back without the slowest holding it up.\n\nThe wait is bounded: after \
              `timeout_ms` (default {}ms, minimum {}ms, at most {}ms) you get your turn back with \
              whatever is done, and anything still running is listed as pending under its own id. \
-             Call this again to keep waiting for those. A subagent is reported once; collecting a \
+             Do independent work when available; otherwise block here for required reports using \
+             the default long wait. Avoid repeated short waits, and do not end the turn while \
+             required reports are pending: completion does not start a new parent turn. Waiting \
+             responds to user cancellation. A subagent is reported once; collecting a \
              reported one again is an error, not a repeat.",
             limits.collect_timeout_millis,
             keke_config_types::SubagentLimits::MIN_COLLECT_TIMEOUT_MILLIS,
@@ -294,22 +308,17 @@ impl Tool for CollectAgent {
         self.host.is_attached() && !self.host.is_child(self.ctx.session)
     }
 
-    async fn run(
-        &self,
-        _ctx: ToolCallContext,
-        args: Self::Args,
-    ) -> Result<Self::Output, ToolError> {
+    async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
         let wanted = match args.agent_id {
             Some(id) => vec![id],
             None => self.host.outstanding(),
         };
         let window = self.host.limits().collect_window(args.timeout_ms);
 
-        let collected = self
-            .host
-            .collect_within(&wanted, window)
-            .await
-            .map_err(tool_error)?;
+        let collected = tokio::select! {
+            result = self.host.collect_within(&wanted, window) => result.map_err(tool_error)?,
+            () = until_cancelled(&ctx) => return Err(ToolError::custom("cancelled", "subagent wait cancelled")),
+        };
 
         let mut agents = Vec::with_capacity(collected.reports.len());
         for report in &collected.reports {

@@ -1084,10 +1084,9 @@ pub struct SubagentLimits {
     /// How long `collect_agent` blocks by default before handing the parent's
     /// model back its turn with whatever finished.
     ///
-    /// Separate from `timeout_millis` because they bound different things: that
-    /// one is how long a child may run, this one is how long the parent agrees
-    /// to sit still. A parent that can only wait for the full child budget has
-    /// no way to react to a subagent that is going nowhere.
+    /// Separate from `timeout_millis` because child runtime and parent waiting
+    /// are different budgets. Long waits avoid paying for model requests with
+    /// no new information; user cancellation still interrupts the wait.
     pub collect_timeout_millis: u64,
 }
 
@@ -1169,17 +1168,16 @@ impl SubagentLimits {
 }
 
 impl Default for SubagentLimits {
-    /// Three at once, ten minutes each, collected in thirty-second windows.
+    /// Three at once, ten minutes each, collected in long cancellable waits.
     /// Three is what fits a single screen of reported results and what most
     /// vendors' concurrent-request allowances tolerate without shaping; ten
     /// minutes is longer than any search-shaped task and shorter than a
-    /// person's patience. Thirty seconds is short enough that a parent notices
-    /// a stuck child while it still has turn left to do something about it.
+    /// person's patience. Waiting for that budget avoids empty model polling.
     fn default() -> Self {
         Self {
             max_concurrent: 3,
             timeout_millis: 600_000,
-            collect_timeout_millis: 30_000,
+            collect_timeout_millis: 600_000,
         }
     }
 }
