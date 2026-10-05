@@ -181,6 +181,8 @@ pub struct App {
     /// Tokens this session has spent, including whatever a resumed log already
     /// accounted for.
     usage: Usage,
+    cache_miss_tokens: Option<u64>,
+    last_cache_hit_tokens: Option<u64>,
     /// The input tokens of the most recent model step. Unlike the additive
     /// `usage`, each request resends the whole conversation, so a step's
     /// `input_tokens` is not an increment — it *is* the current context size.
@@ -308,6 +310,8 @@ impl App {
                 last_turn: None,
                 last_turn_finished_at: None,
                 usage: Usage::default(),
+                cache_miss_tokens: None,
+                last_cache_hit_tokens: None,
                 context_input: 0,
                 thinking: false,
                 mouse_capture: true,
@@ -557,6 +561,11 @@ impl App {
         self.turn
     }
 
+    /// Cached tokens of the last observed hit before a zero-cache request.
+    pub(crate) fn cache_miss_tokens(&self) -> Option<u64> {
+        self.cache_miss_tokens
+    }
+
     /// What this session has spent so far.
     pub fn usage(&self) -> Usage {
         self.usage
@@ -782,6 +791,12 @@ impl App {
                 }
             }
             Update::TokensUsed(usage) => {
+                if usage.cached_input_tokens > 0 {
+                    self.last_cache_hit_tokens = Some(usage.cached_input_tokens);
+                    self.cache_miss_tokens = None;
+                } else if usage.input_tokens > 0 {
+                    self.cache_miss_tokens = self.last_cache_hit_tokens;
+                }
                 self.usage.add(usage);
                 self.context_input = usage.input_tokens;
             }
@@ -842,6 +857,8 @@ impl App {
                 self.last_turn_finished_at = None;
                 self.thinking = false;
                 self.usage = Usage::default();
+                self.cache_miss_tokens = None;
+                self.last_cache_hit_tokens = None;
                 self.context_input = 0;
                 self.talked = false;
             }

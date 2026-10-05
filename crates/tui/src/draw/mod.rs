@@ -84,6 +84,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
     let inspecting = app.open_subagent().is_some();
     let full_transcript = app.full_transcript();
     let transcript_only = full_transcript || inspecting;
+    let composer_visible =
+        !transcript_only && (!planning || composing) && !managing_mcp && !blocked;
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -105,13 +107,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 turn_status::rows(app)
             }),
-            Constraint::Length(
-                if transcript_only || (planning && !composing) || managing_mcp || blocked {
-                    0
-                } else {
-                    input::rows(app, frame.area().width)
-                },
-            ),
+            Constraint::Length(u16::from(
+                composer_visible && app.cache_miss_tokens().is_some(),
+            )),
+            Constraint::Length(if !composer_visible {
+                0
+            } else {
+                input::rows(app, frame.area().width)
+            }),
             Constraint::Length(if transcript_only { 0 } else { tasks::rows(app) }),
             Constraint::Length(if transcript_only {
                 0
@@ -144,6 +147,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         body,
         menu,
         turn,
+        cache_notice,
         composer,
         background,
         approval,
@@ -154,7 +158,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
         agents,
     ) = (
         areas[0], areas[1], areas[2], areas[3], areas[4], areas[5], areas[6], areas[7], areas[8],
-        areas[9], areas[10], areas[11],
+        areas[9], areas[10], areas[11], areas[12],
     );
 
     let mut rendered = transcript::render(
@@ -230,6 +234,20 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) {
 
     menu::draw(frame, menu, app);
     file_search::draw(frame, menu, app);
+    if cache_notice.height > 0
+        && let Some(cached_tokens) = app.cache_miss_tokens()
+    {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(ratatui::text::Line::styled(
+                format!(
+                    "new session to save {} tokens",
+                    status::tokens(cached_tokens)
+                ),
+                ratatui::style::Style::new().fg(ratatui::style::Color::Yellow),
+            )),
+            cache_notice,
+        );
+    }
     input::draw(frame, composer, app);
     permission::draw(frame, approval, app);
     turn_status::draw(frame, turn, app);
@@ -252,6 +270,43 @@ mod tests {
 
     use keke_acp::{ScriptedConversation, SubagentView, Update};
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn cache_miss_is_yellow_directly_above_the_composer_and_disappears_on_a_hit() {
+        let (conversation, _) = ScriptedConversation::new(Vec::new());
+        let (mut app, _) = super::App::new(Arc::new(conversation));
+        app.input.set_text("composer marker");
+        let usage = |cached| {
+            Update::TokensUsed(keke_protocol::Usage {
+                input_tokens: 200_000,
+                cached_input_tokens: cached,
+                ..Default::default()
+            })
+        };
+        app.apply(usage(180_000));
+        app.apply(usage(0));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..24)
+            .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let notice = rows
+            .iter()
+            .position(|row| row.contains("new session to save"))
+            .unwrap();
+        assert!(rows[notice].contains("new session to save 180.0k tokens"));
+        assert!(rows[notice + 1].contains("message"));
+        assert!(rows[notice + 2].contains("composer marker"));
+        assert_eq!(buffer[(0, notice as u16)].fg, ratatui::style::Color::Yellow);
+        app.apply(usage(190_000));
+        terminal.draw(|frame| super::draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(!(0..24).any(|y| {
+            let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+            row.contains("new session to save")
+        }));
+    }
 
     #[test]
     fn shell_row_opens_read_only_view_and_escape_restores_draft() {

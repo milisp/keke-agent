@@ -164,3 +164,64 @@ fn emacs_keys_move_and_delete_in_the_prompt() {
     app.handle_key(control('u'));
     assert!(app.input.is_empty());
 }
+
+#[test]
+fn a_cache_miss_requires_a_previous_hit_and_recovers_on_a_hit() {
+    let (mut app, _, _, _) = app_with(Vec::new());
+    let usage = |input, cached| {
+        Update::TokensUsed(keke_protocol::Usage {
+            input_tokens: input,
+            cached_input_tokens: cached,
+            ..Default::default()
+        })
+    };
+    app.apply(usage(100, 0));
+    assert_eq!(app.cache_miss_tokens(), None);
+    app.apply(usage(100, 80));
+    app.apply(usage(0, 0));
+    assert_eq!(app.cache_miss_tokens(), None);
+    app.apply(usage(100, 0));
+    assert_eq!(app.cache_miss_tokens(), Some(80));
+    app.apply(usage(0, 0));
+    assert_eq!(app.cache_miss_tokens(), Some(80));
+    app.apply(usage(100, 90));
+    assert_eq!(app.cache_miss_tokens(), None);
+    assert_eq!(app.usage().cached_input_tokens, 170);
+    app.apply(usage(100, 0));
+    app.apply(Update::SessionReset);
+    assert_eq!(app.cache_miss_tokens(), None);
+    app.apply(usage(100, 0));
+    assert_eq!(app.cache_miss_tokens(), None);
+}
+
+#[test]
+fn resumed_cache_savings_wait_for_an_observed_hit_before_reporting_a_miss() {
+    let (app, _, _, _) = app_with(Vec::new());
+    let mut app = app.with_history(
+        &[],
+        keke_protocol::Usage {
+            cached_input_tokens: 180_000,
+            ..Default::default()
+        },
+        0,
+    );
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 200_000,
+        ..Default::default()
+    }));
+    assert_eq!(app.cache_miss_tokens(), None);
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 200_000,
+        cached_input_tokens: 160_000,
+        ..Default::default()
+    }));
+    app.apply(Update::TokensUsed(keke_protocol::Usage {
+        input_tokens: 210_000,
+        ..Default::default()
+    }));
+    assert_eq!(app.cache_miss_tokens(), Some(160_000));
+    type_text(&mut app, "/clear");
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.cache_miss_tokens(), Some(160_000));
+    assert_eq!(app.usage().cached_input_tokens, 340_000);
+}

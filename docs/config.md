@@ -119,6 +119,15 @@ prompt_cache_ttl = "5m"   # "1h" extends retention; "off" omits markers
 
 Codex, Grok, and OpenRouter use the session identity for their respective routing
 fields instead. A routing key helps reuse but cannot guarantee a cache hit.
+
+After an observed cache hit, a request with nonzero input and zero cached tokens
+shows a yellow `new session to save {n} tokens` line directly above the TUI input.
+The count is the most recent successful hit's cached-input-token count, representing
+the cached prefix that is no longer being reused. The notice clears after the next
+hit or `/new`; `/clear` retains it because the session continues. This applies to
+all providers, including OpenRouter. A miss alone does not identify expiration or
+eviction, and the count is not a guarantee of savings from starting a new session.
+
 ### Fast Mode
 
 A `codex` instance can buy its turns at a different speed. `fast` asks for
