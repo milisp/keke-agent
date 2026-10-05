@@ -92,6 +92,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     // Only the interactive surface can answer an approval request, so only it
     // installs the bridge; everything else runs with the engine's default.
     let command = cli.command.unwrap_or(Command::Tui);
+    // ACP owns per-session composition; do not register configured MCP first.
+    if let Command::Agent { transport } = command {
+        return acp::agent(transport, config, cwd).await;
+    }
     // `resume` is the interface too, so it installs the approval bridge for the
     // same reason: it is the one surface with somebody to ask.
     let interactive = matches!(command, Command::Tui | Command::Resume(_));

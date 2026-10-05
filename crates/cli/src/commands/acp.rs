@@ -24,10 +24,11 @@ pub(super) async fn agent(
     config: Config,
     cwd: std::path::PathBuf,
 ) -> Result<()> {
-    let crate::cli::AgentTransport::Stdio = transport;
+    let crate::cli::AgentTransport::Stdio { mcp_policy } = transport;
     let factory = Arc::new(EditorSessions {
         config,
         cwd,
+        mcp_policy,
         route: std::sync::Mutex::new(None),
     });
     keke_acp::serve_stdio(factory)
@@ -42,6 +43,7 @@ pub(super) async fn agent(
 struct EditorSessions {
     config: Config,
     cwd: std::path::PathBuf,
+    mcp_policy: crate::cli::McpPolicy,
     /// The route `authenticate` last signed the client in to, overriding
     /// `config.model.provider` for every session opened afterward on this
     /// connection.
@@ -53,6 +55,12 @@ struct EditorSessions {
 }
 
 impl EditorSessions {
+    fn settings(&self) -> crate::compose::Settings<'_> {
+        let mut settings: crate::compose::Settings<'_> = (&self.config).into();
+        settings.mcp_policy = self.mcp_policy;
+        settings
+    }
+
     /// The directory to root a session in.
     ///
     /// The client names it; keke's own `--cwd` is the fallback for a client
@@ -133,7 +141,7 @@ impl EditorSessions {
         // a web search contributes one — and the registry is frozen once
         // built.
         let route = self.active_route();
-        let mut settings: crate::compose::Settings<'_> = (&self.config).into();
+        let mut settings = self.settings();
         settings.client_mcp = &mcp_servers;
         let composed = Composed::build(
             &self.config.home,
@@ -184,6 +192,10 @@ impl EditorSessions {
 }
 
 impl keke_acp::SessionFactory for EditorSessions {
+    fn client_only_mcp(&self) -> bool {
+        self.mcp_policy == crate::cli::McpPolicy::ClientOnly
+    }
+
     fn open(
         &self,
         cwd: std::path::PathBuf,
@@ -207,7 +219,7 @@ impl keke_acp::SessionFactory for EditorSessions {
         let Ok(composed) = Composed::build(
             &self.config.home,
             &self.config.providers,
-            &(&self.config).into(),
+            &self.settings(),
             None,
             // Not a session: nothing to plan in, so nothing to install.
             None,
@@ -308,7 +320,7 @@ impl keke_acp::SessionFactory for EditorSessions {
             let composed = Composed::build(
                 &self.config.home,
                 &self.config.providers,
-                &(&self.config).into(),
+                &self.settings(),
                 None,
                 None,
                 "",

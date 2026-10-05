@@ -47,6 +47,12 @@ use crate::SessionListing;
 /// A trait rather than a closure because the composition root is the only place
 /// that knows how to build a session, and `keke-acp` must not learn.
 pub trait SessionFactory: Send + Sync + 'static {
+    /// Whether all sessions exclude configured MCP and use only client servers.
+    /// Advertises an active policy, rather than support that was not enabled.
+    fn client_only_mcp(&self) -> bool {
+        false
+    }
+
     /// Open a conversation rooted at `cwd`, as the client asked.
     ///
     /// `mcp_servers` are the ones the client sent for this session alone. A
@@ -124,6 +130,19 @@ pub trait SessionFactory: Send + Sync + 'static {
             ConversationError::Agent(format!("unknown authentication method `{method_id}`"));
         Box::pin(async move { Err(error) })
     }
+}
+
+/// Namespaced extension metadata, not a standard ACP capability.
+fn mcp_policy_meta(factory: &dyn SessionFactory) -> serde_json::Map<String, serde_json::Value> {
+    let policy = if factory.client_only_mcp() {
+        "client-only"
+    } else {
+        "merge"
+    };
+    serde_json::Map::from_iter([(
+        "keke.dev/mcp-policy".to_string(),
+        serde_json::Value::String(policy.to_string()),
+    )])
 }
 
 /// Serve the ACP protocol on stdin and stdout until the client disconnects.

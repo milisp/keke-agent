@@ -441,6 +441,36 @@ model, no network, and no terminal (`ScriptedConversation`).
 `Conversation` on behalf of an editor. Because both surfaces drive the same
 seam, they cannot drift into offering different tools or different policy.
 
+### Client-only MCP sourcing
+
+`keke agent stdio --mcp-policy client-only` restricts every session on that
+connection to the MCP servers supplied by its current `session/new`,
+`session/load`, or `session/resume` request. An empty list installs no external
+MCP. The default `merge` policy and ordinary CLI sessions retain trusted
+configured servers. Duplicate names within a client list fail the session;
+configured servers excluded by `client-only` do not cause a collision.
+
+This is a validated ACP startup option, not a standard ACP request field.
+Both protocol versions advertise the active policy in initialize response
+`_meta` as `{"keke.dev/mcp-policy":"client-only"}` (or `"merge"`). A client
+requiring isolation must request the startup option and verify this exact
+active value before authentication or opening a session; a version number or
+successful process launch is insufficient evidence.
+
+The single composition root selects MCP sources before registration and
+process startup. Authentication discovery uses the same policy. Plugin
+resolution still runs the repository trust gate, and trusted non-MCP plugin
+contributions keep their existing behavior. Children inherit the frozen
+registry and shared MCP connections; background commands and scheduled prompts
+do not rediscover MCP. Resuming uses the newly supplied list, never a previous
+session's stored grant. Native remote MCP credentials remain keyed by original
+server name and URL, independent of the client tool namespace, and HTTP/SSE
+headers are forwarded through the existing transport.
+
+This policy restricts MCP sourcing. It does not change shell, plugin-hook,
+approval, sandbox, credential, or filesystem permissions, and it does not
+verify that a configured credential is accepted by a remote service.
+
 ### Which version of ACP
 
 Both. v1 is what every released client speaks today; v2 is the draft that

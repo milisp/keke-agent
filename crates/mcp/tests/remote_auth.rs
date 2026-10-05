@@ -227,12 +227,16 @@ async fn a_signed_in_server_contributes_its_tools() {
 
     // Nothing above this line is visible to the tool layer: the server is
     // installed the ordinary way and the token is attached beneath it.
-    let tools = installed_tools(&server.uri(), home(&dir));
+    let tools = installed_tools(&server.uri(), home(&dir), false);
     assert_eq!(tools, vec!["local:vercel:deploy"]);
+    // ACP keeps the original server identity; changing only the tool namespace
+    // must reuse native MCP credentials rather than require another login.
+    let client_tools = installed_tools(&server.uri(), home(&dir), true);
+    assert_eq!(client_tools, vec!["acp:vercel:deploy"]);
 }
 
 /// Install one remote server and collect the tool names it contributes.
-fn installed_tools(url: &str, auth: AuthHome) -> Vec<String> {
+fn installed_tools(url: &str, auth: AuthHome, client_only: bool) -> Vec<String> {
     use keke_plugin::McpTransport;
     use keke_plugin::PluginScope;
     use keke_plugin::PluginSet;
@@ -265,11 +269,20 @@ fn installed_tools(url: &str, auth: AuthHome) -> Vec<String> {
         unsupported: Vec::new(),
     };
 
-    let set = PluginSet::compose(vec![plugin]).expect("composes");
+    let (set, extra) = if client_only {
+        let mut extra = plugin.mcp_servers;
+        for server in &mut extra {
+            server.plugin = "acp".to_string();
+        }
+        (PluginSet::default(), extra)
+    } else {
+        (PluginSet::compose(vec![plugin]).expect("composes"), Vec::new())
+    };
     let mut builder = ExtensionRegistryBuilder::new();
-    keke_mcp::install_with(
+    keke_mcp::install_with_servers(
         &mut builder,
         &set,
+        extra,
         keke_mcp::McpOptions {
             startup_timeout_millis: 10_000,
             call_timeout_millis: 10_000,

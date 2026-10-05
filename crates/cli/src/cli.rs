@@ -364,7 +364,21 @@ fn parse_approval(raw: &str) -> Result<keke_config_types::ApprovalPolicy, String
 #[derive(Debug, Subcommand)]
 pub(crate) enum AgentTransport {
     /// Speak ACP over stdin and stdout. The transport every editor uses today.
-    Stdio,
+    Stdio {
+        /// Which MCP definitions may enter ACP sessions.
+        #[arg(long, value_enum, default_value_t)]
+        mcp_policy: McpPolicy,
+    },
+}
+
+/// MCP sourcing is a per-connection ACP choice, independent of tool approval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum McpPolicy {
+    /// Merge trusted configured servers with the client list.
+    #[default]
+    Merge,
+    /// Install only the servers supplied with each session request.
+    ClientOnly,
 }
 
 #[derive(Debug, clap::Args)]
