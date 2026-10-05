@@ -65,6 +65,7 @@ pub enum Update {
     HostedToolCall {
         name: String,
         query: Option<String>,
+        metadata: Option<keke_protocol::HostedToolMetadata>,
     },
     /// Approval is needed before a tool runs. A surface answers with
     /// [`Conversation::respond_to_permission`].

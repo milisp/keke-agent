@@ -26,6 +26,7 @@ pub use message::Role;
 pub use message::StopReason;
 pub use message::Usage;
 pub use reasoning::ReasoningEffort;
+pub use session::HostedToolMetadata;
 pub use session::RewindScope;
 pub use session::SessionEvent;
 pub use session::SessionEventEnvelope;

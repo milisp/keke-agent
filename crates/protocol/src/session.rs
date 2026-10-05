@@ -18,6 +18,19 @@ use crate::ToolResult;
 use crate::TurnId;
 use crate::Usage;
 
+/// Structured details of a provider-executed tool, independent of its wire format.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostedToolMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+}
+
 /// A durable fact about a session.
 ///
 /// Variants are additive: readers must tolerate unknown ones, which is why
@@ -104,6 +117,8 @@ pub enum SessionEvent {
         /// The query the vendor's tool ran, when the wire reports one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<HostedToolMetadata>,
     },
     /// A model-backed approval reviewer answered an [`ApprovalRequest`].
     ///
@@ -372,5 +387,17 @@ mod tests {
             ],
         };
         assert_eq!(message.text(), "shown");
+    }
+
+    #[test]
+    fn old_hosted_events_have_no_metadata() {
+        let event: SessionEvent = serde_json::from_value(serde_json::json!({
+            "kind": "hosted_tool_call", "turn": "00000000-0000-0000-0000-000000000001", "name": "web_search", "query": "rust"
+        }))
+        .unwrap();
+        assert!(matches!(
+            event,
+            SessionEvent::HostedToolCall { metadata: None, .. }
+        ));
     }
 }

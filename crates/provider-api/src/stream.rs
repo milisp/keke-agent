@@ -39,7 +39,11 @@ pub enum StreamChunk {
     ///
     /// [`ToolCallStart`]: Self::ToolCallStart
     /// [`ToolCallEnd`]: Self::ToolCallEnd
-    HostedToolCall { name: String, query: Option<String> },
+    HostedToolCall {
+        name: String,
+        query: Option<String>,
+        metadata: Option<keke_protocol::HostedToolMetadata>,
+    },
     /// Usage, which most vendors report only once at the end.
     Usage(Usage),
     /// The reply is finished. Always the last chunk of a successful stream.

@@ -543,10 +543,20 @@ async fn pump(
             }
             // Reported once, already completed: the vendor ran it and told us
             // afterwards, so there is no in-progress phase a client could show.
-            Update::HostedToolCall { name, query } => {
+            Update::HostedToolCall {
+                name,
+                query,
+                metadata,
+            } => {
+                let label = match metadata.as_ref().and_then(|m| m.action.as_deref()) {
+                    Some("search") => "Search",
+                    Some("open_page") => "Open",
+                    Some("find_in_page") => "Find",
+                    _ => &name,
+                };
                 let title = match &query {
-                    Some(query) => format!("{name}: {query}"),
-                    None => name.clone(),
+                    Some(query) => format!("{label}: {query}"),
+                    None => label.to_string(),
                 };
                 notify(
                     &cx,
@@ -554,6 +564,7 @@ async fn pump(
                     SessionUpdate::ToolCallUpdate(
                         ToolCallUpdate::new(format!("hosted:{name}"))
                             .title(title)
+                            .raw_input(serde_json::json!({"query": query, "metadata": metadata}))
                             .status(ToolCallStatus::Completed),
                     ),
                 )?;

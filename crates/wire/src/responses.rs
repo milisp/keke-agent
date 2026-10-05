@@ -208,6 +208,36 @@ struct OutputItem {
 struct WebSearchAction {
     #[serde(default)]
     query: Option<String>,
+    #[serde(rename = "type", default)]
+    action: Option<String>,
+    #[serde(default)]
+    queries: Vec<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    pattern: Option<String>,
+}
+
+#[cfg(test)]
+mod hosted_action_tests {
+    use super::*;
+
+    #[test]
+    fn retains_search_open_and_find_details() {
+        for value in [
+            serde_json::json!({"type":"search", "queries":["rust", "async"]}),
+            serde_json::json!({"type":"open_page", "url":"https://example.org/full/path"}),
+            serde_json::json!({"type":"find_in_page", "url":"https://example.org/full/path", "pattern":"complete pattern"}),
+        ] {
+            let action: WebSearchAction = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(action.action.as_deref(), value["type"].as_str());
+            assert_eq!(action.url.as_deref(), value["url"].as_str());
+            assert_eq!(action.pattern.as_deref(), value["pattern"].as_str());
+            if action.action.as_deref() == Some("search") {
+                assert_eq!(action.queries, ["rust", "async"]);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,6 +421,16 @@ impl Decoder {
         out.push(StreamChunk::HostedToolCall {
             name: "web_search".to_string(),
             query,
+            metadata: event
+                .item
+                .as_ref()
+                .and_then(|item| item.action.as_ref())
+                .map(|action| keke_protocol::HostedToolMetadata {
+                    action: action.action.clone(),
+                    queries: action.queries.clone(),
+                    url: action.url.clone(),
+                    pattern: action.pattern.clone(),
+                }),
         });
     }
 

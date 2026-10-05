@@ -63,6 +63,7 @@ pub enum TurnUpdate {
         turn: TurnId,
         name: String,
         query: Option<String>,
+        metadata: Option<keke_protocol::HostedToolMetadata>,
     },
     /// One model step's token accounting, as soon as the provider reports it.
     ///

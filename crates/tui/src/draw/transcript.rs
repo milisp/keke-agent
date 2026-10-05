@@ -758,6 +758,65 @@ mod grouping_tests {
     }
 
     #[test]
+    fn hosted_web_search_keeps_its_query_and_expansion_target() {
+        let mut transcript = crate::transcript::Transcript::default();
+        transcript.hosted_tool("web_search", Some("Rust release news"), None);
+        let rendered = render(transcript.cells(), 100, &HashSet::new(), false);
+        assert!(header_titles(&rendered)[0].contains("Rust release news"));
+        assert!(!rendered.toggles.is_empty());
+
+        let rendered = render(transcript.cells(), 100, &HashSet::from([0]), false);
+        assert!(rendered.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("query=Rust release news"))
+        }));
+    }
+
+    #[test]
+    fn hosted_web_search_without_details_has_no_expansion() {
+        for query in [None, Some(""), Some("   ")] {
+            let mut transcript = crate::transcript::Transcript::default();
+            transcript.hosted_tool("web_search", query, None);
+            let rendered = render(transcript.cells(), 100, &HashSet::new(), false);
+            assert!(rendered.toggles.is_empty());
+        }
+    }
+
+    #[test]
+    fn hosted_actions_keep_full_details_when_expanded() {
+        for (action, title) in [
+            ("search", "Search"),
+            ("open_page", "Open"),
+            ("find_in_page", "Find"),
+        ] {
+            let metadata = keke_protocol::HostedToolMetadata {
+                action: Some(action.into()),
+                queries: vec!["first query".into(), "second query".into()],
+                url: Some("https://example.org/full/path?keep=everything".into()),
+                pattern: Some("complete pattern".into()),
+            };
+            let mut transcript = crate::transcript::Transcript::default();
+            transcript.hosted_tool("web_search", None, Some(&metadata));
+            let rendered = render(transcript.cells(), 120, &HashSet::from([0]), false);
+            assert!(header_titles(&rendered)[0].contains(title));
+            let text: String = rendered
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+                .collect();
+            for detail in [
+                "first query",
+                "second query",
+                "https://example.org/full/path?keep=everything",
+                "complete pattern",
+            ] {
+                assert!(text.contains(detail), "missing {detail}: {text}");
+            }
+        }
+    }
+
+    #[test]
     fn patch_titles_describe_file_edits_not_the_internal_tool_name() {
         let mut cells = vec![tool("p1", "apply_patch", "2 files")];
         let rendered = render(&cells, 80, &HashSet::new(), false);

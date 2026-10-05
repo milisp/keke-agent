@@ -119,6 +119,7 @@ fn a_hosted_tool_call_is_shown_as_a_finished_call() {
     app.apply(Update::HostedToolCall {
         name: "web_search".to_string(),
         query: Some("latest xAI Grok bot news".to_string()),
+        metadata: None,
     });
 
     let tools: Vec<_> = app
@@ -131,7 +132,7 @@ fn a_hosted_tool_call_is_shown_as_a_finished_call() {
         })
         .collect();
     assert_eq!(tools.len(), 1, "the vendor's search must be on screen");
-    assert_eq!(tools[0].name, "web_search");
+    assert_eq!(tools[0].name, "Search");
     assert_eq!(tools[0].summary, "latest xAI Grok bot news");
     // Nothing will revise it, so it must never sit on screen as running.
     assert_eq!(tools[0].state, CallState::Finished(ToolStatus::Ok));
@@ -143,6 +144,7 @@ fn a_hosted_tool_call_is_not_revised_by_a_later_result() {
     app.apply(Update::HostedToolCall {
         name: "web_search".to_string(),
         query: None,
+        metadata: None,
     });
     app.apply(Update::ToolCallEnded(ToolResult::ok(
         ToolCallId::new("hosted:web_search"),

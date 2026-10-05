@@ -514,7 +514,11 @@ impl Session {
                         }
                     }
                     StreamChunk::ToolCallEnd { .. } => {}
-                    StreamChunk::HostedToolCall { name, query } => {
+                    StreamChunk::HostedToolCall {
+                        name,
+                        query,
+                        metadata,
+                    } => {
                         emitted = true;
                         // Not fed into `assembler.calls`: that path assembles a
                         // `ContentBlock::ToolCall` the turn loop later dispatches
@@ -527,9 +531,15 @@ impl Session {
                             turn,
                             name: name.clone(),
                             query: query.clone(),
+                            metadata: metadata.clone(),
                         });
-                        self.log(SessionEvent::HostedToolCall { turn, name, query })
-                            .await?;
+                        self.log(SessionEvent::HostedToolCall {
+                            turn,
+                            name,
+                            query,
+                            metadata,
+                        })
+                        .await?;
                     }
                     StreamChunk::Usage(usage) => assembler.usage = usage,
                     StreamChunk::Done(reason) => {

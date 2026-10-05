@@ -407,6 +407,10 @@ async fn a_hosted_search_call_is_surfaced_as_a_stream_chunk() {
     assert!(chunks.contains(&StreamChunk::HostedToolCall {
         name: "web_search".to_string(),
         query: Some("rust async traits".to_string()),
+        metadata: Some(keke_protocol::HostedToolMetadata {
+            action: Some("search".into()),
+            ..Default::default()
+        }),
     }));
 }
 

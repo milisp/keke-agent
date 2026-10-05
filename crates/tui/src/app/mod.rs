@@ -775,10 +775,15 @@ impl App {
                 self.thinking = false;
                 self.transcript.start_tool(&call);
             }
-            Update::HostedToolCall { name, query } => {
+            Update::HostedToolCall {
+                name,
+                query,
+                metadata,
+            } => {
                 self.begin_turn();
                 self.thinking = false;
-                self.transcript.hosted_tool(&name, query.as_deref());
+                self.transcript
+                    .hosted_tool(&name, query.as_deref(), metadata.as_ref());
             }
             Update::ToolCallEnded(result) => {
                 if !self.transcript.finish_tool(&result) {

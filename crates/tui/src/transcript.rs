@@ -258,13 +258,52 @@ impl Transcript {
     /// running phase to draw and nothing later will revise it. The id is
     /// synthetic — no engine call owns it — and deliberately not `Running`, so
     /// [`Self::finish_tool`] can never mistake it for an open call.
-    pub fn hosted_tool(&mut self, name: &str, query: Option<&str>) {
+    pub fn hosted_tool(
+        &mut self,
+        name: &str,
+        query: Option<&str>,
+        metadata: Option<&keke_protocol::HostedToolMetadata>,
+    ) {
         self.sealed = true;
+        let mut details = Vec::new();
+        if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
+            details.push(format!("query={q}"));
+        }
+        if let Some(meta) = metadata {
+            details.extend(
+                meta.queries
+                    .iter()
+                    .filter(|q| !q.trim().is_empty())
+                    .map(|q| format!("query={q}")),
+            );
+            if let Some(url) = &meta.url {
+                details.push(format!("url={url}"));
+            }
+            if let Some(pattern) = &meta.pattern {
+                details.push(format!("pattern={pattern}"));
+            }
+        }
+        let action = metadata.and_then(|m| m.action.as_deref());
+        let title = match action {
+            Some("open_page") => "Open",
+            Some("find_in_page") => "Find",
+            Some("search") => "Search",
+            _ if name == "web_search" => "Search",
+            _ => name,
+        };
+        let summary = match action {
+            Some("open_page") => metadata.and_then(|m| m.url.clone()).unwrap_or_default(),
+            Some("find_in_page") => metadata.and_then(|m| m.pattern.clone()).unwrap_or_default(),
+            _ => query
+                .map(str::to_string)
+                .or_else(|| metadata.map(|m| m.queries.join(", ")))
+                .unwrap_or_default(),
+        };
         self.cells.push(Cell::Tool(ToolCell {
             id: ToolCallId::new(format!("hosted:{name}")),
-            name: name.to_string(),
-            summary: query.unwrap_or_default().to_string(),
-            arguments: query.map(|q| format!("query={q}")).unwrap_or_default(),
+            name: title.to_string(),
+            summary,
+            arguments: details.join("\n"),
             state: CallState::Finished(ToolStatus::Ok),
             detail: None,
         }));
@@ -412,8 +451,13 @@ impl Transcript {
                 SessionEvent::ToolCallEnd { result, .. } => {
                     self.finish_tool(result);
                 }
-                SessionEvent::HostedToolCall { name, query, .. } => {
-                    self.hosted_tool(name, query.as_deref());
+                SessionEvent::HostedToolCall {
+                    name,
+                    query,
+                    metadata,
+                    ..
+                } => {
+                    self.hosted_tool(name, query.as_deref(), metadata.as_ref());
                 }
                 SessionEvent::Error { message, .. } => self.push(Cell::Error(message.clone())),
                 SessionEvent::Rewound {
