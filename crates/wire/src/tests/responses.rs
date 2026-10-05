@@ -35,6 +35,29 @@ use super::stream_response;
 
 const API: WireApi = WireApi::Responses;
 
+#[test]
+fn cache_routing_uses_the_session_identity_across_requests() {
+    let session_id = keke_protocol::SessionId::new();
+    let mut request = ModelRequest {
+        session_id: Some(session_id),
+        ..request()
+    };
+    let first = crate::responses_body(&request, true, true);
+    request.messages.push(Message::user("next turn"));
+    let next = crate::responses_body(&request, false, false);
+    assert_eq!(first["prompt_cache_key"], session_id.to_string());
+    assert_eq!(next["prompt_cache_key"], first["prompt_cache_key"]);
+    request.session_id = Some(keke_protocol::SessionId::new());
+    let other = crate::responses_body(&request, true, true);
+    assert_ne!(other["prompt_cache_key"], first["prompt_cache_key"]);
+    request.session_id = None;
+    assert!(
+        crate::responses_body(&request, true, true)
+            .get("prompt_cache_key")
+            .is_none()
+    );
+}
+
 async fn serve(body: String) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

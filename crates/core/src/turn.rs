@@ -184,6 +184,7 @@ impl Session {
             }
             let request = ModelRequest {
                 model: self.model.get().to_string(),
+                session_id: Some(self.id),
                 system: Some(system.clone()),
                 messages: self.history.clone(),
                 tools: specs.clone(),
@@ -380,6 +381,7 @@ impl Session {
 
         let request = ModelRequest {
             model: self.model.get().to_string(),
+            session_id: Some(self.id),
             system: None,
             messages,
             tools: Vec::new(),

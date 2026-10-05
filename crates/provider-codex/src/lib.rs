@@ -185,7 +185,15 @@ impl ModelProvider for CodexProvider {
                 serde_json::json!(wire_tier(tier)),
             );
         }
-        Box::pin(self.wire.stream(self.info.wire_api, request))
+        // The ChatGPT backend derives cache affinity from this header, in
+        // addition to the Responses body's prompt_cache_key.
+        let headers = request.session_id.map_or_else(Vec::new, |id| {
+            vec![("session-id".to_string(), id.to_string())]
+        });
+        Box::pin(
+            self.wire
+                .stream_with_headers(self.info.wire_api, request, headers),
+        )
     }
 
     fn cached_models(&self) -> Vec<ModelInfo> {

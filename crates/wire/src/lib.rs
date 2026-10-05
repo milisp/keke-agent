@@ -138,6 +138,18 @@ impl WireClient {
         api: WireApi,
         request: ModelRequest,
     ) -> Result<StreamEvent, ProviderError> {
+        self.stream_with_headers(api, request, Vec::new()).await
+    }
+
+    /// Stream with request-scoped transport headers supplied by the provider.
+    /// Session routing belongs to the endpoint, while credentials are still
+    /// attached last so these headers cannot replace authorization.
+    pub async fn stream_with_headers(
+        &self,
+        api: WireApi,
+        request: ModelRequest,
+        headers: Vec<(String, String)>,
+    ) -> Result<StreamEvent, ProviderError> {
         // The decoder has to undo the renaming the body builder did, and both
         // derive it from the same request.
         let names = tool_names::ToolNames::for_request(&request);
@@ -160,6 +172,9 @@ impl WireClient {
             .json(&body);
         if matches!(api, WireApi::Messages) {
             builder = builder.header("anthropic-version", messages::ANTHROPIC_VERSION);
+        }
+        for (name, value) in headers {
+            builder = builder.header(name, value);
         }
 
         let response = self

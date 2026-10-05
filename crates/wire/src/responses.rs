@@ -37,6 +37,14 @@ pub fn responses_body(request: &ModelRequest, stream: bool, sampling_is_fixed: b
     let request = &*crate::tool_names::wire_request(request);
     let mut body = Map::new();
     body.insert("model".to_string(), json!(request.model));
+    if let Some(session_id) = request.session_id {
+        // Cache routing follows the session, so tool steps and later turns
+        // reuse the same prefix instead of being routed under fresh keys.
+        body.insert(
+            "prompt_cache_key".to_string(),
+            json!(session_id.to_string()),
+        );
+    }
     body.insert("input".to_string(), json!(input_items(request)));
     body.insert("stream".to_string(), json!(stream));
     // Never stored server-side. The engine reconstructs every request from its

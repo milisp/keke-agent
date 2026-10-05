@@ -55,6 +55,9 @@ pub struct ToolSpec {
 #[derive(Clone, Debug, Default)]
 pub struct ModelRequest {
     pub model: String,
+    /// Stable identity of the owning session, including resumed turns. Providers
+    /// may use it for cache routing; standalone calls can leave it absent.
+    pub session_id: Option<keke_protocol::SessionId>,
     /// System prompt, kept separate because vendors place it differently.
     pub system: Option<String>,
     pub messages: Vec<Message>,

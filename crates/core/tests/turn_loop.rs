@@ -532,6 +532,11 @@ async fn a_tool_call_runs_and_its_result_reaches_the_next_request() {
     let requests = seen.lock().expect("lock");
     assert_eq!(requests.len(), 2);
     assert!(
+        requests
+            .iter()
+            .all(|request| request.session_id == Some(session.id()))
+    );
+    assert!(
         requests[0].tools.iter().any(|spec| spec.name == "echo"),
         "the tool must be advertised"
     );
@@ -1365,7 +1370,7 @@ async fn a_reviewer_cannot_undo_a_guard() {
 async fn a_resumed_session_continues_the_log_it_was_rebuilt_from() {
     let harness = harness();
 
-    let (provider, _seen) = ScriptedProvider::new(vec![text_reply("hello there")]);
+    let (provider, first_seen) = ScriptedProvider::new(vec![text_reply("hello there")]);
     let mut session = SessionBuilder::new()
         .config(session_config(&harness.home))
         .provider(provider)
@@ -1377,6 +1382,7 @@ async fn a_resumed_session_continues_the_log_it_was_rebuilt_from() {
         .await
         .expect("turn completes");
     let id = session.id();
+    assert_eq!(first_seen.lock().expect("lock")[0].session_id, Some(id));
     let log = session.log_path().to_path_buf();
     drop(session);
 
@@ -1400,6 +1406,7 @@ async fn a_resumed_session_continues_the_log_it_was_rebuilt_from() {
     // What the model saw carries the first exchange, not just the new prompt.
     let requests = seen.lock().expect("lock");
     assert_eq!(requests[0].messages.len(), 3);
+    assert_eq!(requests[0].session_id, Some(id));
     assert_eq!(requests[0].messages[0].text(), "hi");
     // And one log, not two: the resumed session appends to the file it came
     // from, or the record of the conversation is split in half.

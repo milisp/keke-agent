@@ -468,6 +468,7 @@ fn a_tool_result_becomes_its_own_tool_message() {
     let request = ModelRequest {
         model: "grok-4.6".to_string(),
         system: Some("be terse".to_string()),
+        session_id: None,
         messages: vec![
             Message::user("read it"),
             Message {

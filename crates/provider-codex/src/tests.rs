@@ -90,6 +90,50 @@ fn provider_info_names_its_route_and_credentials() {
     assert_eq!(info.wire_api, keke_provider_api::WireApi::Responses);
 }
 
+#[tokio::test]
+async fn cache_affinity_header_matches_the_session_cache_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/backend-api/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"),
+        )
+        .mount(&server)
+        .await;
+    let provider = provider_over(&server, None);
+    let session = keke_protocol::SessionId::new();
+    for text in ["first turn", "next turn"] {
+        let stream = provider
+            .stream(keke_provider_api::ModelRequest {
+                session_id: Some(session),
+                messages: vec![keke_protocol::Message::user(text)],
+                ..keke_provider_api::ModelRequest::default()
+            })
+            .await
+            .expect("streams");
+        let _: Vec<_> = stream.collect().await;
+    }
+    let stream = provider
+        .stream(keke_provider_api::ModelRequest::default())
+        .await
+        .expect("streams");
+    let _: Vec<_> = stream.collect().await;
+    let requests = server.received_requests().await.expect("recorded");
+    assert_eq!(requests.len(), 3);
+    for request in &requests[..2] {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json");
+        assert_eq!(body["prompt_cache_key"], session.to_string());
+        assert_eq!(
+            request.headers["session-id"].to_str().expect("header"),
+            session.to_string()
+        );
+        assert_eq!(request.headers["authorization"], "Bearer token");
+    }
+    assert!(!requests[2].headers.contains_key("session-id"));
+}
+
 /// The listing the ChatGPT backend actually sends, end to end: what a picker
 /// gets must be names and ladders, not slugs.
 #[tokio::test]
