@@ -186,7 +186,18 @@ impl ModelProvider for GrokProvider {
         &'a self,
         request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
-        Box::pin(self.wire.stream(self.info.wire_api, request))
+        // Chat completions has no body cache key; xAI uses the conversation
+        // header for affinity. Keep its session metadata aligned on both wires.
+        let headers = request.session_id.map_or_else(Vec::new, |id| {
+            vec![
+                ("x-grok-conv-id".to_string(), id.to_string()),
+                ("x-grok-session-id".to_string(), id.to_string()),
+            ]
+        });
+        Box::pin(
+            self.wire
+                .stream_with_headers(self.info.wire_api, request, headers),
+        )
     }
 
     fn cached_models(&self) -> Vec<ModelInfo> {

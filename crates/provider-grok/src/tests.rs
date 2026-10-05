@@ -102,6 +102,79 @@ fn request() -> ModelRequest {
     }
 }
 
+#[tokio::test]
+async fn cache_affinity_follows_the_session_on_both_wires() {
+    use keke_provider_api::WireApi;
+
+    for (wire_api, endpoint, frame) in [
+        (
+            WireApi::ChatCompletions,
+            "/v1/chat/completions",
+            r#"{"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}"#,
+        ),
+        (
+            WireApi::Responses,
+            "/v1/responses",
+            r#"{"type":"response.completed","response":{}}"#,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(stream_response(sse(&[frame])))
+            .mount(&server)
+            .await;
+        let provider = GrokProvider::new(
+            Arc::new(StubAuth::default()),
+            Endpoint {
+                base_url: format!("{}/v1", server.uri()),
+                wire_api,
+                ..Endpoint::default()
+            },
+            None,
+        )
+        .expect("provider");
+        let session = keke_protocol::SessionId::new();
+        let other = keke_protocol::SessionId::new();
+        for (session_id, text) in [
+            (Some(session), "first turn"),
+            (Some(session), "next turn"),
+            (Some(other), "another session"),
+            (None, "standalone call"),
+        ] {
+            let chunks: Vec<_> = provider
+                .stream(ModelRequest {
+                    session_id,
+                    messages: vec![Message::user(text)],
+                    ..request()
+                })
+                .await
+                .expect("stream starts")
+                .collect()
+                .await;
+            assert!(chunks.iter().all(Result::is_ok));
+        }
+        let requests = server.received_requests().await.expect("recorded");
+        assert_eq!(requests.len(), 4);
+        for (index, id) in [session, session, other].into_iter().enumerate() {
+            assert_eq!(requests[index].headers["x-grok-conv-id"], id.to_string());
+            assert_eq!(requests[index].headers["x-grok-session-id"], id.to_string());
+            assert_eq!(
+                requests[index].headers["authorization"],
+                format!("Bearer token-{index}")
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(&requests[index].body).expect("json");
+            assert!(body.get("x_grok_session_id").is_none());
+            if wire_api == WireApi::Responses {
+                assert_eq!(body["prompt_cache_key"], id.to_string());
+            }
+        }
+        assert!(!requests[3].headers.contains_key("x-grok-session-id"));
+        assert!(!requests[3].headers.contains_key("x-grok-conv-id"));
+    }
+}
+
 async fn collect(provider: &GrokProvider) -> Vec<Result<StreamChunk, ProviderError>> {
     provider
         .stream(request())
