@@ -54,17 +54,33 @@ pub(crate) fn resolve(
                 }
                 McpTransport::Stdio { command, args, env }
             }
-            ClientMcpTransport::Http { url, headers } => {
+            ClientMcpTransport::Http {
+                url,
+                headers,
+                oauth,
+            } => {
                 if url.is_empty() {
                     bail!("MCP server `{}` has an empty url", server.name);
                 }
-                McpTransport::Http { url, headers }
+                McpTransport::Http {
+                    url,
+                    headers,
+                    oauth: oauth.map(oauth_config),
+                }
             }
-            ClientMcpTransport::Sse { url, headers } => {
+            ClientMcpTransport::Sse {
+                url,
+                headers,
+                oauth,
+            } => {
                 if url.is_empty() {
                     bail!("MCP server `{}` has an empty url", server.name);
                 }
-                McpTransport::Sse { url, headers }
+                McpTransport::Sse {
+                    url,
+                    headers,
+                    oauth: oauth.map(oauth_config),
+                }
             }
         };
         resolved.push(ResolvedMcpServer {
@@ -76,6 +92,14 @@ pub(crate) fn resolve(
         });
     }
     Ok(resolved)
+}
+
+fn oauth_config(oauth: keke_acp::ClientMcpOAuthConfig) -> keke_plugin::McpOAuthConfig {
+    keke_plugin::McpOAuthConfig {
+        client_id: oauth.client_id,
+        client_secret: oauth.client_secret,
+        redirect_uri: oauth.redirect_uri,
+    }
 }
 
 /// Fail if a client server shares a name with one already configured.
@@ -145,6 +169,7 @@ mod tests {
                     transport: ClientMcpTransport::Http {
                         url: "https://a.test/mcp".to_string(),
                         headers: headers.clone(),
+                        oauth: None,
                     },
                 },
                 ClientMcpServer {
@@ -152,6 +177,7 @@ mod tests {
                     transport: ClientMcpTransport::Sse {
                         url: "https://a.test/sse".to_string(),
                         headers: Vec::new(),
+                        oauth: None,
                     },
                 },
             ],
@@ -162,10 +188,56 @@ mod tests {
             resolved[0].transport,
             McpTransport::Http {
                 url: "https://a.test/mcp".to_string(),
-                headers
+                headers,
+                oauth: None,
             }
         );
         assert_eq!(resolved[1].transport.kind(), "sse");
+    }
+
+    #[test]
+    fn remote_transports_preserve_the_clients_oauth_registration() {
+        let oauth = keke_acp::ClientMcpOAuthConfig {
+            client_id: "registered-client".to_string(),
+            client_secret: Some("client-secret".to_string()),
+            redirect_uri: Some("http://127.0.0.1:4567/callback".to_string()),
+        };
+        let resolved = resolve(
+            vec![
+                ClientMcpServer {
+                    name: "http".to_string(),
+                    transport: ClientMcpTransport::Http {
+                        url: "https://a.test/mcp".to_string(),
+                        headers: Vec::new(),
+                        oauth: Some(oauth.clone()),
+                    },
+                },
+                ClientMcpServer {
+                    name: "sse".to_string(),
+                    transport: ClientMcpTransport::Sse {
+                        url: "https://a.test/sse".to_string(),
+                        headers: Vec::new(),
+                        oauth: Some(oauth),
+                    },
+                },
+            ],
+            std::path::Path::new("/work"),
+        )
+        .expect("registered remote servers resolve");
+        for server in resolved {
+            let registration = match server.transport {
+                McpTransport::Http { oauth, .. } | McpTransport::Sse { oauth, .. } => {
+                    oauth.expect("client registration is retained")
+                }
+                McpTransport::Stdio { .. } => panic!("expected remote transport"),
+            };
+            assert_eq!(registration.client_id, "registered-client");
+            assert_eq!(registration.client_secret.as_deref(), Some("client-secret"));
+            assert_eq!(
+                registration.redirect_uri.as_deref(),
+                Some("http://127.0.0.1:4567/callback")
+            );
+        }
     }
 
     #[test]
@@ -197,6 +269,7 @@ mod tests {
             transport: ClientMcpTransport::Http {
                 url: String::new(),
                 headers: Vec::new(),
+                oauth: None,
             },
         };
         assert!(resolve(vec![empty_url], work).is_err());

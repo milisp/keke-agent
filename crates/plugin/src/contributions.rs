@@ -117,6 +117,32 @@ impl ResolvedHook {
     }
 }
 
+/// A client registered with the authorization server before MCP login.
+///
+/// Secrets must be `${VAR}` environment references, resolved only at token use.
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpOAuthConfig {
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// A registered HTTP loopback callback, including its fixed port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
+}
+
+impl std::fmt::Debug for McpOAuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpOAuthConfig")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
+}
+
 /// How a server is reached.
 ///
 /// One enum rather than a struct with optional fields, because the two shapes
@@ -141,12 +167,14 @@ pub enum McpTransport {
         /// request time for the same reason as `Stdio::env`, so an
         /// `Authorization` written as `Bearer ${TOKEN}` never resolves here.
         headers: Vec<(String, String)>,
+        oauth: Option<McpOAuthConfig>,
     },
     /// A remote endpoint using the older HTTP+SSE transport: a long-lived `GET`
     /// stream that names the URL replies are posted to.
     Sse {
         url: String,
         headers: Vec<(String, String)>,
+        oauth: Option<McpOAuthConfig>,
     },
 }
 
@@ -193,10 +221,49 @@ impl McpTransport {
                 line.push_str(&named(env, "env"));
                 line
             }
-            Self::Http { url, headers } => format!("http {url}{}", named(headers, "headers")),
-            Self::Sse { url, headers } => format!("sse {url}{}", named(headers, "headers")),
+            Self::Http {
+                url,
+                headers,
+                oauth,
+            } => format!(
+                "http {url}{}{}",
+                named(headers, "headers"),
+                describe_oauth(oauth)
+            ),
+            Self::Sse {
+                url,
+                headers,
+                oauth,
+            } => format!(
+                "sse {url}{}{}",
+                named(headers, "headers"),
+                describe_oauth(oauth)
+            ),
         }
     }
+}
+
+fn describe_oauth(oauth: &Option<McpOAuthConfig>) -> String {
+    oauth.as_ref().map_or_else(String::new, |config| {
+        format!(
+            " (oauth client: {}; redirect: {:?}; secret reference: {:?})",
+            config.client_id,
+            config.redirect_uri,
+            config.client_secret.as_deref().map(|secret| {
+                let variable = secret
+                    .strip_prefix("${")
+                    .and_then(|value| value.strip_suffix('}'));
+                if variable.is_some_and(|value| {
+                    !value.is_empty()
+                        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                }) {
+                    secret
+                } else {
+                    "<invalid secret reference>"
+                }
+            })
+        )
+    })
 }
 
 /// An MCP server, from `.mcp.json` or an inline `mcpServers` block.
@@ -277,6 +344,8 @@ pub struct McpServerEntry {
     pub url: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub headers: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthConfig>,
     /// Kept configured but not started. Absent (rather than `false`) is the
     /// overwhelmingly common case, so it is left out of a written entry
     /// rather than spelled out every time.
@@ -297,10 +366,12 @@ impl McpServerEntry {
             "http" if !self.url.is_empty() => Some(McpTransport::Http {
                 url: self.url.clone(),
                 headers: headers(),
+                oauth: self.oauth.clone(),
             }),
             "sse" if !self.url.is_empty() => Some(McpTransport::Sse {
                 url: self.url.clone(),
                 headers: headers(),
+                oauth: self.oauth.clone(),
             }),
             "stdio" if !self.command.is_empty() => Some(McpTransport::Stdio {
                 command: self.command.clone(),
@@ -322,16 +393,26 @@ impl From<McpTransport> for McpServerEntry {
                 env: env.into_iter().collect(),
                 ..Self::default()
             },
-            McpTransport::Http { url, headers } => Self {
+            McpTransport::Http {
+                url,
+                headers,
+                oauth,
+            } => Self {
                 kind: Some("http".to_string()),
                 url,
                 headers: headers.into_iter().collect(),
+                oauth,
                 ..Self::default()
             },
-            McpTransport::Sse { url, headers } => Self {
+            McpTransport::Sse {
+                url,
+                headers,
+                oauth,
+            } => Self {
                 kind: Some("sse".to_string()),
                 url,
                 headers: headers.into_iter().collect(),
+                oauth,
                 ..Self::default()
             },
         }
@@ -382,4 +463,31 @@ pub fn markdown_body(text: &str) -> &str {
     let after = &rest[end + 4..];
     let after = after.strip_prefix('\n').unwrap_or(after);
     after.trim_start_matches('\n')
+}
+
+#[cfg(test)]
+mod oauth_tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn oauth_round_trips_and_changes_the_approved_transport() {
+        let entry: McpServerEntry = serde_json::from_str(r#"{"type":"http","url":"https://mcp.test","oauth":{"client_id":"registered","client_secret":"${CLIENT_SECRET}","redirect_uri":"http://127.0.0.1:4567/callback"}}"#).expect("entry");
+        let transport = entry.transport().expect("remote transport");
+        let written = McpServerEntry::from(transport.clone());
+        assert_eq!(written.oauth, entry.oauth);
+        let original = transport.describe();
+        let mut changed = entry;
+        changed.oauth.as_mut().expect("config").client_secret = Some("${OTHER_SECRET}".into());
+        assert_ne!(original, changed.transport().expect("remote").describe());
+        changed.oauth.as_mut().expect("config").client_secret = Some("literal-secret".into());
+        assert!(
+            !changed
+                .transport()
+                .expect("remote")
+                .describe()
+                .contains("literal-secret")
+        );
+        assert!(!format!("{:?}", changed.oauth).contains("literal-secret"));
+    }
 }

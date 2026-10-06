@@ -38,14 +38,16 @@ pub(super) async fn mcp(action: McpAction, config: Config) -> Result<()> {
 ///
 /// A stdio server has nothing to sign in to, and saying so plainly beats a
 /// flow that opens a browser at nothing.
-fn remote(name: &str, home: &HomeLayout) -> Result<String> {
+fn remote(name: &str, home: &HomeLayout) -> Result<(String, Option<keke_plugin::McpOAuthConfig>)> {
     let plugins = crate::plugins::discover(home)?;
     let server = plugins
         .mcp_servers()
         .find(|server| server.name == name)
         .with_context(|| format!("no MCP server named `{name}` is configured"))?;
     match &server.transport {
-        McpTransport::Http { url, .. } | McpTransport::Sse { url, .. } => Ok(url.clone()),
+        McpTransport::Http { url, oauth, .. } | McpTransport::Sse { url, oauth, .. } => {
+            Ok((url.clone(), oauth.clone()))
+        }
         McpTransport::Stdio { .. } => bail!(
             "`{name}` is a program on this machine, not a remote server — there is nothing to sign in to"
         ),
@@ -53,8 +55,8 @@ fn remote(name: &str, home: &HomeLayout) -> Result<String> {
 }
 
 fn credential(name: &str, home: &HomeLayout) -> Result<keke_mcp::ServerAuth> {
-    let url = remote(name, home)?;
-    keke_mcp::ServerAuth::new(keke_mcp::AuthHome::new(&home.home), name, &url)
+    let (url, oauth) = remote(name, home)?;
+    keke_mcp::ServerAuth::with_oauth(keke_mcp::AuthHome::new(&home.home), name, &url, oauth)
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
@@ -210,9 +212,17 @@ fn transport(args: &McpAddArgs) -> Result<McpTransport> {
             }
             let headers = pairs(&args.headers, ':', "--header 'Name: value'")?;
             Ok(if args.transport == McpTransportArg::Http {
-                McpTransport::Http { url, headers }
+                McpTransport::Http {
+                    url,
+                    headers,
+                    oauth: None,
+                }
             } else {
-                McpTransport::Sse { url, headers }
+                McpTransport::Sse {
+                    url,
+                    headers,
+                    oauth: None,
+                }
             })
         }
     }
@@ -254,8 +264,8 @@ pub(crate) fn statuses(home: &HomeLayout) -> Result<Vec<keke_tui::McpServerStatu
         for server in &plugin.mcp_servers {
             let remote = !server.transport.is_local();
             let signed_in = match &server.transport {
-                McpTransport::Http { url, .. } | McpTransport::Sse { url, .. } => {
-                    keke_mcp::ServerAuth::new(auth.clone(), &server.name, url)
+                McpTransport::Http { url, oauth, .. } | McpTransport::Sse { url, oauth, .. } => {
+                    keke_mcp::ServerAuth::with_oauth(auth.clone(), &server.name, url, oauth.clone())
                         .is_ok_and(|credential| credential.has_credential())
                 }
                 McpTransport::Stdio { .. } => false,

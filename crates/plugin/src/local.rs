@@ -155,6 +155,7 @@ mod tests {
             McpTransport::Http {
                 url: "https://mcp.vercel.com".to_string(),
                 headers: Vec::new(),
+                oauth: None,
             }
             .into(),
         );

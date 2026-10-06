@@ -619,8 +619,7 @@ An MCP server behind OAuth answers with `401` and a `WWW-Authenticate` header
 naming where its metadata lives, and from there the spec is ordinary OAuth 2.1
 with three RFCs on top: protected-resource metadata (RFC 9728) names the
 authorization server, dynamic client registration (RFC 7591) obtains a
-`client_id` — these servers issue none in advance, so there is nothing for a
-person to configure — and resource indicators (RFC 8707) keep the token bound to
+`client_id` when no pre-registered client is configured, and resource indicators (RFC 8707) keep the token bound to
 the server it was minted for.
 
 Two rules shape it:
@@ -640,6 +639,38 @@ Two rules shape it:
   than it has providers, and a flat listing shared with provider logins does
   not scale to that. Filed under the server's name *and* a digest of its URL —
   two projects each with a `github` server must not share a token.
+
+ACP clients can supply a pre-registered OAuth client on each HTTP or SSE
+server through `_meta["keke.dev/oauth"]`. Both ACP versions preserve it on
+new, load, and resume requests. For example, a `mcpServers` entry is:
+
+```json
+{
+  "name": "github",
+  "type": "http",
+  "url": "https://api.githubcopilot.com/mcp/",
+  "headers": [],
+  "_meta": {
+    "keke.dev/oauth": {
+      "client_id": "your-registered-client-id",
+      "client_secret": "${GITHUB_MCP_CLIENT_SECRET}",
+      "redirect_uri": "http://127.0.0.1:8765/callback"
+    }
+  }
+}
+```
+
+`client_id` is required and nonempty; `client_secret` and `redirect_uri` are
+optional. A secret must be an environment reference (`${VAR}`). The callback
+must match the application's registration and be an HTTP loopback address with
+an explicit port. Without a callback, keke uses an ephemeral loopback port.
+Secret references are expanded at token-request time and never written to the
+public registration cache. The same `oauth` object is supported on remote
+`.mcp.json` entries. Explicit client configuration takes precedence over cached
+dynamic registration, while omitting it keeps the dynamic flow. Invalid OAuth
+metadata fails the session instead of silently switching authentication.
+This configures authentication; it does not automatically start a browser login.
+ACP clients that manage login themselves can continue supplying a bearer header.
 
 ### A server is a URL or a program
 

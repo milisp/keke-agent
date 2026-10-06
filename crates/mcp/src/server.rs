@@ -340,15 +340,17 @@ impl McpServer {
     /// This server's OAuth credential, when the host composed a place to keep
     /// one. A failure to build it is not a failure to connect: plenty of remote
     /// servers need no token at all, and one that does will say so with a 401.
-    fn credential(&self, url: &str) -> Option<Arc<crate::auth::ServerAuth>> {
-        let home = self.options.auth.clone()?;
-        match crate::auth::ServerAuth::new(home, &self.name, url) {
-            Ok(auth) => Some(Arc::new(auth)),
-            Err(reason) => {
-                tracing::warn!(server = %self.name, %reason, "no credential store for this server");
-                None
-            }
-        }
+    fn credential(
+        &self,
+        url: &str,
+        oauth: &Option<keke_plugin::McpOAuthConfig>,
+    ) -> Result<Option<Arc<crate::auth::ServerAuth>>, String> {
+        let Some(home) = self.options.auth.clone() else {
+            return Ok(None);
+        };
+        crate::auth::ServerAuth::with_oauth(home, &self.name, url, oauth.clone())
+            .map(|auth| Some(Arc::new(auth)))
+            .map_err(|reason| format!("invalid MCP authentication for `{}`: {reason}", self.name))
     }
 
     /// Open a connection, by whichever means this server is reached.
@@ -368,18 +370,26 @@ impl McpServer {
                     .map(|connection| Wire::Stdio(Arc::new(connection)))
                     .map_err(|error| context(error.to_string()))
             }
-            McpTransport::Http { url, headers } => HttpConnection::streamable(
+            McpTransport::Http {
+                url,
+                headers,
+                oauth,
+            } => HttpConnection::streamable(
                 url,
                 crate::http::expand(headers),
-                self.credential(url),
+                self.credential(url, oauth)?,
                 &self.name,
             )
             .map(|connection| Wire::Http(Arc::new(connection)))
             .map_err(context),
-            McpTransport::Sse { url, headers } => HttpConnection::sse(
+            McpTransport::Sse {
+                url,
+                headers,
+                oauth,
+            } => HttpConnection::sse(
                 url,
                 crate::http::expand(headers),
-                self.credential(url),
+                self.credential(url, oauth)?,
                 &self.name,
                 self.options.startup_timeout_millis,
             )

@@ -188,7 +188,7 @@ pub(super) fn agent(
                     let opened = factory
                         .open(
                             request.cwd.into_inner(),
-                            client_mcp_servers(request.mcp_servers),
+                            client_mcp_servers(request.mcp_servers)?,
                         )
                         .await
                         .map_err(agent_client_protocol::Error::into_internal_error)?;
@@ -258,7 +258,7 @@ pub(super) fn agent(
                         .resume(
                             request.session_id.to_string(),
                             request.cwd.into_inner(),
-                            client_mcp_servers(request.mcp_servers),
+                            client_mcp_servers(request.mcp_servers)?,
                         )
                         .await
                     {
@@ -738,11 +738,13 @@ fn acp_stop_reason(reason: &StopReason) -> AcpStopReason {
 /// A variant this build does not know (the enum is non-exhaustive, and v2
 /// reserves a catch-all for future transports) is skipped with a warning
 /// rather than failing the session.
-fn client_mcp_servers(servers: Vec<McpServer>) -> Vec<ClientMcpServer> {
+fn client_mcp_servers(
+    servers: Vec<McpServer>,
+) -> Result<Vec<ClientMcpServer>, agent_client_protocol::Error> {
     servers
         .into_iter()
         .filter_map(|server| match server {
-            McpServer::Stdio(server) => Some(ClientMcpServer {
+            McpServer::Stdio(server) => Some(Ok(ClientMcpServer {
                 name: server.name,
                 transport: ClientMcpTransport::Stdio {
                     command: server.command.into_inner(),
@@ -753,10 +755,14 @@ fn client_mcp_servers(servers: Vec<McpServer>) -> Vec<ClientMcpServer> {
                         .map(|var| (var.name, var.value))
                         .collect(),
                 },
-            }),
-            McpServer::Http(server) => Some(ClientMcpServer {
+            })),
+            McpServer::Http(server) => Some(Ok(ClientMcpServer {
                 name: server.name,
                 transport: ClientMcpTransport::Http {
+                    oauth: match crate::mcp::oauth_from_meta(server.meta) {
+                        Ok(oauth) => oauth,
+                        Err(error) => return Some(Err(error)),
+                    },
                     url: server.url,
                     headers: server
                         .headers
@@ -764,7 +770,7 @@ fn client_mcp_servers(servers: Vec<McpServer>) -> Vec<ClientMcpServer> {
                         .map(|header| (header.name, header.value))
                         .collect(),
                 },
-            }),
+            })),
             other => {
                 tracing::warn!(
                     ?other,
@@ -785,6 +791,54 @@ mod tests {
     use agent_client_protocol::schema::v2::SelectedPermissionOutcome;
 
     use super::*;
+
+    #[test]
+    fn http_oauth_metadata_reaches_the_session_factory() {
+        let meta = serde_json::json!({"keke.dev/oauth": {
+            "client_id": "registered-client",
+            "client_secret": "${MCP_CLIENT_SECRET}",
+            "redirect_uri": "http://127.0.0.1:8765/callback"
+        }})
+        .as_object()
+        .expect("object")
+        .clone();
+        let wire =
+            McpServer::Http(McpServerHttp::new("github", "https://example.test/mcp").meta(meta));
+        let servers = client_mcp_servers(vec![wire]).expect("valid OAuth metadata");
+        let ClientMcpTransport::Http { oauth, .. } = &servers[0].transport else {
+            panic!("transport preserved");
+        };
+        assert_eq!(
+            oauth.as_ref().expect("OAuth config").client_id,
+            "registered-client"
+        );
+        assert_eq!(
+            oauth
+                .as_ref()
+                .expect("OAuth config")
+                .client_secret
+                .as_deref(),
+            Some("${MCP_CLIENT_SECRET}")
+        );
+    }
+
+    #[test]
+    fn malformed_oauth_metadata_refuses_the_session() {
+        for value in [
+            serde_json::json!({"client_id": ""}),
+            serde_json::json!({"client_id": 42}),
+            serde_json::json!({"client_id": "x", "client_secert": "typo"}),
+        ] {
+            let meta = serde_json::json!({"keke.dev/oauth": value})
+                .as_object()
+                .expect("object")
+                .clone();
+            let wire = McpServer::Http(
+                McpServerHttp::new("github", "https://example.test/mcp").meta(meta),
+            );
+            assert!(client_mcp_servers(vec![wire]).is_err());
+        }
+    }
 
     #[test]
     fn only_text_reaches_the_model() {
@@ -913,7 +967,7 @@ mod tests {
                 .env(vec![EnvVariable::new("TOKEN", "abc")]),
         );
         assert_eq!(
-            client_mcp_servers(vec![wire]),
+            client_mcp_servers(vec![wire]).expect("valid servers"),
             vec![ClientMcpServer {
                 name: "fs".to_string(),
                 transport: ClientMcpTransport::Stdio {
@@ -932,10 +986,11 @@ mod tests {
                 .headers(vec![HttpHeader::new("Authorization", "Bearer x")]),
         );
         assert_eq!(
-            client_mcp_servers(vec![wire]),
+            client_mcp_servers(vec![wire]).expect("valid servers"),
             vec![ClientMcpServer {
                 name: "docs".to_string(),
                 transport: ClientMcpTransport::Http {
+                    oauth: None,
                     url: "https://example.test/mcp".to_string(),
                     headers: vec![("Authorization".to_string(), "Bearer x".to_string())],
                 },

@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// One MCP server a client sent with `session/new`, `session/load` or
 /// `session/resume`.
 ///
@@ -31,10 +33,59 @@ pub enum ClientMcpTransport {
     Http {
         url: String,
         headers: Vec<(String, String)>,
+        oauth: Option<ClientMcpOAuthConfig>,
     },
     /// A legacy HTTP+SSE endpoint. v1 only.
     Sse {
         url: String,
         headers: Vec<(String, String)>,
+        oauth: Option<ClientMcpOAuthConfig>,
     },
+}
+
+/// A client registered out of band with an MCP authorization server.
+///
+/// ACP clients send this in a remote server's `_meta["keke.dev/oauth"]`.
+/// Supplying it bypasses dynamic client registration. Secret values must use
+/// `${VAR}` references, resolved only when requesting tokens. A fixed callback
+/// must be a loopback HTTP URL keke can listen on.
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientMcpOAuthConfig {
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
+}
+
+impl std::fmt::Debug for ClientMcpOAuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientMcpOAuthConfig")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
+}
+
+pub(crate) fn oauth_from_meta(
+    meta: Option<serde_json::Map<String, serde_json::Value>>,
+) -> Result<Option<ClientMcpOAuthConfig>, agent_client_protocol::Error> {
+    meta.and_then(|mut meta| meta.remove("keke.dev/oauth"))
+        .map(|value| {
+            let config: ClientMcpOAuthConfig = serde_json::from_value(value).map_err(|error| {
+                agent_client_protocol::Error::invalid_params()
+                    .data(format!("invalid MCP keke.dev/oauth metadata: {error}"))
+            })?;
+            if config.client_id.trim().is_empty() {
+                return Err(agent_client_protocol::Error::invalid_params()
+                    .data("MCP OAuth client_id must not be empty"));
+            }
+            Ok(config)
+        })
+        .transpose()
 }

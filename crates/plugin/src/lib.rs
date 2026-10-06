@@ -40,6 +40,7 @@ mod trust;
 
 pub use contributions::HookEvent;
 pub use contributions::McpFile;
+pub use contributions::McpOAuthConfig;
 pub use contributions::McpServerEntry;
 pub use contributions::McpTransport;
 pub use contributions::ResolvedCommand;

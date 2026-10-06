@@ -5,8 +5,8 @@
 //! From there the MCP spec is ordinary OAuth 2.1 with three RFCs stacked on it:
 //! protected-resource metadata (RFC 9728) says which authorization server
 //! guards the resource, dynamic client registration (RFC 7591) obtains a
-//! `client_id` — these servers hand out none in advance, so there is nothing to
-//! configure — and resource indicators (RFC 8707) keep the issued token bound
+//! `client_id` when no pre-registered client is configured, and resource
+//! indicators (RFC 8707) keep the issued token bound
 //! to the server it was minted for.
 //!
 //! Two rules shape what is here:
@@ -87,6 +87,7 @@ impl AuthHome {
 #[derive(Debug)]
 pub struct ServerAuth {
     home: AuthHome,
+    oauth: Option<keke_plugin::McpOAuthConfig>,
     /// The server as configured, which is both what is authenticated against
     /// and the key everything is filed under.
     url: String,
@@ -104,8 +105,44 @@ impl ServerAuth {
     /// Nothing is read here: a server nobody has signed in to must cost no file
     /// access, because most sessions have no remote server at all.
     pub fn new(home: AuthHome, name: &str, url: &str) -> Result<Self, AuthError> {
+        Self::with_oauth(home, name, url, None)
+    }
+
+    /// Prepare authentication with an optional pre-registered OAuth client.
+    pub fn with_oauth(
+        home: AuthHome,
+        name: &str,
+        url: &str,
+        oauth: Option<keke_plugin::McpOAuthConfig>,
+    ) -> Result<Self, AuthError> {
+        if let Some(config) = &oauth {
+            if config.client_id.trim().is_empty() {
+                return Err(AuthError::Other("OAuth client_id must not be empty".into()));
+            }
+            if let Some(secret) = &config.client_secret {
+                let variable = secret
+                    .strip_prefix("${")
+                    .and_then(|value| value.strip_suffix('}'));
+                if variable.is_none_or(|value| {
+                    value.is_empty()
+                        || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                }) {
+                    return Err(AuthError::Other(
+                        "OAuth client_secret must be a ${VAR} environment reference".into(),
+                    ));
+                }
+            }
+            if let Some(uri) = &config.redirect_uri {
+                validate_redirect(uri)?;
+            }
+        }
+        let identity = oauth.as_ref().map_or_else(
+            || url.to_string(),
+            |config| format!("{url}\0{}", config.client_id),
+        );
         Ok(Self {
-            vendor: Vendor::new(vendor_slug(name, url))
+            oauth,
+            vendor: Vendor::new(vendor_slug(name, &identity))
                 .map_err(|err| AuthError::Other(err.to_string()))?,
             home,
             url: url.to_string(),
@@ -154,6 +191,13 @@ impl ServerAuth {
         }
         let refresh_token = tokens.refresh_token.clone()?;
         let client = self.registration().ok().flatten()?;
+        if self
+            .oauth
+            .as_ref()
+            .is_some_and(|config| config.client_id != client.client_id)
+        {
+            return None;
+        }
 
         let issued = self
             .token_request(
@@ -203,10 +247,23 @@ impl ServerAuth {
             })?;
         let metadata = self.server_metadata(&issuer).await?;
 
-        let loopback = Loopback::bind(0, CALLBACK_PATH)
+        let configured_redirect = self
+            .oauth
+            .as_ref()
+            .and_then(|config| config.redirect_uri.as_deref());
+        let (port, path) = match configured_redirect {
+            Some(uri) => {
+                let parsed = validate_redirect(uri)?;
+                (parsed.port().unwrap_or(80), parsed.path().to_string())
+            }
+            None => (0, CALLBACK_PATH.to_string()),
+        };
+        let loopback = Loopback::bind(port, path)
             .await
             .map_err(|err| AuthError::Other(format!("no loopback port available: {err}")))?;
-        let redirect_uri = loopback.redirect_uri()?;
+        let redirect_uri = configured_redirect
+            .map(str::to_string)
+            .unwrap_or(loopback.redirect_uri()?);
 
         let client_id = self.client_id(&metadata, &redirect_uri).await?;
         let resource = protected
@@ -316,7 +373,14 @@ impl ServerAuth {
 
     /// The registration for this server, if one was made.
     fn registration(&self) -> Result<Option<Registration>, AuthError> {
-        Ok(self.registrations()?.remove(&self.url))
+        Ok(self.registrations()?.remove(&self.registration_key()))
+    }
+
+    fn registration_key(&self) -> String {
+        self.oauth.as_ref().map_or_else(
+            || self.url.clone(),
+            |config| format!("{}\0{}", self.url, config.client_id),
+        )
     }
 
     fn registrations(&self) -> Result<BTreeMap<String, Registration>, AuthError> {
@@ -337,7 +401,7 @@ impl ServerAuth {
 
     fn remember(&self, registration: &Registration) -> Result<(), AuthError> {
         let mut all = self.registrations()?;
-        all.insert(self.url.clone(), registration.clone());
+        all.insert(self.registration_key(), registration.clone());
         let text =
             serde_json::to_string_pretty(&all).map_err(|err| AuthError::Other(err.to_string()))?;
         std::fs::write(&self.home.clients, text + "\n").map_err(|err| {
@@ -445,6 +509,9 @@ impl ServerAuth {
         metadata: &ServerMetadata,
         redirect_uri: &str,
     ) -> Result<String, AuthError> {
+        if let Some(config) = &self.oauth {
+            return Ok(config.client_id.clone());
+        }
         // A registration is tied to its redirect URI, and the port changes per
         // login, so a stored one is reused only if this issuer accepts a
         // loopback URI it did not see — which is what `redirect_uris` below
@@ -505,10 +572,25 @@ impl ServerAuth {
         endpoint: &str,
         form: &[(&str, &str)],
     ) -> Result<AuthTokens, AuthError> {
+        let secret = self
+            .oauth
+            .as_ref()
+            .and_then(|config| config.client_secret.as_ref())
+            .map(|value| crate::server::expand_vars(value));
+        if secret.as_ref().is_some_and(|value| value.is_empty()) {
+            return Err(AuthError::Other(
+                "OAuth client_secret resolved to an empty value".into(),
+            ));
+        }
+        let mut form = form.to_vec();
+        if let Some(secret) = &secret {
+            form.push(("client_secret", secret));
+        }
         let response = self
             .http
             .post(endpoint)
-            .form(form)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .form(&form)
             .send()
             .await
             .map_err(|err| AuthError::Other(format!("the token endpoint is unreachable: {err}")))?;
@@ -542,6 +624,22 @@ impl ServerAuth {
             ..AuthTokens::default()
         })
     }
+}
+
+fn validate_redirect(uri: &str) -> Result<url::Url, AuthError> {
+    let parsed = url::Url::parse(uri)
+        .map_err(|err| AuthError::Other(format!("invalid OAuth redirect_uri: {err}")))?;
+    if parsed.scheme() != "http"
+        || !matches!(parsed.host_str(), Some("127.0.0.1" | "localhost"))
+        || parsed.port().is_none_or(|port| port == 0)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(AuthError::Other("OAuth redirect_uri must be an HTTP loopback URL with an explicit nonzero port and no credentials, query, or fragment".into()));
+    }
+    Ok(parsed)
 }
 
 /// A dynamic client registration, and where it is good for.

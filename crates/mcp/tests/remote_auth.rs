@@ -143,6 +143,10 @@ async fn mount(server: &MockServer) {
 
 /// Follow the authorize URL the way a browser would, then hit the loopback.
 async fn follow_the_redirect(browser: &FakeBrowser) {
+    follow_client_redirect(browser, "client-1").await;
+}
+
+async fn follow_client_redirect(browser: &FakeBrowser, client_id: &str) {
     let authorize = loop {
         if let Some(url) = browser.urls.lock().unwrap().first() {
             break url::Url::parse(url).expect("an authorize URL");
@@ -154,7 +158,7 @@ async fn follow_the_redirect(browser: &FakeBrowser) {
     // The parameters that make this flow safe are asserted here rather than in
     // a separate test, because this is the only place they are observable.
     assert_eq!(params["code_challenge_method"], "S256");
-    assert_eq!(params["client_id"], "client-1");
+    assert_eq!(params["client_id"], client_id);
     assert!(
         !params.contains_key("code_verifier"),
         "the verifier stays here"
@@ -262,6 +266,7 @@ fn installed_tools(url: &str, auth: AuthHome, client_only: bool) -> Vec<String> 
             transport: McpTransport::Http {
                 url: url.to_string(),
                 headers: Vec::new(),
+                oauth: None,
             },
             plugin_root: root,
             disabled: false,
@@ -302,4 +307,153 @@ fn installed_tools(url: &str, auth: AuthHome, client_only: bool) -> Vec<String> 
         .flat_map(|contributor| contributor.tools(&ctx))
         .map(|tool| tool.id().to_string())
         .collect()
+}
+
+#[tokio::test]
+async fn a_pre_registered_client_skips_registration_and_refreshes_with_its_identity() {
+    const SECRET_ENV: &str = "KEKE_TEST_MCP_CLIENT_SECRET";
+    if std::env::var(SECRET_ENV).as_deref() != Ok("fixture-secret") {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "a_pre_registered_client_skips_registration_and_refreshes_with_its_identity",
+                "--nocapture",
+            ])
+            .env(SECRET_ENV, "fixture-secret")
+            .status()
+            .expect("isolated test process");
+        assert!(status.success(), "isolated OAuth test failed");
+        return;
+    }
+    let server = MockServer::start().await;
+    mount(&server).await;
+    // A pre-registered issuer need not implement dynamic registration.
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "authorization_endpoint": format!("{}/authorize", server.uri()),
+            "token_endpoint": format!("{}/token", server.uri()),
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "access-1", "refresh_token": "refresh-1", "expires_in": 0,
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("free callback port");
+    let redirect_uri = format!(
+        "http://127.0.0.1:{}/registered-callback",
+        listener.local_addr().expect("address").port()
+    );
+    drop(listener);
+    let config = keke_plugin::McpOAuthConfig {
+        client_id: "pre-registered".into(),
+        client_secret: Some("${KEKE_TEST_MCP_CLIENT_SECRET}".into()),
+        redirect_uri: Some(redirect_uri.clone()),
+    };
+    let auth = Arc::new(
+        ServerAuth::with_oauth(home(&dir), "github", &server.uri(), Some(config.clone()))
+            .expect("prepared"),
+    );
+    let browser = FakeBrowser::default();
+    let login = tokio::spawn({
+        let auth = Arc::clone(&auth);
+        let browser = browser.clone();
+        async move { auth.login(&browser).await }
+    });
+    follow_client_redirect(&browser, "pre-registered").await;
+    login.await.expect("task").expect("login");
+    assert_eq!(auth.refresh().await.as_deref(), Some("access-1"));
+    let requests = server.received_requests().await.expect("requests");
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.url.path() == "/register")
+    );
+    let token_requests: Vec<_> = requests
+        .iter()
+        .filter(|request| request.url.path() == "/token")
+        .collect();
+    assert_eq!(token_requests.len(), 2);
+    for request in token_requests {
+        let form: std::collections::BTreeMap<_, _> =
+            url::form_urlencoded::parse(&request.body).collect();
+        assert_eq!(form["client_id"], "pre-registered");
+        assert_eq!(form["client_secret"], "fixture-secret");
+        assert_eq!(request.headers["accept"], "application/json");
+        if form["grant_type"] == "authorization_code" {
+            assert_eq!(form["redirect_uri"], redirect_uri);
+        }
+    }
+    let stored = std::fs::read_to_string(dir.path().join("mcp/clients.json")).expect("clients");
+    assert!(!stored.contains("client_secret"));
+    let other = ServerAuth::with_oauth(
+        home(&dir),
+        "github",
+        &server.uri(),
+        Some(keke_plugin::McpOAuthConfig {
+            client_id: "other-client".into(),
+            ..config
+        }),
+    )
+    .expect("prepared");
+    assert!(!other.has_credential(), "client credentials are isolated");
+    let other = Arc::new(other);
+    let browser = FakeBrowser::default();
+    let login = tokio::spawn({
+        let auth = Arc::clone(&other);
+        let browser = browser.clone();
+        async move { auth.login(&browser).await }
+    });
+    follow_client_redirect(&browser, "other-client").await;
+    login.await.expect("task").expect("second client login");
+    assert_eq!(other.refresh().await.as_deref(), Some("access-1"));
+    assert_eq!(
+        auth.refresh().await.as_deref(),
+        Some("access-1"),
+        "the other client must not overwrite this registration"
+    );
+}
+
+#[test]
+fn pre_registered_clients_reject_unusable_callbacks_and_literal_secrets() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for uri in [
+        "https://example.com/callback",
+        "http://127.0.0.1:0/callback",
+        "http://127.0.0.1:4567/callback?extra=1",
+    ] {
+        assert!(
+            ServerAuth::with_oauth(
+                home(&dir),
+                "github",
+                "https://mcp.test",
+                Some(keke_plugin::McpOAuthConfig {
+                    client_id: "client".into(),
+                    client_secret: None,
+                    redirect_uri: Some(uri.into()),
+                })
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        ServerAuth::with_oauth(
+            home(&dir),
+            "github",
+            "https://mcp.test",
+            Some(keke_plugin::McpOAuthConfig {
+                client_id: "client".into(),
+                client_secret: Some("literal-secret".into()),
+                redirect_uri: None,
+            })
+        )
+        .is_err()
+    );
 }
