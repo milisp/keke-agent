@@ -362,6 +362,8 @@ pub fn delete_session(home: &AbsPath, id: SessionId) -> Result<(), RolloutError>
 ///
 /// A cached baseline can skip events superseded by a legacy snapshot or a
 /// conversation rewind. Otherwise replay reads the complete incremental log.
+/// The metadata cache does not cache conversation history; full replay is the
+/// deliberate cost of avoiding repeated history writes during normal turns.
 pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, RolloutError> {
     let path = session_path(home, id)?;
     let meta = crate::meta::SessionMeta::refreshed(&path)?;

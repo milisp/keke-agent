@@ -520,6 +520,16 @@ replays these events, using a legacy full-history request snapshot or a rewind
 as a baseline when available. Old snapshot logs remain readable. New logs grow
 with the conversation content rather than repeating it at every turn.
 
+Without a baseline, resume reads and replays the complete incremental log.
+`meta.json` caches listing metadata and offsets, not conversation history, so
+its presence does not avoid that replay. This trades more work at resume for
+linear log growth during normal turns. No periodic history checkpoint is
+written; add a derived resume cache only if measured long-session restore
+latency warrants it. Any future in-memory history change must have a replayable
+event before it can affect a model request. Integration tests compare live
+history with both event replay and disk-based resume across tool batches,
+compaction, rewind, and cancellation.
+
 A subagent's log is one of these too, and `SessionStart` names its parent. A
 child's log otherwise looks exactly like a person's, and a listing that could
 not tell them apart would offer to continue a conversation nobody had. Its
