@@ -5,11 +5,10 @@
 //! session starts from is rebuilt from the log rather than from any side file,
 //! so a session keke can replay is a session keke can continue.
 //!
-//! The rebuild leans on [`SessionEvent::ModelRequest`], which carries the whole
-//! model-visible history for one step. Taking the last one and replaying only
-//! the tail after it means a compaction, a system change, or a variant this
-//! build does not know still lands correctly — whatever the model last saw is
-//! what the resumed session sees.
+//! New logs record inputs, responses, tool results, and context changes once.
+//! Replay applies those events in order, including explicit compaction edits.
+//! Older logs can carry full histories in [`SessionEvent::ModelRequest`]; the
+//! last such snapshot remains a baseline for replaying their later events.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -142,7 +141,7 @@ pub fn abbreviation(ids: impl IntoIterator<Item = SessionId>) -> usize {
 pub struct ResumedSession {
     pub id: SessionId,
     pub path: PathBuf,
-    /// The model-visible history, as of the last logged model request.
+    /// The model-visible history rebuilt from the logged conversation events.
     pub history: Vec<Message>,
     /// What the session has spent so far, summed over its turns.
     pub usage: Usage,
@@ -361,10 +360,8 @@ pub fn delete_session(home: &AbsPath, id: SessionId) -> Result<(), RolloutError>
 
 /// Read one session's log and rebuild what a session needs to continue it.
 ///
-/// The history a resume starts from is the last `ModelRequest` plus everything
-/// after it, so a log whose cache says where that line begins is read from
-/// there. On a long session that is the difference between reading the last
-/// turn and reading every turn twice over.
+/// A cached baseline can skip events superseded by a legacy snapshot or a
+/// conversation rewind. Otherwise replay reads the complete incremental log.
 pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, RolloutError> {
     let path = session_path(home, id)?;
     let meta = crate::meta::SessionMeta::refreshed(&path)?;
@@ -372,8 +369,7 @@ pub fn load_session(home: &AbsPath, id: SessionId) -> Result<ResumedSession, Rol
 
     let events: Vec<SessionEvent> = match meta.baseline {
         Some(from) => read_log_from(&path, from)?,
-        // No step was ever logged, so the whole log is the tail: what a person
-        // said before the first request still has to reach the resumed session.
+        // Incremental logs need every event unless a rewind replaces history.
         None => read_log(&path)?,
     }
     .into_iter()
@@ -436,10 +432,10 @@ fn summarize(log: &LogPath) -> Result<SessionSummary, RolloutError> {
 ///
 /// The last `ModelRequest` that carries a snapshot is the baseline — it is
 /// the history the model actually saw as of that step — and everything
-/// logged after it is replayed onto it in order. Only a turn's first step
-/// logs a snapshot; later steps in the same turn log an empty `messages` and
-/// are skipped here, since their contribution (a `ModelResponse` and any
-/// `ToolCallEnd`s) is already replayed from the tail. A turn that was logged
+/// logged after it is replayed onto it in order. New requests log empty
+/// `messages`: their inputs and results are reconstructed from conversation
+/// events instead. Compaction explicitly replaces a prefix with its summary.
+/// A turn that was logged
 /// but never reached the model (an error, a cancel before the first request)
 /// contributes its input, so the person's words are never lost.
 ///
@@ -481,6 +477,16 @@ pub fn history_from_log(events: &[SessionEvent]) -> Vec<Message> {
             }
             SessionEvent::ToolCallEnd { result, .. } => {
                 results.push(ContentBlock::ToolResult(result.clone()));
+            }
+            SessionEvent::Compacted {
+                summary,
+                retained_messages: Some(retained),
+                ..
+            } => {
+                flush(&mut history, &mut results);
+                let removed = history.len().saturating_sub(*retained);
+                history.drain(..removed);
+                history.insert(0, summary.clone());
             }
             _ => {}
         }
@@ -536,6 +542,234 @@ mod tests {
 
     fn result(id: &str) -> ToolResult {
         ToolResult::ok(ToolCallId::new(id), "done")
+    }
+
+    fn input(turn: TurnId, text: &str) -> SessionEvent {
+        SessionEvent::TurnStart {
+            turn,
+            input: Message::user(text),
+            approval_policy: None,
+        }
+    }
+
+    fn request(turn: TurnId) -> SessionEvent {
+        SessionEvent::ModelRequest {
+            turn,
+            messages: Vec::new(),
+            tools: Vec::new(),
+            reasoning_effort: None,
+            model: None,
+        }
+    }
+
+    fn response(turn: TurnId, text: &str) -> SessionEvent {
+        SessionEvent::ModelResponse {
+            turn,
+            message: Message::assistant(text),
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+        }
+    }
+
+    #[test]
+    fn incremental_turns_replay_tool_batches_and_context_without_snapshots() {
+        let first = TurnId::new();
+        let second = TurnId::new();
+        let calls = Message {
+            role: Role::Assistant,
+            content: ["c1", "c2"]
+                .into_iter()
+                .map(|id| {
+                    ContentBlock::ToolCall(ToolCall {
+                        id: ToolCallId::new(id),
+                        name: "read_file".into(),
+                        arguments: serde_json::Value::Null,
+                    })
+                })
+                .collect(),
+        };
+        let events = vec![
+            input(first, "read them"),
+            request(first),
+            SessionEvent::ModelResponse {
+                turn: first,
+                message: calls.clone(),
+                stop_reason: StopReason::ToolUse,
+                usage: Usage::default(),
+            },
+            SessionEvent::ToolCallEnd {
+                turn: first,
+                result: result("c1"),
+            },
+            SessionEvent::ToolCallEnd {
+                turn: first,
+                result: result("c2"),
+            },
+            SessionEvent::ContextMessage {
+                turn: first,
+                name: "subagent-result/agent_1".into(),
+                message: Message::user("extra context"),
+            },
+            request(first),
+            response(first, "read both"),
+            input(second, "continue"),
+            request(second),
+            response(second, "continued"),
+        ];
+        let expected = vec![
+            Message::user("read them"),
+            calls,
+            Message {
+                role: Role::Tool,
+                content: vec![
+                    ContentBlock::ToolResult(result("c1")),
+                    ContentBlock::ToolResult(result("c2")),
+                ],
+            },
+            Message::user("extra context"),
+            Message::assistant("read both"),
+            Message::user("continue"),
+            Message::assistant("continued"),
+        ];
+        assert_eq!(history_from_log(&events), expected);
+        let (_dir, home) = empty_home();
+        let id = SessionId::new();
+        write_session(&home, id, &events);
+        assert_eq!(
+            load_session(&home, id)
+                .expect("loads incremental log")
+                .history,
+            expected
+        );
+        assert_eq!(
+            load_session(&home, id).expect("loads cached log").history,
+            expected
+        );
+    }
+
+    #[test]
+    fn incremental_compaction_keeps_recent_results_and_later_turns() {
+        let first = TurnId::new();
+        let second = TurnId::new();
+        let events = vec![
+            input(first, "old input"),
+            response(first, "old response"),
+            SessionEvent::ToolCallEnd {
+                turn: first,
+                result: result("c1"),
+            },
+            SessionEvent::Compacted {
+                turn: first,
+                summary: Message::user("summary"),
+                removed_messages: 2,
+                retained_messages: Some(1),
+            },
+            request(first),
+            response(first, "after compaction"),
+            input(second, "next input"),
+            request(second),
+            response(second, "next response"),
+        ];
+        assert_eq!(
+            history_from_log(&events),
+            vec![
+                Message::user("summary"),
+                Message {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult(result("c1"))]
+                },
+                Message::assistant("after compaction"),
+                Message::user("next input"),
+                Message::assistant("next response"),
+            ]
+        );
+    }
+
+    #[test]
+    fn compaction_with_no_retained_messages_replaces_the_entire_history() {
+        let turn = TurnId::new();
+        let events = vec![
+            input(turn, "old input"),
+            response(turn, "old answer"),
+            SessionEvent::Compacted {
+                turn,
+                summary: Message::user("first summary"),
+                removed_messages: 2,
+                retained_messages: Some(0),
+            },
+            response(turn, "another answer"),
+            SessionEvent::Compacted {
+                turn,
+                summary: Message::user("final summary"),
+                removed_messages: 2,
+                retained_messages: Some(0),
+            },
+            request(turn),
+        ];
+        assert_eq!(
+            history_from_log(&events),
+            vec![Message::user("final summary")]
+        );
+    }
+
+    #[test]
+    fn rewind_baseline_replays_incremental_turns_without_restoring_discarded_messages() {
+        let turn = TurnId::new();
+        let events = vec![
+            input(turn, "discarded"),
+            response(turn, "discarded answer"),
+            SessionEvent::Rewound {
+                scope: keke_protocol::RewindScope::Conversation,
+                history: Some(vec![Message::user("retained")]),
+                prompt: "discarded".into(),
+                removed_messages: 2,
+                restored_files: Vec::new(),
+                undo: None,
+            },
+            input(turn, "replacement"),
+            request(turn),
+            response(turn, "replacement answer"),
+        ];
+        assert_eq!(
+            history_from_log(&events),
+            vec![
+                Message::user("retained"),
+                Message::user("replacement"),
+                Message::assistant("replacement answer")
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_snapshot_and_compaction_can_be_followed_by_incremental_requests() {
+        let turn = TurnId::new();
+        let mut legacy_request = request(turn);
+        if let SessionEvent::ModelRequest { messages, .. } = &mut legacy_request {
+            *messages = vec![Message::user("legacy summary")];
+        }
+        let events = vec![
+            input(turn, "superseded"),
+            SessionEvent::Compacted {
+                turn,
+                summary: Message::user("legacy summary"),
+                removed_messages: 1,
+                retained_messages: None,
+            },
+            legacy_request,
+            response(turn, "legacy answer"),
+            input(turn, "new input"),
+            request(turn),
+            response(turn, "new answer"),
+        ];
+        assert_eq!(
+            history_from_log(&events),
+            vec![
+                Message::user("legacy summary"),
+                Message::assistant("legacy answer"),
+                Message::user("new input"),
+                Message::assistant("new answer")
+            ]
+        );
     }
 
     /// The baseline is what the model last saw, so anything a compaction

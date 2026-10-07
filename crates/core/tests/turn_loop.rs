@@ -763,18 +763,29 @@ async fn the_request_that_is_logged_is_the_request_that_is_sent() {
         .expect("completes");
 
     let log = read_log(session.log_path()).expect("reads");
-    let logged = log
+    let (request_index, logged) = log
         .iter()
-        .find_map(|entry| match &entry.event {
+        .enumerate()
+        .find_map(|(index, entry)| match &entry.event {
             SessionEvent::ModelRequest {
                 messages, tools, ..
-            } => Some((messages, tools)),
+            } => Some((index, (messages, tools))),
             _ => None,
         })
         .expect("a logged request");
     let sent = &seen.lock().expect("lock")[0];
 
-    assert_eq!(logged.0, &sent.messages);
+    assert!(logged.0.is_empty(), "requests must not duplicate history");
+    assert_eq!(
+        keke_core::history_from_log(
+            &log[..request_index]
+                .iter()
+                .map(|entry| entry.event.clone())
+                .collect::<Vec<_>>()
+        ),
+        sent.messages,
+        "preceding events reconstruct exactly what the model received"
+    );
     assert_eq!(
         logged.1,
         &sent
@@ -783,6 +794,41 @@ async fn the_request_that_is_logged_is_the_request_that_is_sent() {
             .map(|spec| spec.name.clone())
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn later_turns_do_not_duplicate_earlier_input_in_the_rollout() {
+    let harness = harness();
+    let (provider, _) = ScriptedProvider::new(vec![
+        text_reply("first answer"),
+        text_reply("second answer"),
+        text_reply("third answer"),
+    ]);
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    let payload = format!("unique original payload {}", "abcdefgh".repeat(256));
+    for prompt in [payload.as_str(), "follow up", "another follow up"] {
+        session
+            .run_turn(Message::user(prompt))
+            .await
+            .expect("turn completes");
+    }
+
+    let serialized = std::fs::read_to_string(session.log_path()).expect("reads rollout");
+    assert_eq!(serialized.matches(&payload).count(), 1);
+    let log = read_log(session.log_path()).expect("reads events");
+    assert!(log.iter().all(|entry| match &entry.event {
+        SessionEvent::ModelRequest { messages, .. } => messages.is_empty(),
+        _ => true,
+    }));
+    let events = log.into_iter().map(|entry| entry.event).collect::<Vec<_>>();
+    assert_eq!(keke_core::history_from_log(&events), session.history());
+    let resumed = keke_core::load_session(&harness.home.home, session.id()).expect("loads session");
+    assert_eq!(resumed.history, session.history());
 }
 
 #[tokio::test]
@@ -1004,6 +1050,10 @@ async fn a_history_past_its_budget_is_summarized_before_the_next_turn() {
         })
         .expect("a compaction event");
     assert!(compacted > 0);
+    let events = log.into_iter().map(|entry| entry.event).collect::<Vec<_>>();
+    assert_eq!(keke_core::history_from_log(&events), session.history());
+    let resumed = keke_core::load_session(&harness.home.home, session.id()).expect("loads session");
+    assert_eq!(resumed.history, session.history());
 }
 
 // ------------------------------------------------------------------- approval

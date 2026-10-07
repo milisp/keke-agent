@@ -1117,6 +1117,7 @@ mod recorded_replay_tests {
                 turn,
                 summary: Message::user("Summary"),
                 removed_messages: 3,
+                retained_messages: None,
             },
         ];
         let mut transcript = Transcript::default();
