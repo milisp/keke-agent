@@ -67,10 +67,13 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         approval_policy: Option<String>,
     },
-    /// Context assembled and handed to the model for one step. Logged in full
-    /// because it is the model-visible input.
+    /// Settings of a model request. Conversation content is recorded by
+    /// message events rather than repeated here.
     ModelRequest {
         turn: TurnId,
+        /// Legacy full-history snapshot. New requests leave this empty and
+        /// replay their input from conversation and compaction events.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         messages: Vec<Message>,
         /// Tool names advertised for this step, in the order presented.
         tools: Vec<String>,
@@ -153,8 +156,8 @@ pub enum SessionEvent {
     /// Model-visible text an extension put in front of the model.
     ///
     /// A turn context fragment reaches the request inside the *system*
-    /// prompt, which `ModelRequest` does not carry — it records `messages` and
-    /// `tools`. Without a line of its own, a fragment that changed how the model
+    /// prompt, which `ModelRequest` does not carry — it records request
+    /// settings. Without a line of its own, a fragment that changed how the model
     /// behaved would be nowhere in the log, and *model-visible implies logged*
     /// would hold only for the parts of the request that happen to be messages.
     ContextFragment {
@@ -176,6 +179,11 @@ pub enum SessionEvent {
         turn: TurnId,
         summary: Message,
         removed_messages: usize,
+        /// Number of recent messages kept after replacing the older prefix
+        /// with `summary`. Absent in legacy logs, where a request snapshot
+        /// recorded the resulting history instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retained_messages: Option<usize>,
     },
     TurnEnd {
         turn: TurnId,

@@ -511,12 +511,24 @@ disagree about.
 A session owns a directory — `sessions/<project>/<session-id>/` — holding
 `rollout.jsonl` and a `meta.json` beside it. The log is the record; `meta.json`
 is a fold of it, and deleting one costs a rescan and changes no answer. It
-exists because a log carries the whole model-visible history on every step and
-therefore grows with the square of the turns: listing sessions by parsing them
-meant reading every byte of every conversation to print four columns. The fold
-is incremental — it records how far it has read — and it notes the offset of the
-last `ModelRequest`, which is where the history a resume rebuilds begins, so
-continuing a long session reads its last turn rather than all of them.
+keeps session listings cheap by recording how far its incremental fold has
+read. Normal turns append each input, response, tool result, and contributed
+context message once. `ModelRequest` records request settings without repeating
+conversation history. Compaction records the summary and the number of recent
+messages retained; conversation rewinds record the surviving history. Resume
+replays these events, using a legacy full-history request snapshot or a rewind
+as a baseline when available. Old snapshot logs remain readable. New logs grow
+with the conversation content rather than repeating it at every turn.
+
+Without a baseline, resume reads and replays the complete incremental log.
+`meta.json` caches listing metadata and offsets, not conversation history, so
+its presence does not avoid that replay. This trades more work at resume for
+linear log growth during normal turns. No periodic history checkpoint is
+written; add a derived resume cache only if measured long-session restore
+latency warrants it. Any future in-memory history change must have a replayable
+event before it can affect a model request. Integration tests compare live
+history with both event replay and disk-based resume across tool batches,
+compaction, rewind, and cancellation.
 
 A subagent's log is one of these too, and `SessionStart` names its parent. A
 child's log otherwise looks exactly like a person's, and a listing that could

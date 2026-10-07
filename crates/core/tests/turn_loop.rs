@@ -408,6 +408,241 @@ fn text_reply(text: &str) -> Vec<StreamChunk> {
     ]
 }
 
+fn assert_history_replays(session: &keke_core::Session, home: &HomeLayout) {
+    let events = read_log(session.log_path())
+        .expect("reads log")
+        .into_iter()
+        .map(|entry| entry.event)
+        .collect::<Vec<_>>();
+    assert_eq!(keke_core::history_from_log(&events), session.history());
+    let resumed = keke_core::load_session(&home.home, session.id()).expect("loads session");
+    assert_eq!(resumed.history, session.history());
+}
+
+fn tool_batch(calls: &[(&str, &str, &str)]) -> Vec<StreamChunk> {
+    let mut chunks = Vec::new();
+    for (id, name, text) in calls {
+        let id = ToolCallId::new(*id);
+        chunks.extend([
+            StreamChunk::ToolCallStart {
+                id: id.clone(),
+                name: (*name).to_string(),
+            },
+            StreamChunk::ToolCallArgsDelta {
+                id: id.clone(),
+                delta: serde_json::json!({ "text": text }).to_string(),
+            },
+            StreamChunk::ToolCallEnd { id },
+        ]);
+    }
+    chunks.push(StreamChunk::Done(StopReason::ToolUse));
+    chunks
+}
+
+/// Waits for the test to cancel after dispatch has actually entered the tool.
+struct PausedTool {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl Tool for PausedTool {
+    type Args = EchoArgs;
+    type Output = EchoOut;
+
+    fn id(&self) -> ToolId {
+        ToolId::new("paused")
+    }
+
+    fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
+        ToolDescription::new("Wait until released by the test.")
+    }
+
+    fn capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::of_kind(ToolKind::Meta)
+    }
+
+    async fn run(
+        &self,
+        ctx: ToolCallContext,
+        _args: Self::Args,
+    ) -> Result<Self::Output, ToolError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        assert!(ctx.is_cancelled(), "cancellation reaches the running tool");
+        Err(ToolError::Cancelled)
+    }
+}
+
+impl ToolContributor for PausedTool {
+    fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
+        vec![Arc::new(Self {
+            started: Arc::clone(&self.started),
+            release: Arc::clone(&self.release),
+        })]
+    }
+}
+
+#[tokio::test]
+async fn a_tool_batch_replays_before_and_after_rewind_and_continuation() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        text_reply("kept answer"),
+        tool_batch(&[
+            ("one", "echo", "first result"),
+            ("two", "echo", "second result"),
+        ]),
+        text_reply("withdrawn answer"),
+        text_reply("replacement answer"),
+    ]);
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+    session
+        .run_turn(Message::user("kept prompt"))
+        .await
+        .expect("turn");
+    session
+        .run_turn(Message::user("withdrawn prompt"))
+        .await
+        .expect("tool turn");
+    assert_history_replays(&session, &harness.home);
+    let tool_results = session
+        .history()
+        .iter()
+        .find(|message| message.role == keke_protocol::Role::Tool)
+        .expect("batch results");
+    assert_eq!(tool_results.content.len(), 2);
+    let rewound = session
+        .rewind_to_user_turn(1, RewindScope::Conversation)
+        .await
+        .expect("rewinds")
+        .expect("second turn");
+    assert_eq!(rewound.removed_messages, 4);
+    assert_history_replays(&session, &harness.home);
+    let mut expected_request = session.history().to_vec();
+    expected_request.push(Message::user("replacement prompt"));
+    session
+        .run_turn(Message::user("replacement prompt"))
+        .await
+        .expect("continues");
+    assert_eq!(
+        seen.lock().expect("lock").last().expect("request").messages,
+        expected_request
+    );
+    assert_history_replays(&session, &harness.home);
+}
+
+#[tokio::test]
+async fn cancelling_a_running_tool_keeps_live_and_replayed_history_equal() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        tool_batch(&[("paused-call", "paused", "completed after cancellation")]),
+        text_reply("continued"),
+    ]);
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(PausedTool {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+    let cancel = session.canceller();
+    let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(session.run_turn(Message::user("start tool")), async {
+            started.notified().await;
+            cancel();
+            release.notify_one();
+        })
+    })
+    .await
+    .expect("tool starts and cancellation completes");
+    assert_eq!(
+        outcome.expect("cancelled turn").stop_reason,
+        StopReason::Cancelled
+    );
+    assert_eq!(
+        seen.lock().expect("lock").len(),
+        1,
+        "cancellation prevents model followup"
+    );
+    let results = session.history().last().expect("tool results");
+    assert!(
+        matches!(&results.content[0], ContentBlock::ToolResult(result) if result.status == ToolStatus::Cancelled)
+    );
+    assert_history_replays(&session, &harness.home);
+    let mut expected_request = session.history().to_vec();
+    expected_request.push(Message::user("continue"));
+    session
+        .run_turn(Message::user("continue"))
+        .await
+        .expect("continues");
+    assert_eq!(seen.lock().expect("lock")[1].messages, expected_request);
+    assert_history_replays(&session, &harness.home);
+}
+
+#[tokio::test]
+async fn approval_abort_keeps_live_and_replayed_history_equal() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        tool_batch(&[
+            ("abort-call", "dangerous", "command"),
+            ("second-abort-call", "dangerous", "another command"),
+        ]),
+        text_reply("continued"),
+    ]);
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.tool_contributor(Arc::new(EchoPack));
+    let (reviewer, _) = Reviewer::new(ApprovalDecision::Abort {
+        reason: "stop here".to_string(),
+    });
+    extensions.approval_review_contributor(reviewer);
+    let mut session = SessionBuilder::new()
+        .config(session_config_with(
+            &harness.home,
+            ApprovalPolicy::OnRequest,
+        ))
+        .provider(provider)
+        .extensions(extensions.build())
+        .build()
+        .await
+        .expect("builds");
+    let outcome = session
+        .run_turn(Message::user("start command"))
+        .await
+        .expect("aborted turn");
+    assert_eq!(outcome.stop_reason, StopReason::Cancelled);
+    assert_eq!(
+        seen.lock().expect("lock").len(),
+        1,
+        "abort prevents model followup"
+    );
+    let results = session.history().last().expect("tool results");
+    assert_eq!(results.content.len(), 2);
+    assert!(results.content.iter().all(|block| matches!(block, ContentBlock::ToolResult(result) if result.status == ToolStatus::Denied)));
+    assert_history_replays(&session, &harness.home);
+    let mut expected_request = session.history().to_vec();
+    expected_request.push(Message::user("continue"));
+    session
+        .run_turn(Message::user("continue"))
+        .await
+        .expect("continues");
+    assert_eq!(seen.lock().expect("lock")[1].messages, expected_request);
+    assert_history_replays(&session, &harness.home);
+}
+
 // ---------------------------------------------------------------- tests
 
 #[tokio::test]
@@ -763,18 +998,29 @@ async fn the_request_that_is_logged_is_the_request_that_is_sent() {
         .expect("completes");
 
     let log = read_log(session.log_path()).expect("reads");
-    let logged = log
+    let (request_index, logged) = log
         .iter()
-        .find_map(|entry| match &entry.event {
+        .enumerate()
+        .find_map(|(index, entry)| match &entry.event {
             SessionEvent::ModelRequest {
                 messages, tools, ..
-            } => Some((messages, tools)),
+            } => Some((index, (messages, tools))),
             _ => None,
         })
         .expect("a logged request");
     let sent = &seen.lock().expect("lock")[0];
 
-    assert_eq!(logged.0, &sent.messages);
+    assert!(logged.0.is_empty(), "requests must not duplicate history");
+    assert_eq!(
+        keke_core::history_from_log(
+            &log[..request_index]
+                .iter()
+                .map(|entry| entry.event.clone())
+                .collect::<Vec<_>>()
+        ),
+        sent.messages,
+        "preceding events reconstruct exactly what the model received"
+    );
     assert_eq!(
         logged.1,
         &sent
@@ -783,6 +1029,41 @@ async fn the_request_that_is_logged_is_the_request_that_is_sent() {
             .map(|spec| spec.name.clone())
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn later_turns_do_not_duplicate_earlier_input_in_the_rollout() {
+    let harness = harness();
+    let (provider, _) = ScriptedProvider::new(vec![
+        text_reply("first answer"),
+        text_reply("second answer"),
+        text_reply("third answer"),
+    ]);
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    let payload = format!("unique original payload {}", "abcdefgh".repeat(256));
+    for prompt in [payload.as_str(), "follow up", "another follow up"] {
+        session
+            .run_turn(Message::user(prompt))
+            .await
+            .expect("turn completes");
+    }
+
+    let serialized = std::fs::read_to_string(session.log_path()).expect("reads rollout");
+    assert_eq!(serialized.matches(&payload).count(), 1);
+    let log = read_log(session.log_path()).expect("reads events");
+    assert!(log.iter().all(|entry| match &entry.event {
+        SessionEvent::ModelRequest { messages, .. } => messages.is_empty(),
+        _ => true,
+    }));
+    let events = log.into_iter().map(|entry| entry.event).collect::<Vec<_>>();
+    assert_eq!(keke_core::history_from_log(&events), session.history());
+    let resumed = keke_core::load_session(&harness.home.home, session.id()).expect("loads session");
+    assert_eq!(resumed.history, session.history());
 }
 
 #[tokio::test]
@@ -1004,6 +1285,10 @@ async fn a_history_past_its_budget_is_summarized_before_the_next_turn() {
         })
         .expect("a compaction event");
     assert!(compacted > 0);
+    let events = log.into_iter().map(|entry| entry.event).collect::<Vec<_>>();
+    assert_eq!(keke_core::history_from_log(&events), session.history());
+    let resumed = keke_core::load_session(&harness.home.home, session.id()).expect("loads session");
+    assert_eq!(resumed.history, session.history());
 }
 
 // ------------------------------------------------------------------- approval
