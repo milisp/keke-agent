@@ -1217,12 +1217,14 @@ mod recorded_replay_tests {
 /// Render images in user history without exposing their encoded bytes.
 pub(crate) fn user_message_text(message: &Message) -> String {
     let mut text = message.text();
+    let mut image_index = 0;
     for block in &message.content {
-        if let ContentBlock::Image(image) = block {
+        if let ContentBlock::Image(_) = block {
+            image_index += 1;
             if !text.is_empty() {
                 text.push('\n');
             }
-            text.push_str(&format!("[image: {}]", image.media_type));
+            text.push_str(&format!("[image #{image_index}]"));
         }
     }
     text

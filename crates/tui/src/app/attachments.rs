@@ -105,28 +105,101 @@ impl App {
         if paths.is_empty() && self.restored_images.is_empty() {
             return None;
         }
-        let names = paths
-            .iter()
-            .map(|(_, path)| {
-                format!(
-                    "[image: {}]",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                )
-            })
+        let count = self.restored_images.len()
+            + if self.preparing_images {
+                paths.len()
+            } else {
+                0
+            };
+        let names = (1..=count)
+            .map(|index| format!("[image #{index}]"))
             .collect::<Vec<_>>()
             .join(" ");
-        let names = format!(
-            "{names}{}",
-            self.restored_images
-                .iter()
-                .map(|image| format!(" [image: {}]", image.media_type))
-                .collect::<String>()
-        );
         Some(if self.preparing_images {
             format!(" preparing {names} ")
+        } else if !self.restored_images.is_empty() {
+            format!(" {names} ")
         } else {
-            format!(" {names} · edit paths / Ctrl-Backspace to remove ")
+            return None;
         })
+    }
+
+    pub(crate) fn image_input_display(&self) -> crate::input::InputBox {
+        let draft = self.input.text();
+        let (row, _) = self.input.cursor();
+        let cursor = self
+            .input
+            .lines()
+            .iter()
+            .take(row)
+            .map(|line| line.len() + 1)
+            .sum::<usize>()
+            + self.input.cursor_byte();
+        let mut display = String::new();
+        let mut end = 0;
+        let mut projected_cursor = cursor;
+        for (index, (range, _)) in image_paths(&draft).into_iter().enumerate() {
+            let marker = format!("[image #{}]", index + self.restored_images.len() + 1);
+            display.push_str(&draft[end..range.start]);
+            if cursor >= range.end {
+                projected_cursor = projected_cursor + marker.len() - range.len();
+            } else if cursor > range.start {
+                projected_cursor = display.len() + marker.len();
+            }
+            display.push_str(&marker);
+            end = range.end;
+        }
+        display.push_str(&draft[end..]);
+        let mut input = crate::input::InputBox::default();
+        input.insert_str(&display[..projected_cursor]);
+        let position = input.cursor();
+        input.insert_str(&display[projected_cursor..]);
+        while input.cursor() != position {
+            input.move_left();
+        }
+        input
+    }
+
+    pub(crate) fn move_image_cursor(&mut self, right: bool) {
+        let cursor = self.input.cursor_byte();
+        let range = image_paths(self.input.current_line())
+            .into_iter()
+            .find(|(range, _)| {
+                if right {
+                    range.start <= cursor && cursor < range.end
+                } else {
+                    range.start < cursor && cursor <= range.end
+                }
+            });
+        if let Some((range, _)) = range {
+            let target = if right { range.end } else { range.start };
+            while self.input.cursor_byte() != target {
+                if right {
+                    self.input.move_right();
+                } else {
+                    self.input.move_left();
+                }
+            }
+        } else if right {
+            self.input.move_right();
+        } else {
+            self.input.move_left();
+        }
+    }
+
+    pub(crate) fn backspace_image(&mut self) {
+        let line = self.input.current_line();
+        let cursor = self.input.cursor_byte();
+        if let Some((range, _)) = image_paths(line)
+            .into_iter()
+            .find(|(range, _)| range.start < cursor && cursor <= range.end)
+        {
+            self.input.replace_line_range(range, "");
+        } else if self.input.is_empty() && !self.restored_images.is_empty() {
+            self.restored_images.pop();
+        } else {
+            self.input.backspace();
+        }
     }
 
     pub(super) fn invalidate_image_preparation(&mut self) {
@@ -223,6 +296,34 @@ impl App {
 mod tests {
     use super::*;
     #[test]
+    fn markers_are_compact_and_backspace_removes_whole_images() {
+        let (conversation, _) = keke_acp::ScriptedConversation::new(Vec::new());
+        let (mut app, _) = App::new(Arc::new(conversation));
+        app.input.set_text("look '/tmp/你好 one.png' /tmp/two.png");
+        assert_eq!(
+            app.image_input_display().text(),
+            "look [image #1] [image #2]"
+        );
+        app.backspace_image();
+        assert_eq!(app.input.text(), "look '/tmp/你好 one.png' ");
+        app.backspace_image();
+        app.move_image_cursor(false);
+        assert_eq!(app.input.cursor_byte(), 5);
+        app.move_image_cursor(true);
+        app.backspace_image();
+        assert_eq!(app.input.text(), "look ");
+        app.backspace_image();
+        assert_eq!(app.input.text(), "look");
+        app.input.clear();
+        app.restored_images.push(keke_protocol::ImageBlock {
+            data: "bytes".into(),
+            media_type: "image/png".into(),
+        });
+        app.backspace_image();
+        assert!(app.restored_images.is_empty());
+    }
+
+    #[test]
     fn paths_are_explicit_and_shell_quoting_preserves_unicode_and_spaces() {
         let found = image_paths("look '/tmp/你好 one.png' /tmp/two\\ words.JPG please");
         assert_eq!(
@@ -308,10 +409,7 @@ mod submission_tests {
         };
         let mut transcript = crate::Transcript::default();
         transcript.replay(&[message]);
-        assert_eq!(
-            transcript.last(),
-            Some(&Cell::User("[image: image/png]".into()))
-        );
+        assert_eq!(transcript.last(), Some(&Cell::User("[image #1]".into())));
     }
 
     #[tokio::test]

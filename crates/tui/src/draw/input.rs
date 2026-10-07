@@ -23,7 +23,7 @@ pub(crate) const MAX_ROWS: u16 = 8;
 pub(crate) fn rows(app: &App, area_width: u16) -> u16 {
     let width = usize::from(area_width.saturating_sub(2)).max(1);
     let used: usize = app
-        .input
+        .image_input_display()
         .lines()
         .iter()
         .map(|line| wrap_cells(line, width).len())
@@ -59,11 +59,12 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     // Wrap every logical line to the box's visible width, and track where
     // that puts the cursor: the row it lands on is wherever its own logical
     // line's wrapped chunks put it, not the logical row index.
-    let (cursor_row, cursor_column) = app.input.cursor_display();
+    let input = app.image_input_display();
+    let (cursor_row, cursor_column) = input.cursor_display();
     let mut display: Vec<String> = Vec::new();
     let mut cursor_display_row = 0usize;
     let mut cursor_display_column = cursor_column;
-    for (index, line) in app.input.lines().iter().enumerate() {
+    for (index, line) in input.lines().iter().enumerate() {
         if index == cursor_row {
             let (offset, column) = wrap_position(line, cursor_column, width);
             cursor_display_row = display.len() + offset;
@@ -176,8 +177,8 @@ mod attachment_tests {
                     .iter()
                     .map(|cell| cell.symbol())
                     .collect::<String>();
-                assert!(rendered.contains("[image:"));
-                assert!(rendered.contains("image.png]"));
+                assert!(rendered.contains("[image #1]"));
+                assert!(!rendered.contains("image.png"));
             }
             assert_eq!(app.input.text(), "'/tmp/你好 image.png'");
         }
