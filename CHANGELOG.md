@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Session logs record conversation changes incrementally instead of repeating
+  full history on each turn, while preserving legacy snapshot replay.
+
 ## [0.1.37] - 2026-10-05
 
 ### Added

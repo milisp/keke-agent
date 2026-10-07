@@ -203,30 +203,14 @@ impl Session {
                 service_tier: self.tier.get(),
             };
 
-            // Logged before the call, so a crash mid-request still leaves the
-            // request that caused it on disk. Only the first step of a turn
-            // carries the full `messages` snapshot: later steps within the
-            // same turn only append a `ModelResponse` and `ToolCallEnd`s onto
-            // it, and `history_from_log` already replays those onto the last
-            // snapshot it found. Logging the whole history again on every
-            // step made the log grow quadratically in the number of steps for
-            // no reconstructive benefit.
-            //
-            // Beyond the first step, a step is logged at all only when the
-            // model or the reasoning effort actually changed since the last
-            // logged step — both can be switched mid-turn from outside this
-            // loop, which is genuinely model-visible and must be logged per
-            // invariant 6, but a step that repeats the same values the model
-            // already saw has nothing new to record.
+            // Conversation events already record each message once. Requests
+            // only record settings, so later turns do not duplicate history.
+            // A settings change mid-turn must still be logged before the call.
             let current = (request.reasoning_effort, request.model.clone());
             if step == 0 || last_logged.as_ref() != Some(&current) {
                 self.log(SessionEvent::ModelRequest {
                     turn,
-                    messages: if step == 0 {
-                        request.messages.clone()
-                    } else {
-                        Vec::new()
-                    },
+                    messages: Vec::new(),
                     tools: tool_names.clone(),
                     reasoning_effort: request.reasoning_effort,
                     model: Some(request.model.clone()),
@@ -408,14 +392,16 @@ impl Session {
         };
 
         let summary = crate::compact::summary_message(&summary);
-        self.history = std::iter::once(summary.clone()).chain(recent).collect();
-
+        let retained_messages = recent.len();
         self.log(SessionEvent::Compacted {
             turn,
-            summary,
+            summary: summary.clone(),
             removed_messages: removed,
+            retained_messages: Some(retained_messages),
         })
-        .await
+        .await?;
+        self.history = std::iter::once(summary).chain(recent).collect();
+        Ok(())
     }
 
     /// Run one model call for keke's own purposes and return just its text.

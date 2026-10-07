@@ -5,18 +5,9 @@
 //! allowed to become a second source of truth. Deleting `meta.json`, or reading
 //! one this build does not understand, costs a full scan and nothing else.
 //!
-//! It exists because the scan is not cheap. A log records the whole
-//! model-visible history on every step, so it grows with the square of the
-//! turns: listing sessions by parsing all of them was reading tens of megabytes
-//! of JSON to print four columns.
-//!
-//! Two offsets are what make the cache incremental. `bytes_scanned` is how far
-//! the fold has already consumed, so a session that grew by one turn is caught
-//! up by reading that turn. `baseline` is where the last [`ModelRequest`] line
-//! starts — the history a resume rebuilds from is that line plus what follows,
-//! so resuming reads the tail rather than the log.
-//!
-//! [`ModelRequest`]: keke_protocol::SessionEvent::ModelRequest
+//! Listings fold only the newly appended events using `bytes_scanned`.
+//! `baseline` points to a legacy history snapshot or a conversation rewind;
+//! incremental logs without either replay from the beginning.
 
 use std::io::BufRead;
 use std::io::Seek;
@@ -74,7 +65,7 @@ pub struct SessionMeta {
     /// early checkpoints would be invisible to the one thing that needs them.
     #[serde(default)]
     pub snapshots: std::collections::BTreeMap<usize, String>,
-    /// Byte offset of the last `ModelRequest` line, when the log has one.
+    /// Byte offset of the last legacy snapshot or conversation rewind.
     pub baseline: Option<u64>,
     /// How much of the log the fields above account for.
     pub bytes_scanned: u64,
@@ -228,10 +219,7 @@ impl SessionMeta {
                 model,
                 ..
             } => {
-                // Only a turn's first step carries a `messages` snapshot;
-                // later steps log an empty one (see `turn.rs`) and must not
-                // move the baseline, or `load_session` would seek to a line
-                // `history_from_log` cannot rebuild a history from.
+                // Empty incremental requests cannot serve as replay baselines.
                 if !messages.is_empty() {
                     self.baseline = Some(at);
                 }
