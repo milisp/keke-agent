@@ -322,6 +322,27 @@ pub trait Conversation: Send + Sync {
     /// Send a prompt and start a turn.
     fn prompt<'a>(&'a self, text: String) -> ConversationFuture<'a, Result<(), ConversationError>>;
 
+    /// Send a user message without losing non-text content. Text-only adapters
+    /// reject attachments unless they explicitly implement this method.
+    fn prompt_message<'a>(
+        &'a self,
+        message: keke_protocol::Message,
+    ) -> ConversationFuture<'a, Result<(), ConversationError>> {
+        Box::pin(async move {
+            if message.role != keke_protocol::Role::User
+                || message
+                    .content
+                    .iter()
+                    .any(|block| !matches!(block, keke_protocol::ContentBlock::Text { .. }))
+            {
+                return Err(ConversationError::Agent(
+                    "this conversation does not support this user content".to_string(),
+                ));
+            }
+            self.prompt(message.text()).await
+        })
+    }
+
     /// Ask the agent to stop the running turn.
     ///
     /// Cooperative and idempotent: cancelling an idle conversation is not an
@@ -503,8 +524,10 @@ pub struct RewindPoint {
 }
 
 /// What a rewind did, so a surface can say so.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rewound {
+    /// Original input, including attachments, when the agent can recover it.
+    pub input: Option<Message>,
     /// The prompt that started the turn, to hand back for editing.
     pub prompt: String,
     /// How many messages were dropped. Zero for a files-only rewind.
@@ -523,6 +546,7 @@ pub struct ScriptedConversation {
     script: Mutex<Vec<Vec<Update>>>,
     /// Prompts received, so a test can assert what the surface sent.
     prompts: Arc<Mutex<Vec<String>>>,
+    messages: Arc<Mutex<Vec<keke_protocol::Message>>>,
     answers: Arc<Mutex<Vec<(PermissionId, PermissionAnswer, Option<String>)>>>,
     cancels: Arc<Mutex<usize>>,
     policies: Arc<Mutex<Vec<ApprovalPolicy>>>,
@@ -553,6 +577,7 @@ impl ScriptedConversation {
                 updates,
                 script: Mutex::new(script),
                 prompts: Arc::new(Mutex::new(Vec::new())),
+                messages: Arc::new(Mutex::new(Vec::new())),
                 answers: Arc::new(Mutex::new(Vec::new())),
                 cancels: Arc::new(Mutex::new(0)),
                 policies: Arc::new(Mutex::new(Vec::new())),
@@ -608,6 +633,15 @@ impl ScriptedConversation {
     #[must_use]
     pub fn prompts(&self) -> Vec<String> {
         self.prompts
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+
+    /// Full user messages received by the surface, including image attachments.
+    #[must_use]
+    pub fn messages(&self) -> Vec<keke_protocol::Message> {
+        self.messages
             .lock()
             .map(|seen| seen.clone())
             .unwrap_or_default()
@@ -729,7 +763,18 @@ impl Conversation for ScriptedConversation {
     }
 
     fn prompt<'a>(&'a self, text: String) -> ConversationFuture<'a, Result<(), ConversationError>> {
+        self.prompt_message(keke_protocol::Message::user(text))
+    }
+
+    fn prompt_message<'a>(
+        &'a self,
+        message: keke_protocol::Message,
+    ) -> ConversationFuture<'a, Result<(), ConversationError>> {
         Box::pin(async move {
+            if let Ok(mut seen) = self.messages.lock() {
+                seen.push(message.clone());
+            }
+            let text = message.text();
             if let Ok(mut seen) = self.prompts.lock() {
                 seen.push(text);
             }
@@ -895,6 +940,7 @@ impl Conversation for ScriptedConversation {
                 Vec::new()
             };
             Ok(Some(Rewound {
+                input: None,
                 prompt,
                 removed_messages,
                 restored_files,
@@ -915,6 +961,28 @@ mod tests {
             name: "read_file".to_string(),
             arguments: serde_json::Value::Null,
         }
+    }
+
+    #[tokio::test]
+    async fn a_scripted_prompt_preserves_attachments_and_text_compatibility() {
+        let (conversation, _updates) = ScriptedConversation::new(vec![vec![], vec![]]);
+        let message = keke_protocol::Message {
+            role: keke_protocol::Role::User,
+            content: vec![
+                keke_protocol::ContentBlock::text("describe"),
+                keke_protocol::ContentBlock::Image(keke_protocol::ImageBlock {
+                    data: "aW1hZ2U=".into(),
+                    media_type: "image/png".into(),
+                }),
+            ],
+        };
+        conversation.prompt_message(message.clone()).await.unwrap();
+        conversation.prompt("plain".into()).await.unwrap();
+        assert_eq!(
+            conversation.messages(),
+            vec![message, keke_protocol::Message::user("plain")]
+        );
+        assert_eq!(conversation.prompts(), vec!["describe", "plain"]);
     }
 
     #[tokio::test]

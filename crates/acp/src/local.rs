@@ -179,7 +179,7 @@ pub trait RouteRecipes: Send + Sync + 'static {
 /// What the session task is asked to do.
 enum Command {
     Prompt {
-        text: String,
+        message: Message,
         done: oneshot::Sender<Result<(), String>>,
     },
     /// Replace the running session with a fresh one built from `recipe`.
@@ -363,8 +363,8 @@ async fn local_in(
     tokio::spawn(async move {
         while let Some(command) = inbox.recv().await {
             match command {
-                Command::Prompt { text, done } => {
-                    let outcome = session.run_turn(Message::user(text)).await;
+                Command::Prompt { message, done } => {
+                    let outcome = session.run_turn(message).await;
                     let answer = match outcome {
                         Ok(_) => Ok(()),
                         Err(error) => {
@@ -383,6 +383,7 @@ async fn local_in(
                         .await
                         .map(|rewound| {
                             rewound.map(|rewound| Rewound {
+                                input: scope.touches_conversation().then_some(rewound.input),
                                 prompt: rewound.prompt,
                                 removed_messages: rewound.removed_messages,
                                 restored_files: rewound.restored_files,
@@ -640,10 +641,22 @@ impl Conversation for LocalConversation {
     }
 
     fn prompt<'a>(&'a self, text: String) -> ConversationFuture<'a, Result<(), ConversationError>> {
+        self.prompt_message(Message::user(text))
+    }
+
+    fn prompt_message<'a>(
+        &'a self,
+        message: Message,
+    ) -> ConversationFuture<'a, Result<(), ConversationError>> {
         Box::pin(async move {
+            if message.role != keke_protocol::Role::User {
+                let reason = "a conversation prompt must have the user role".to_string();
+                let _ = self.updates.send(Update::Failed(reason.clone()));
+                return Err(ConversationError::Agent(reason));
+            }
             let (done, answer) = oneshot::channel();
             self.commands
-                .send(Command::Prompt { text, done })
+                .send(Command::Prompt { message, done })
                 .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
             answer
                 .await
@@ -849,6 +862,43 @@ mod tests {
             },
             reason: "runs a command".to_string(),
             evidence: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_user_prompt_is_rejected_and_reports_failure_without_dispatch() {
+        let (commands, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+        let (updates, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (approvals, _requests) = approvals();
+        let conversation = LocalConversation {
+            task_previews: Mutex::new(None),
+            transcripts: Mutex::new(None),
+            sandbox: None,
+            commands,
+            cancel: Mutex::new(Box::new(|| {})),
+            approvals,
+            approval: Mutex::new(Arc::new(ApprovalSwitch::new(ApprovalPolicy::default()))),
+            effort: Mutex::new(Arc::new(EffortSwitch::new(None))),
+            tier: Mutex::new(Arc::new(ServiceTierSwitch::new(None))),
+            model: Mutex::new(Arc::new(ModelSwitch::new("test-model"))),
+            mode: Mutex::new(Arc::new(SessionModeSwitch::new(SessionMode::default()))),
+            updates,
+        };
+        for role in [
+            keke_protocol::Role::Assistant,
+            keke_protocol::Role::Tool,
+            keke_protocol::Role::System,
+        ] {
+            let message = Message {
+                role,
+                content: vec![keke_protocol::ContentBlock::text("injected")],
+            };
+            assert!(conversation.prompt_message(message).await.is_err());
+            assert_eq!(
+                received.try_recv().unwrap(),
+                Update::Failed("a conversation prompt must have the user role".into())
+            );
+            assert!(inbox.try_recv().is_err());
         }
     }
 

@@ -573,3 +573,22 @@ Configuration is loaded from multiple layers, with later layers overriding earli
 4. **Environment variables** — `KEKE_*` prefixed (e.g., `KEKE_APPROVAL_POLICY=never`)
 
 `[skills] disabled` accumulates across layers too. Provider declarations accumulate across layers and are keyed by route, so redeclaring a provider replaces that entry rather than the whole set. `[[dir]]` entries accumulate the same way, and are applied on top of the merged layers — above every file, below anything typed on the command line.
+
+## Image inputs
+
+`view_image` and images attached in the terminal use the same validated budgets:
+
+```toml
+[images]
+read_bytes = 20971520
+decoded_pixels = 40000000
+max_dimension = 2048
+encoded_bytes = 3145728
+```
+
+`read_bytes` bounds the source file before decoding; `decoded_pixels` bounds
+its decoded pixel count. Images exceeding `max_dimension` are resized while
+preserving aspect ratio, and output must fit `encoded_bytes` before base64
+encoding. Invalid files fail before entering a model request. These limits
+apply to newly loaded images, including files outside the workspace that the
+process can read.

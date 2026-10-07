@@ -151,10 +151,14 @@ impl App {
         self.rewind = None;
 
         if scope.touches_conversation() {
+            self.invalidate_image_preparation();
+            self.rewind_pending = true;
+            self.restored_images.clear();
             if let Some((cell, _)) = self.transcript.user_prompts().get(point.turn) {
                 self.transcript.truncate(*cell);
             }
             self.input.set_text(&point.text);
+            self.rewind_draft = Some(point.text.clone());
             self.input.move_end();
             self.scroll.follow();
             self.rewound_at = Some(Instant::now());
@@ -172,7 +176,7 @@ impl App {
                 Ok(Some(rewound)) => Update::Rewound(rewound),
                 // The turn is gone from under the overlay — nothing was
                 // changed, and nothing to report.
-                Ok(None) => return,
+                Ok(None) => Update::Rewound(Default::default()),
                 Err(error) => Update::Failed(error.to_string()),
             };
             let _ = local.send(update);
@@ -181,6 +185,31 @@ impl App {
 
     /// Say what the rewind did to the files, now that the agent has.
     pub(crate) fn report_rewind(&mut self, rewound: &keke_acp::Rewound) {
+        let conversation_rewind = self.rewind_pending;
+        self.rewind_pending = false;
+        if let Some(input) = &rewound.input
+            && conversation_rewind
+        {
+            if self
+                .rewind_draft
+                .as_ref()
+                .is_some_and(|draft| *draft == self.input.text())
+            {
+                self.input.set_text(&input.text());
+            }
+            self.restored_images = input
+                .content
+                .iter()
+                .filter_map(|block| {
+                    if let keke_protocol::ContentBlock::Image(image) = block {
+                        Some(image.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+        self.rewind_draft = None;
         let files = rewound.restored_files.len();
         if files == 0 {
             return;

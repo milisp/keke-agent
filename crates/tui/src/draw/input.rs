@@ -23,7 +23,7 @@ pub(crate) const MAX_ROWS: u16 = 8;
 pub(crate) fn rows(app: &App, area_width: u16) -> u16 {
     let width = usize::from(area_width.saturating_sub(2)).max(1);
     let used: usize = app
-        .input
+        .image_input_display()
         .lines()
         .iter()
         .map(|line| wrap_cells(line, width).len())
@@ -46,21 +46,25 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         " message ".to_string()
     };
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::DarkGray))
         .title(title);
+    if let Some(label) = app.image_attachment_label() {
+        block = block.title_bottom(label);
+    }
     let inner = block.inner(area);
     let width = usize::from(inner.width).max(1);
 
     // Wrap every logical line to the box's visible width, and track where
     // that puts the cursor: the row it lands on is wherever its own logical
     // line's wrapped chunks put it, not the logical row index.
-    let (cursor_row, cursor_column) = app.input.cursor_display();
+    let input = app.image_input_display();
+    let (cursor_row, cursor_column) = input.cursor_display();
     let mut display: Vec<String> = Vec::new();
     let mut cursor_display_row = 0usize;
     let mut cursor_display_column = cursor_column;
-    for (index, line) in app.input.lines().iter().enumerate() {
+    for (index, line) in input.lines().iter().enumerate() {
         if index == cursor_row {
             let (offset, column) = wrap_position(line, cursor_column, width);
             cursor_display_row = display.len() + offset;
@@ -146,4 +150,37 @@ fn wrap_position(line: &str, column: usize, width: usize) -> (usize, usize) {
         consumed += w;
     }
     (row, row_width)
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    use keke_acp::ScriptedConversation;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    #[test]
+    fn attachment_labels_render_in_wide_and_narrow_composers() {
+        let (conversation, _) = ScriptedConversation::new(Vec::new());
+        let (mut app, _) = App::new(Arc::new(conversation));
+        app.input.set_text("'/tmp/你好 image.png'");
+        for width in [16, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, frame.area(), &mut app))
+                .unwrap();
+            if width == 120 {
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(rendered.contains("[image #1]"));
+                assert!(!rendered.contains("image.png"));
+            }
+            assert_eq!(app.input.text(), "'/tmp/你好 image.png'");
+        }
+    }
 }

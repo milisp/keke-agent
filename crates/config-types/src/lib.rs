@@ -8,6 +8,9 @@
 //! deployment might reasonably want to change does not belong in a plugin as a
 //! `DEFAULT_*` — it belongs here, validated.
 
+mod image;
+pub use image::ImageLimits;
+
 use keke_paths::AbsPath;
 use serde::Deserialize;
 use serde::Serialize;

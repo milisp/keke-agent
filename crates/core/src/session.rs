@@ -94,8 +94,10 @@ pub struct RewindPoint {
 }
 
 /// What a rewind actually did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rewound {
+    /// Original user input, including images, returned for editing and resend.
+    pub input: Message,
     /// The prompt that started the turn, to hand back for editing.
     pub prompt: String,
     /// How many messages were dropped. Zero for a files-only rewind.
@@ -124,6 +126,8 @@ pub struct SessionConfig {
     /// When and how far to summarize the history. A session that never compacts
     /// works until the provider rejects the request mid-conversation.
     pub compaction: CompactionConfig,
+    /// Image budgets also apply to inline user inputs from remote clients.
+    pub images: keke_config_types::ImageLimits,
     /// Who this agent is, joined into the system prompt ahead of the project's
     /// instruction files. `None` leaves keke's plain identity alone. Carried on
     /// the session rather than passed per turn because a persona that could
@@ -546,7 +550,8 @@ impl Session {
         else {
             return Ok(None);
         };
-        let prompt = self.history[at].text();
+        let input = self.history[at].clone();
+        let prompt = input.text();
 
         // The files first: a failure here must not leave a conversation wound
         // back past the tree it was talking about, and a restore is the half
@@ -580,6 +585,7 @@ impl Session {
         .await?;
 
         Ok(Some(Rewound {
+            input,
             prompt,
             removed_messages,
             restored_files: restored.files,

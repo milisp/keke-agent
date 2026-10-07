@@ -18,6 +18,7 @@ use keke_protocol::Message;
 use keke_protocol::Role;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCallId;
+use keke_protocol::ToolResult;
 use keke_protocol::Usage;
 use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
@@ -146,7 +147,7 @@ fn push_message(out: &mut Vec<Value>, message: &Message) {
             ContentBlock::ToolResult(result) => out.push(json!({
                 "type": "function_call_output",
                 "call_id": result.id.as_str(),
-                "output": crate::result_text(result),
+                "output": function_output(result),
             })),
         }
     }
@@ -163,6 +164,29 @@ fn push_message(out: &mut Vec<Value>, message: &Message) {
 
 fn data_uri(image: &ImageBlock) -> String {
     format!("data:{};base64,{}", image.media_type, image.data)
+}
+
+/// A string while the result is only text, so existing requests are unchanged;
+/// a list of content items once it carries an image, which `function_call_output`
+/// accepts in place of the string.
+fn function_output(result: &ToolResult) -> Value {
+    let images = crate::result_images(result);
+    if images.is_empty() {
+        return json!(crate::result_text(result));
+    }
+    let mut items = Vec::new();
+    for block in &result.content {
+        match block {
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
+                items.push(json!({ "type": "input_text", "text": text }));
+            }
+            ContentBlock::Image(image) => {
+                items.push(json!({ "type": "input_image", "image_url": data_uri(image) }))
+            }
+            _ => {}
+        }
+    }
+    Value::Array(items)
 }
 
 /// One typed SSE frame.

@@ -336,6 +336,8 @@ pub(super) async fn tui(
             updates,
         },
         keke_tui::SessionDefaults {
+            image_limits: config.images,
+            image_root: config.home.workspace_root.as_path().to_path_buf(),
             approval: config.approval_policy,
             // What the session is actually in, not what the config said: a
             // `--plan` start, and a resumed session that was planning, both

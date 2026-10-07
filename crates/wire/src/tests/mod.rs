@@ -5,6 +5,7 @@
 //! assert the parts that already look the same.
 
 mod chat_completions;
+mod images;
 mod messages;
 mod responses;
 

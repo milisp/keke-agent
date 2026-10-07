@@ -337,3 +337,81 @@ async fn exec_format_json_with_print_log_path_includes_log_field() {
     let log_path = parsed["log"].as_str().expect("log path str");
     assert!(log_path.ends_with(".jsonl"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_image_sends_pixels_on_every_wire_and_logs_them_once() {
+    for (wire, endpoint) in [
+        ("chat_completions", Endpoint::ChatCompletions),
+        ("responses", Endpoint::Responses),
+        ("messages", Endpoint::Messages),
+    ] {
+        let fixture = Fixture::new().await;
+        std::fs::write(fixture.home.path().join("config.toml"), format!(
+            "provider = \"image-test\"\nmodel = \"vision-model\"\n[providers.image-test]\nbase_url = \"{}\"\nenv_key = \"KEKE_IMAGE_TEST_KEY\"\nwire = \"{wire}\"\n", fixture.server.base_url()
+        )).expect("config");
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("shot.png"),
+            [
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
+                1, 8, 2, 0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99,
+                248, 207, 192, 0, 0, 3, 1, 1, 0, 201, 254, 146, 239, 0, 0, 0, 0, 73, 69, 78, 68,
+                174, 66, 96, 130,
+            ],
+        )
+        .expect("png");
+        fixture.server.script(
+            endpoint,
+            Reply::tool_call("view_image", serde_json::json!({"path":"shot.png"})),
+        );
+        fixture.server.script(endpoint, Reply::text("a red pixel"));
+        let output = fixture
+            .keke()
+            .env("KEKE_IMAGE_TEST_KEY", "test-key")
+            .args(["-C", &workspace.path().display().to_string()])
+            .args(["exec", "inspect shot.png"])
+            .output()
+            .expect("runs");
+        assert!(
+            output.status.success(),
+            "{wire}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = fixture.server.requests_to(endpoint);
+        assert_eq!(requests.len(), 2, "{wire}");
+        let second = requests[1].body.to_string();
+        let encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+        assert!(
+            second.contains(encoded),
+            "image must reach model on {wire}: {second}"
+        );
+        let paths = fixture.sessions();
+        assert_eq!(paths.len(), 1);
+        let log = std::fs::read_to_string(&paths[0]).expect("log");
+        assert_eq!(
+            log.matches(encoded).count(),
+            1,
+            "pixels stored once on {wire}"
+        );
+        let events = keke_core::read_log(&paths[0])
+            .expect("reads")
+            .into_iter()
+            .map(|entry| entry.event)
+            .collect::<Vec<_>>();
+        let history = keke_core::history_from_log(&events);
+        let images = history
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| {
+                if let keke_protocol::ContentBlock::ToolResult(result) = block {
+                    Some(&result.content)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .filter(|block| matches!(block, keke_protocol::ContentBlock::Image(_)))
+            .count();
+        assert_eq!(images, 1, "image result survives replay on {wire}");
+    }
+}

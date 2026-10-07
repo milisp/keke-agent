@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+keke-image = { workspace = true }
 keke-acp = { workspace = true }
 keke-auth-api = { workspace = true }
 keke-oauth = { workspace = true }
@@ -33,6 +34,7 @@ tracing = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
+image = { workspace = true }
 nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "5b74652" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
