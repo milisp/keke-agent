@@ -17,6 +17,7 @@ use keke_protocol::ReasoningEffort;
 use keke_protocol::Role;
 use keke_protocol::StopReason;
 use keke_protocol::ToolCallId;
+use keke_protocol::ToolResult;
 use keke_protocol::ToolStatus;
 use keke_protocol::Usage;
 use keke_provider_api::ModelRequest;
@@ -289,7 +290,7 @@ fn wire_message(message: &Message) -> (&'static str, Vec<Value>) {
             ContentBlock::ToolResult(result) => results.push(json!({
                 "type": "tool_result",
                 "tool_use_id": result.id.as_str(),
-                "content": crate::result_text(result),
+                "content": tool_result_content(result),
                 "is_error": matches!(result.status, ToolStatus::Error | ToolStatus::Denied),
             })),
         }
@@ -302,6 +303,32 @@ fn wire_message(message: &Message) -> (&'static str, Vec<Value>) {
     // turn; anything else the neutral message carried follows it.
     results.extend(blocks);
     ("user", results)
+}
+
+/// A string while the result is only text, so existing requests are byte for
+/// byte what they were; a block list once it carries an image, which this wire
+/// accepts inside a `tool_result`.
+fn tool_result_content(result: &ToolResult) -> Value {
+    let images = crate::result_images(result);
+    if images.is_empty() {
+        return json!(crate::result_text(result));
+    }
+    let mut blocks = Vec::new();
+    let text = crate::result_text(result);
+    if !text.is_empty() {
+        blocks.push(json!({ "type": "text", "text": text }));
+    }
+    for image in images {
+        blocks.push(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": image.data,
+            },
+        }));
+    }
+    Value::Array(blocks)
 }
 
 /// One typed SSE frame.

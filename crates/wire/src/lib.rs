@@ -39,6 +39,7 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use keke_auth_api::AuthProvider;
 use keke_protocol::ContentBlock;
+use keke_protocol::ImageBlock;
 use keke_protocol::ToolResult;
 use keke_provider_api::ModelInfo;
 use keke_provider_api::ModelRequest;
@@ -419,6 +420,22 @@ fn result_text(result: &ToolResult) -> String {
         }
     }
     text
+}
+
+/// The images a tool result carries.
+///
+/// Kept apart from [`result_text`] because only some wires can put them in a
+/// tool result: each caller decides where they go rather than having them
+/// folded into a string that would drop them.
+fn result_images(result: &ToolResult) -> Vec<&ImageBlock> {
+    result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Image(image) => Some(image),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `ToolCallEnd` promises parseable arguments, so accumulated fragments are

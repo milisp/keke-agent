@@ -16,6 +16,7 @@ keke-provider-api = { workspace = true }
 keke-sandbox = { workspace = true }
 keke-tasks = { workspace = true }
 keke-tool = { workspace = true }
+base64 = { workspace = true }
 dirs = { workspace = true }
 regex = { workspace = true }
 ignore = { workspace = true }

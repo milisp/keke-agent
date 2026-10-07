@@ -177,12 +177,36 @@ fn push_user_or_tool(out: &mut Vec<Value>, message: &Message) {
 
     // Results precede the text so the model reads them in the order they were
     // produced: the call it just made, answered, then anything the user added.
-    for result in results {
+    for result in &results {
         out.push(wire_tool_result(result));
     }
-    if !parts.is_empty() {
-        out.push(json!({ "role": "user", "content": parts }));
+    // A `tool` message here is a string, so an image a tool returned cannot ride
+    // in it. It follows as user content instead, after every tool message: the
+    // assistant's calls must all be answered before any other role speaks.
+    let mut content = tool_result_images(&results);
+    content.extend(parts);
+    if !content.is_empty() {
+        out.push(json!({ "role": "user", "content": content }));
     }
+}
+
+/// The images tools returned, each labelled with the call it answers so the
+/// model can tell which result a picture belongs to.
+fn tool_result_images(results: &[&ToolResult]) -> Vec<Value> {
+    let mut parts = Vec::new();
+    for result in results {
+        for image in crate::result_images(result) {
+            parts.push(json!({
+                "type": "text",
+                "text": format!("Image returned by tool call {}:", result.id.as_str()),
+            }));
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": { "url": data_uri(image) },
+            }));
+        }
+    }
+    parts
 }
 
 fn wire_tool_result(result: &ToolResult) -> Value {

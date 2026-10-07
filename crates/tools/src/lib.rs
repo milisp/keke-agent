@@ -14,6 +14,7 @@ mod prompt;
 mod read_file;
 mod secrets;
 mod support;
+mod view_image;
 mod web_search;
 mod write_file;
 
@@ -40,6 +41,9 @@ pub use list_dir::ListDirOutput;
 pub use read_file::ReadFile;
 pub use read_file::ReadFileArgs;
 pub use read_file::ReadFileOutput;
+pub use view_image::ViewImage;
+pub use view_image::ViewImageArgs;
+pub use view_image::ViewImageOutput;
 pub use web_search::WebSearch;
 pub use web_search::WebSearchArgs;
 pub use web_search::WebSearchOutput;
@@ -83,6 +87,7 @@ pub fn builtin_tools(
     let confines = sandbox.confines();
     let mut tools: Vec<ArcTool> = vec![
         Arc::new(ReadFile),
+        Arc::new(ViewImage),
         Arc::new(ListDir),
         Arc::new(Grep),
         Arc::new(Bash {
@@ -945,6 +950,7 @@ mod tests {
             ids,
             vec![
                 "read_file",
+                "view_image",
                 "list_dir",
                 "grep",
                 "bash",
