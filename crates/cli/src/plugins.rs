@@ -83,6 +83,7 @@ pub(crate) fn local_roots(
         true,
     )];
     if let Some(claude) = dirs::home_dir() {
+        roots.push((claude.join(".agents"), "agents", PluginScope::User, false));
         roots.push((claude.join(".claude"), "claude", PluginScope::User, false));
     }
     roots.push((
@@ -90,6 +91,12 @@ pub(crate) fn local_roots(
         "workspace",
         PluginScope::Project,
         true,
+    ));
+    roots.push((
+        home.workspace_root.as_path().join(".agents"),
+        "agents-workspace",
+        PluginScope::Project,
+        false,
     ));
     roots.push((
         home.workspace_root.as_path().join(".claude"),
@@ -155,7 +162,7 @@ pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
             // The record's key is the plugin's real name. Its directory is
             // often a content hash, and deriving the name from that would give
             // two unrelated plugins the same one.
-            plugin.name = install.name;
+            rename_install(&mut plugin, install.name);
 
             // A foreign record that collides with something already found is
             // dropped, not reported. Everywhere else a name claimed twice is an
@@ -185,6 +192,24 @@ pub(crate) fn discover(home: &HomeLayout) -> Result<PluginSet> {
     }
 
     PluginSet::compose(plugins).context("composing the installed plugins")
+}
+
+/// Install-record names must also identify every contribution, or source
+/// choices and trust reporting refer to a different plugin than its skills.
+fn rename_install(plugin: &mut keke_plugin::ResolvedPlugin, name: String) {
+    for skill in &mut plugin.skills {
+        skill.plugin.clone_from(&name);
+    }
+    for command in &mut plugin.commands {
+        command.plugin.clone_from(&name);
+    }
+    for hook in &mut plugin.hooks {
+        hook.plugin.clone_from(&name);
+    }
+    for server in &mut plugin.mcp_servers {
+        server.plugin.clone_from(&name);
+    }
+    plugin.name = name;
 }
 
 /// Where approvals are kept.
@@ -314,4 +339,37 @@ pub(crate) fn confirm_executables(
     // Anything that is not a clear yes is a no. A prompt that accepts an empty
     // line as consent is a prompt people learn to walk past.
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_foreign_install_name_controls_all_its_skills() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("skills/pdf")).expect("mkdir");
+        std::fs::write(
+            tmp.path().join("plugin.json"),
+            r#"{"name":"old-manifest-name"}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            tmp.path().join("skills/pdf/SKILL.md"),
+            "---\nname: pdf\ndescription: PDF\n---\nBody",
+        )
+        .expect("skill");
+        let mut plugin =
+            keke_plugin::load(tmp.path(), keke_plugin::PluginScope::User, false).expect("load");
+        super::rename_install(&mut plugin, "document-skills".into());
+        assert_eq!(plugin.skills[0].plugin, "document-skills");
+        assert!(!plugin.skills[0].is_native());
+        let root = keke_paths::AbsPath::new(tmp.path()).expect("absolute");
+        let home = keke_config_types::HomeLayout {
+            home: root.clone(),
+            workspace_root: root,
+        };
+        let plugins = keke_plugin::PluginSet::compose(vec![plugin]).expect("compose");
+        let selection =
+            crate::skills::selection(&home, &Default::default(), &plugins).expect("selection");
+        assert_eq!(keke_skills::enabled(&plugins, &selection).count(), 0);
+    }
 }

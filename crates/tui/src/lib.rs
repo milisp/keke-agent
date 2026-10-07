@@ -17,6 +17,8 @@ mod input;
 mod keys;
 mod login;
 pub mod mcp;
+pub mod skills;
+pub use skills::{SkillStatus, Skills, SkillsManage};
 mod picker;
 mod ported;
 pub mod rewind;
@@ -195,6 +197,7 @@ pub struct Banner {
 /// merely holds and does not interpret, and `run` was at the argument-count
 /// lint's limit without them bundled.
 pub struct Session {
+    pub skills: Skills,
     pub commands: SlashCommands,
     pub history: PromptHistory,
     pub schedules: Schedules,
@@ -226,6 +229,7 @@ pub async fn run(
         updates,
     } = attached;
     let Session {
+        skills,
         commands,
         history,
         schedules,
@@ -239,6 +243,7 @@ pub async fn run(
     let is_resumed = !resumed.history.is_empty() || resumed.usage.total() > 0;
     let mut app = app
         .with_mcp(mcp.servers, mcp.sign_in, mcp.manage)
+        .with_skills(skills)
         .with_notices(notices)
         .with_commands(commands)
         .with_approval_policy(defaults.approval)

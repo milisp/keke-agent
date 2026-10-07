@@ -11,3 +11,5 @@ mod mcp_overlay;
 mod models;
 mod rewind;
 mod subagents;
+
+mod skills_overlay;

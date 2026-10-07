@@ -1,29 +1,10 @@
-//! Plugin-contributed skills, as model-visible context.
+//! Skills as model-visible context, with bodies read only on demand.
 //!
-//! A skill is a prompt fragment a plugin ships. The whole design problem is
-//! that skills are cheap to install and expensive to carry: a person with
-//! twenty installed plugins cannot afford twenty bodies in every request. So
-//! only the one-line descriptions go up front, and a body is read when the
-//! model decides the skill is relevant. That is why `description` is required
-//! in the manifest — a skill whose relevance cannot be judged without loading
-//! it defeats the arrangement entirely.
-//!
-//! Nothing here knows what a plugin is beyond a resolved [`PluginSet`]. The
-//! engine sees an ordinary `ContextContributor`.
-
-//! Turns plugin-contributed skills into model-visible context.
-//!
-//! A skill (`skills/<name>/SKILL.md` in a data-plugin) is a prompt fragment the
-//! model may want, but its body is not injected up front — only its
-//! `plugin:name — description` line is. That is the entire reason the resolved
-//! manifest requires a description: relevance has to be judgeable without
-//! spending the context window on every skill's body, every turn. The model
-//! reads a skill's body on demand, by asking for its qualified name.
-//!
-//! This crate is a thin translation from `keke_plugin::PluginSet` (data,
-//! already resolved and inert) to a [`keke_plugin_api::ContextContributor`]
-//! (behavior, wired into the session by the composition root). It contains no
-//! plugin-format parsing of its own.
+//! Native directory skills use bare names and plugin packages keep their
+//! namespace. Selection, precedence, and real-path deduplication share one
+//! filter so the model index, slash commands, and body reader agree.
+//! Discovery remains inert in `keke-plugin`; the composition root decides
+//! which directories are scanned.
 
 use std::sync::Arc;
 
@@ -90,8 +71,10 @@ impl SkillsContributor {
         );
         for skill in &self.skills {
             text.push_str(&format!(
-                "- {}:{} — {} ({})\n",
-                skill.plugin, skill.name, skill.description, skill.path
+                "- {} — {} ({})\n",
+                skill.qualified_name(),
+                skill.description,
+                skill.path
             ));
         }
         text
@@ -140,7 +123,7 @@ pub fn install_with(
     registry.context_contributor(Arc::new(SkillsContributor { skills }));
 }
 
-/// The skills of `plugins` this deployment kept, in discovery order.
+/// The skills this deployment kept, resolved by scope and source precedence.
 ///
 /// The one place the selection is applied, so what the model is told about,
 /// what a surface offers, and what [`read_skill_body_with`] will open cannot
@@ -149,12 +132,45 @@ pub fn enabled<'a>(
     plugins: &'a PluginSet,
     selection: &'a SkillSelection,
 ) -> impl Iterator<Item = &'a ResolvedSkill> + 'a {
-    plugins
-        .skills()
-        .filter(move |skill| !selection.is_disabled(&skill.plugin, &skill.name))
+    let mut candidates: Vec<_> = plugins
+        .plugins()
+        .flat_map(|plugin| {
+            plugin
+                .skills
+                .iter()
+                .filter(|skill| !selection.is_disabled(&skill.plugin, &skill.name))
+                .map(move |skill| (plugin.scope, skill))
+        })
+        .collect();
+    // A project can specialize a person's skill, and native directories should
+    // remain authoritative when a compatibility directory contains the same name.
+    candidates.sort_by_key(|(scope, skill)| {
+        (
+            std::cmp::Reverse(*scope),
+            !skill.native,
+            match skill.plugin.as_str() {
+                "workspace" | "local" => 0,
+                "agents-workspace" | "agents" => 1,
+                _ => 2,
+            },
+        )
+    });
+    let mut paths = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    candidates.into_iter().filter_map(move |(_, skill)| {
+        let path = std::fs::canonicalize(skill.path.as_path())
+            .unwrap_or_else(|_| skill.path.as_path().to_path_buf());
+        let name = skill.qualified_name();
+        if paths.contains(&path) || names.contains(&name) {
+            return None;
+        }
+        paths.insert(path);
+        names.insert(name);
+        Some(skill)
+    })
 }
 
-/// Load a skill's body by its qualified `plugin:name`, with the YAML
+/// Load a skill's body by its public name, with the YAML
 /// frontmatter stripped — the body is what the model asked to read, not the
 /// metadata that was already summarized in the index fragment.
 ///
@@ -165,7 +181,7 @@ pub async fn read_skill_body(plugins: &PluginSet, qualified: &str) -> Result<Str
     read_skill_body_with(plugins, &SkillSelection::default(), qualified).await
 }
 
-/// Load an enabled skill's body by its qualified `plugin:name`.
+/// Load an enabled skill's body by its bare native or qualified plugin name.
 ///
 /// A disabled skill is `Unknown` rather than a distinct refusal: to everything
 /// downstream it is simply not a skill this session has, which is what keeps a
@@ -176,7 +192,7 @@ pub async fn read_skill_body_with(
     qualified: &str,
 ) -> Result<String, SkillError> {
     let path = enabled(plugins, selection)
-        .find(|skill| format!("{}:{}", skill.plugin, skill.name) == qualified)
+        .find(|skill| skill.qualified_name() == qualified)
         .map(|skill| skill.path.clone())
         .ok_or_else(|| SkillError::Unknown {
             qualified: qualified.to_string(),
@@ -209,5 +225,107 @@ mod tests {
         let selection = SkillSelection::new(vec!["acme:review".to_string()]).expect("valid");
         assert!(selection.is_disabled("acme", "review"));
         assert!(!selection.is_disabled("other", "review"));
+    }
+    fn fixture(
+        root: &std::path::Path,
+        source: &str,
+        scope: keke_plugin::PluginScope,
+        body: &str,
+    ) -> keke_plugin::ResolvedPlugin {
+        let skill = root.join("skills/review");
+        std::fs::create_dir_all(&skill).expect("skill directory");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: review\ndescription: Review code\n---\n{body}"),
+        )
+        .expect("skill");
+        keke_plugin::load_named(root, scope, true, Some(source)).expect("native directory")
+    }
+
+    #[test]
+    fn native_names_are_bare_and_project_skills_override_user_skills() {
+        let temp = tempfile::tempdir().expect("directory");
+        let user = fixture(
+            &temp.path().join("user"),
+            "agents",
+            keke_plugin::PluginScope::User,
+            "user",
+        );
+        let project = fixture(
+            &temp.path().join("project"),
+            "workspace",
+            keke_plugin::PluginScope::Project,
+            "project",
+        );
+        let plugins = PluginSet::compose(vec![user, project]).expect("set");
+        let selection = SkillSelection::default();
+        let skills: Vec<_> = enabled(&plugins, &selection).collect();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].plugin, "workspace");
+        assert_eq!(skills[0].qualified_name(), "review");
+        assert_eq!(plugins.skills().count(), 2);
+    }
+
+    #[test]
+    fn disabling_the_winning_source_reveals_the_other_native_skill() {
+        let temp = tempfile::tempdir().expect("directory");
+        let user = fixture(
+            &temp.path().join("user"),
+            "agents",
+            keke_plugin::PluginScope::User,
+            "user",
+        );
+        let project = fixture(
+            &temp.path().join("project"),
+            "workspace",
+            keke_plugin::PluginScope::Project,
+            "project",
+        );
+        let plugins = PluginSet::compose(vec![user, project]).expect("set");
+        let selection = SkillSelection::new(vec!["workspace:review".into()]).expect("selection");
+        let skills: Vec<_> = enabled(&plugins, &selection).collect();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].plugin, "agents");
+    }
+
+    #[test]
+    fn the_same_file_is_offered_only_once_even_with_distinct_plugin_names() {
+        let temp = tempfile::tempdir().expect("directory");
+        let mut first = fixture(
+            &temp.path().join("first"),
+            "agents",
+            keke_plugin::PluginScope::User,
+            "body",
+        );
+        let mut second = fixture(
+            &temp.path().join("second"),
+            "local",
+            keke_plugin::PluginScope::User,
+            "body",
+        );
+        first.skills[0].native = false;
+        second.skills[0].native = false;
+        second.skills[0].path = first.skills[0].path.clone();
+        let plugins = PluginSet::compose(vec![first, second]).expect("set");
+        assert_eq!(enabled(&plugins, &SkillSelection::default()).count(), 1);
+    }
+    #[tokio::test]
+    async fn native_skill_body_is_read_by_bare_name() {
+        let temp = tempfile::tempdir().expect("directory");
+        let plugin = fixture(
+            temp.path(),
+            "agents",
+            keke_plugin::PluginScope::User,
+            "Native body",
+        );
+        let plugins = PluginSet::compose(vec![plugin]).expect("set");
+        assert_eq!(
+            read_skill_body(&plugins, "review").await.expect("body"),
+            "Native body"
+        );
+        assert!(matches!(
+            read_skill_body(&plugins, "agents:review").await,
+            Err(SkillError::Unknown { .. })
+        ));
     }
 }

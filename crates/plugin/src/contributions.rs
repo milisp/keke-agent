@@ -14,12 +14,32 @@ use serde::Serialize;
 pub struct ResolvedSkill {
     /// Owning plugin, kept so a name collision names the culprit.
     pub plugin: String,
+    /// Local directory skills use bare names; packaged plugins keep their namespace.
+    pub native: bool,
     pub name: String,
     /// Relevance summary from the frontmatter. This is the only part loaded
     /// into the context window up front — the body is read when the skill is
     /// actually used, which is the entire reason the description is required.
     pub description: String,
     pub path: AbsPath,
+}
+
+impl ResolvedSkill {
+    /// Whether this skill came from a local skills directory rather than a package.
+    #[must_use]
+    pub fn is_native(&self) -> bool {
+        self.native
+    }
+
+    /// The name offered to the model, independent of the source shown in the UI.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        if self.native {
+            self.name.clone()
+        } else {
+            format!("{}:{}", self.plugin, self.name)
+        }
+    }
 }
 
 /// A slash command, from `commands/<name>.md`.

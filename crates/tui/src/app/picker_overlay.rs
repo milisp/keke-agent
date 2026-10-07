@@ -138,6 +138,7 @@ impl App {
             Some(crate::picker::PickerKind::Model) => self.picker_models().len(),
             Some(crate::picker::PickerKind::Provider) => self.picker_providers().len(),
             Some(crate::picker::PickerKind::Mcp) => self.picker_mcp().len(),
+            Some(crate::picker::PickerKind::Skills) => self.picker_skills().len(),
             None => 0,
         }
     }
@@ -193,6 +194,7 @@ impl App {
             // only thing a person came here to do, and a box that vanishes on
             // enter makes them retype `/mcp` to see whether it worked.
             Some(crate::picker::PickerKind::Mcp) => self.auth_selected_mcp(),
+            Some(crate::picker::PickerKind::Skills) => self.details_selected_skill(),
             None => {}
         }
     }

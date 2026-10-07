@@ -14,6 +14,7 @@ mod declared;
 mod first_run;
 mod install;
 mod plugins;
+mod skills;
 mod startup_trace;
 mod ui;
 

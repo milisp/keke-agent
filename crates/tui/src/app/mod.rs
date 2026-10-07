@@ -10,6 +10,7 @@ mod picker_overlay;
 pub(crate) mod plan;
 mod rewind;
 mod session;
+mod skills;
 mod subagents;
 
 use std::path::PathBuf;
@@ -76,6 +77,10 @@ pub struct App {
     pub commands: SlashCommands,
     /// The MCP servers, as the host described them at startup.
     mcp: Vec<crate::mcp::McpServerStatus>,
+    skills: crate::Skills,
+    skills_detail: Option<String>,
+    skills_message: Option<String>,
+    skills_expanded: std::collections::BTreeSet<String>,
     /// How to sign in to one, when the host can. `None` in a surface with no
     /// credential store — `/mcp` then still lists, it just cannot authorize.
     sign_in: Option<Arc<dyn crate::mcp::McpSignIn>>,
@@ -279,6 +284,10 @@ impl App {
                 scroll: Scrollback::default(),
                 commands: SlashCommands::default(),
                 mcp: Vec::new(),
+                skills: crate::Skills::default(),
+                skills_detail: None,
+                skills_message: None,
+                skills_expanded: std::collections::BTreeSet::new(),
                 mcp_activity: std::collections::HashMap::new(),
                 manage: None,
                 sign_in: None,

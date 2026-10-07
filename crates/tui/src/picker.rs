@@ -72,6 +72,7 @@ impl Choice for crate::mcp::McpServerStatus {
 /// beside it so there is no way to be open on one list and reading the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerKind {
+    Skills,
     Model,
     Provider,
     /// MCP servers. Unlike the other two, enter does not switch anything — it

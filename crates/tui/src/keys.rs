@@ -435,6 +435,19 @@ impl App {
         // it spends letters model/provider give to the filter on shortcuts
         // instead — a management pane earns its keys back one at a time, not
         // by matching whatever the picker before it did.
+        if self.skills_picker().is_some() {
+            match key.code {
+                KeyCode::Up => self.move_picker_selection(-1),
+                KeyCode::Down | KeyCode::Tab => self.move_picker_selection(1),
+                KeyCode::Enter => self.details_selected_skill(),
+                KeyCode::Char(' ') => self.toggle_selected_skill(),
+                KeyCode::Esc => self.close_picker(),
+                KeyCode::Backspace => self.backspace_in_picker(),
+                KeyCode::Char(ch) => self.type_into_picker(ch),
+                _ => {}
+            }
+            return;
+        }
         if self.mcp_picker().is_some() {
             match key.code {
                 KeyCode::Up => self.move_picker_selection(-1),

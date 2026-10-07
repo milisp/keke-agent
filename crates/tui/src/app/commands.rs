@@ -35,6 +35,7 @@ impl App {
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
             SlashAction::Builtin(Builtin::Export) => self.export_command(arguments),
             SlashAction::Builtin(Builtin::Mcp) => self.mcp_command(arguments),
+            SlashAction::Builtin(Builtin::Skills) => self.open_skills_picker(),
             SlashAction::Builtin(Builtin::Plan) => self.plan_command(arguments),
             SlashAction::Builtin(Builtin::ViewPlan) => self.view_plan_command(),
             SlashAction::Builtin(Builtin::Loop) => self.loop_command(arguments),

@@ -530,6 +530,8 @@ impl Composed {
         // repository controls, and cloning a repository is not consent to run
         // what it ships.
         let (plugins, withheld) = crate::plugins::discover_trusted(home)?;
+        let saved_skills = crate::skills::selection(home, skills, &plugins)?;
+        let skills = &saved_skills;
         crate::plugins::report_withheld(&withheld);
         // Keep trusted non-MCP contributions, but never register excluded
         // servers: discovery starts processes when the registry is queried.
