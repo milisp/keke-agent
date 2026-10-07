@@ -120,6 +120,14 @@ behind OAuth is not a vendor and cannot depend on one; before it existed, that
 code was in `keke-auth-codex` and `keke-auth-grok` twice, byte-identical apart
 from which config struct it read.
 
+`keke-image` validates and prepares image bytes for local tools, terminal
+attachments, and inline user inputs from ACP clients. Its read, decoded-pixel,
+output-dimension, and encoded-byte budgets come from `[images]` configuration.
+Decoding and resizing run off the async executor. Validated images stay inline
+in conversation events, so incremental rollout replay does not depend on the
+source file still existing. PNG/JPEG bytes are preserved when they fit; larger
+images are resized and compressed, and animated formats become still images.
+
 `keke-sandbox` confines the commands a model runs, and the confinement is the
 kernel's, not keke's: Seatbelt on macOS, Landlock and seccomp on Linux. A
 shell line can reach anything the process can, so inspecting its text — the
@@ -298,6 +306,23 @@ reviewer is what auto-approves it, in that order.
 
 `keke-acp` (protocol), `keke-tui` (ratatui), `keke-cli` (the single binary and
 the single composition root).
+
+### Image input in the terminal
+
+Dropping an image into a terminal supplies a file path, often shell-quoted or
+escaped. The composer recognizes explicit PNG/JPEG/GIF/WebP paths and shows
+attachment markers while keeping the paths editable. Enter prepares the images
+asynchronously before submitting text and image blocks through `Conversation`.
+Missing or corrupt files leave the draft intact. Editing during preparation
+cancels the stale submission. Replayed transcripts show image markers, and a
+conversation rewind returns the original inline image content for resending
+without rereading the source. Ctrl-Backspace removes a restored attachment;
+Ctrl-U clears the draft and restored attachments.
+
+Known text-only models do not receive the image tool in their tool listing,
+and image-bearing requests fail with a clear message before provider dispatch.
+An absent catalog entry leaves capability unknown instead of inferring support
+from a vendor or model name.
 
 ## The three seams
 

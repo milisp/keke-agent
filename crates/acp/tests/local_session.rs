@@ -200,6 +200,7 @@ fn recipe(
             reasoning_effort: None,
             service_tier: None,
             compaction: CompactionConfig::default(),
+            images: keke_config_types::ImageLimits::default(),
             checkpoints: keke_config_types::CheckpointConfig::default(),
             instructions: None,
             approval,

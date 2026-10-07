@@ -46,10 +46,13 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         " message ".to_string()
     };
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(Color::DarkGray))
         .title(title);
+    if let Some(label) = app.image_attachment_label() {
+        block = block.title_bottom(label);
+    }
     let inner = block.inner(area);
     let width = usize::from(inner.width).max(1);
 
@@ -146,4 +149,37 @@ fn wrap_position(line: &str, column: usize, width: usize) -> (usize, usize) {
         consumed += w;
     }
     (row, row_width)
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    use keke_acp::ScriptedConversation;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::Arc;
+
+    #[test]
+    fn attachment_labels_render_in_wide_and_narrow_composers() {
+        let (conversation, _) = ScriptedConversation::new(Vec::new());
+        let (mut app, _) = App::new(Arc::new(conversation));
+        app.input.set_text("'/tmp/你好 image.png'");
+        for width in [16, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, frame.area(), &mut app))
+                .unwrap();
+            if width == 120 {
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(rendered.contains("[image:"));
+                assert!(rendered.contains("image.png]"));
+            }
+            assert_eq!(app.input.text(), "'/tmp/你好 image.png'");
+        }
+    }
 }

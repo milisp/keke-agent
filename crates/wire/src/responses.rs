@@ -175,12 +175,16 @@ fn function_output(result: &ToolResult) -> Value {
         return json!(crate::result_text(result));
     }
     let mut items = Vec::new();
-    let text = crate::result_text(result);
-    if !text.is_empty() {
-        items.push(json!({ "type": "input_text", "text": text }));
-    }
-    for image in images {
-        items.push(json!({ "type": "input_image", "image_url": data_uri(image) }));
+    for block in &result.content {
+        match block {
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
+                items.push(json!({ "type": "input_text", "text": text }));
+            }
+            ContentBlock::Image(image) => {
+                items.push(json!({ "type": "input_image", "image_url": data_uri(image) }))
+            }
+            _ => {}
+        }
     }
     Value::Array(items)
 }

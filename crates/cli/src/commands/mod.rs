@@ -429,6 +429,7 @@ async fn session_builder(
             reasoning_effort: config.reasoning_effort,
             service_tier,
             compaction: config.compaction,
+            images: config.images,
             checkpoints: config.checkpoints,
             instructions: config.instructions.clone(),
             approval,

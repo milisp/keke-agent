@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Validated `view_image` tool output across all three inference formats.
+- Terminal image attachments from dropped or pasted paths, with asynchronous
+  preparation, configurable budgets, and image-preserving rewind and replay.
+- Image-bearing prompts through both ACP protocol versions.
+
 ### Changed
 - Session logs record conversation changes incrementally instead of repeating
   full history on each turn, while preserving legacy snapshot replay.

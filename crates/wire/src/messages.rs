@@ -314,19 +314,14 @@ fn tool_result_content(result: &ToolResult) -> Value {
         return json!(crate::result_text(result));
     }
     let mut blocks = Vec::new();
-    let text = crate::result_text(result);
-    if !text.is_empty() {
-        blocks.push(json!({ "type": "text", "text": text }));
-    }
-    for image in images {
-        blocks.push(json!({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": image.media_type,
-                "data": image.data,
-            },
-        }));
+    for block in &result.content {
+        match block {
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
+                blocks.push(json!({ "type": "text", "text": text }));
+            }
+            ContentBlock::Image(image) => blocks.push(json!({ "type": "image", "source": { "type": "base64", "media_type": image.media_type, "data": image.data } })),
+            _ => {}
+        }
     }
     Value::Array(blocks)
 }

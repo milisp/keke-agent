@@ -1,0 +1,23 @@
+[package]
+name = "keke-image"
+description = "Bounded image validation and preparation for model inputs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types.workspace = true
+keke-protocol.workspace = true
+base64.workspace = true
+image.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "rt"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

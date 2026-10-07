@@ -14,6 +14,7 @@ members = [
     "crates/fuzzy-file-search",
     "crates/guardian",
     "crates/hooks",
+    "crates/image",
     "crates/mcp",
     "crates/memory",
     "crates/oauth",
@@ -87,6 +88,7 @@ keke-provider-ollama = { path = "crates/provider-ollama" }
 keke-subagent = { path = "crates/subagent" }
 keke-tasks = { path = "crates/tasks" }
 keke-test-support = { path = "crates/test-support" }
+keke-image = { path = "crates/image" }
 keke-tools = { path = "crates/tools" }
 keke-tui = { path = "crates/tui" }
 
@@ -105,6 +107,7 @@ dirs = "6"
 eventsource-stream = "0.2"
 futures = "0.3"
 ignore = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Linux-only, for `keke-sandbox`: the filesystem and syscall halves of the
 # confinement. Both are safe wrappers, which is what keeps the workspace-wide
 # `unsafe_code = "deny"` intact.

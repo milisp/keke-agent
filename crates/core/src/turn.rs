@@ -61,7 +61,21 @@ pub struct TurnOutcome {
 
 impl Session {
     /// Run one turn to completion.
-    pub async fn run_turn(&mut self, input: Message) -> Result<TurnOutcome, CoreError> {
+    pub async fn run_turn(&mut self, mut input: Message) -> Result<TurnOutcome, CoreError> {
+        // Remote clients can supply bytes without using the local file loader.
+        // Normalize them before logging so replay preserves what the model sees.
+        for block in &mut input.content {
+            if let ContentBlock::Image(image) = block {
+                let prepared = keke_image::prepare_inline(image.clone(), self.config.images)
+                    .await
+                    .map_err(|error| {
+                        CoreError::Provider(ProviderError::InvalidRequest(format!(
+                            "invalid user image: {error}"
+                        )))
+                    })?;
+                *image = prepared.image;
+            }
+        }
         // A cancel belongs to the turn it interrupted. Carrying it forward made
         // the next turn stop after its first tool batch, which reads as the
         // agent giving up for no reason — and only when that turn used a tool,
@@ -153,15 +167,10 @@ impl Session {
         for event in ext_ctx.drain_events() {
             self.log(event).await?;
         }
-        let specs = tool_specs(&tools);
-        let tool_names: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
-
         let mut usage = Usage::default();
         // What the last logged `ModelRequest` said, so a step that changed
-        // neither the model nor the reasoning effort doesn't log again.
-        // `tools` never varies within a turn (`specs` is fixed above the
-        // loop), so it is not part of this comparison.
-        let mut last_logged: Option<(Option<keke_protocol::ReasoningEffort>, String)> = None;
+        // neither its settings nor the offered tools does not log again.
+        let mut last_logged = None;
 
         for step in 0..MAX_STEPS_PER_TURN {
             let mut fragments = Vec::new();
@@ -182,8 +191,12 @@ impl Session {
             for event in ext_ctx.drain_events() {
                 self.log(event).await?;
             }
+            let model = self.model.get().to_string();
+            let vision = self.model_vision(&model);
+            let specs = tool_specs(&tools, vision);
+            let tool_names: Vec<String> = specs.iter().map(|spec| spec.name.clone()).collect();
             let request = ModelRequest {
-                model: self.model.get().to_string(),
+                model,
                 session_id: Some(self.id),
                 system: Some(system.clone()),
                 messages: self.history.clone(),
@@ -206,7 +219,11 @@ impl Session {
             // Conversation events already record each message once. Requests
             // only record settings, so later turns do not duplicate history.
             // A settings change mid-turn must still be logged before the call.
-            let current = (request.reasoning_effort, request.model.clone());
+            let current = (
+                request.reasoning_effort,
+                request.model.clone(),
+                tool_names.clone(),
+            );
             if step == 0 || last_logged.as_ref() != Some(&current) {
                 self.log(SessionEvent::ModelRequest {
                     turn,
@@ -343,6 +360,14 @@ impl Session {
         })
     }
 
+    fn model_vision(&self, model: &str) -> Option<bool> {
+        self.provider
+            .cached_models()
+            .into_iter()
+            .find(|info| info.id == model)
+            .map(|info| info.supports_vision)
+    }
+
     /// Summarize the older history when it has outgrown its budget.
     ///
     /// A failed summarization is not fatal: the turn proceeds uncompacted and
@@ -427,6 +452,17 @@ impl Session {
         turn: TurnId,
         request: ModelRequest,
     ) -> Result<(Message, StopReason, Usage), CoreError> {
+        if self.model_vision(&request.model) == Some(false)
+            && request
+                .messages
+                .iter()
+                .any(|message| has_images(&message.content))
+        {
+            return Err(CoreError::Provider(ProviderError::InvalidRequest(format!(
+                "model `{}` does not support image inputs; select a vision-capable model",
+                request.model
+            ))));
+        }
         let mut retries = 0;
         let mut retry_delay = INITIAL_STREAM_RETRY_DELAY;
         'request: loop {
@@ -706,11 +742,23 @@ fn tool_calls(message: &Message) -> Vec<ToolCall> {
 }
 
 /// Advertise the tool set to the model.
-fn tool_specs(tools: &ToolSet) -> Vec<ToolSpec> {
+fn has_images(blocks: &[ContentBlock]) -> bool {
+    blocks.iter().any(|block| match block {
+        ContentBlock::Image(_) => true,
+        ContentBlock::ToolResult(result) => has_images(&result.content),
+        _ => false,
+    })
+}
+
+fn tool_specs(tools: &ToolSet, vision: Option<bool>) -> Vec<ToolSpec> {
     let siblings: Vec<_> = tools.iter().map(|tool| tool.id()).collect();
+    let mut attributes = std::collections::BTreeMap::new();
+    if let Some(supported) = vision {
+        attributes.insert("supports_vision".to_string(), supported.to_string());
+    }
     let ctx = ListToolsContext {
         siblings,
-        attributes: Default::default(),
+        attributes,
     };
 
     tools

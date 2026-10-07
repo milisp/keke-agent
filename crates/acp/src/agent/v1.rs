@@ -35,6 +35,7 @@ use agent_client_protocol::schema::v1::NewSessionRequest;
 use agent_client_protocol::schema::v1::NewSessionResponse;
 use agent_client_protocol::schema::v1::PermissionOption;
 use agent_client_protocol::schema::v1::PermissionOptionKind;
+use agent_client_protocol::schema::v1::PromptCapabilities;
 use agent_client_protocol::schema::v1::PromptRequest;
 use agent_client_protocol::schema::v1::PromptResponse;
 use agent_client_protocol::schema::v1::RequestPermissionOutcome;
@@ -139,6 +140,7 @@ pub(super) fn agent(
                                     // transcript can be replayed; v2 says it
                                     // with a `replayFrom` cursor instead.
                                     .load_session(true)
+                                    .prompt_capabilities(PromptCapabilities::new().image(true))
                                     .mcp_capabilities(McpCapabilities::new().http(true).sse(true))
                                     .session_capabilities(
                                         SessionCapabilities::new()
@@ -190,13 +192,16 @@ pub(super) fn agent(
                     let Some(entry) = sessions.get(request.session_id.0.as_ref()) else {
                         return responder.respond_with_error(unknown_session(&request.session_id));
                     };
-                    let text = prompt_text(&request.prompt);
+                    let message = match prompt_message(&request.prompt) {
+                        Ok(message) => message,
+                        Err(error) => return responder.respond_with_internal_error(error),
+                    };
                     // A turn runs for as long as the model does; holding the
                     // dispatch loop for it would stop `session/cancel` from
                     // ever arriving, which is to say it would remove the only
                     // way out.
                     cx.spawn(async move {
-                        let outcome = match entry.conversation.prompt(text).await {
+                        let outcome = match entry.conversation.prompt_message(message).await {
                             Ok(()) => entry
                                 .outcomes
                                 .lock()
@@ -446,19 +451,27 @@ fn unknown_session(id: &SessionId) -> agent_client_protocol::Error {
     agent_client_protocol::Error::internal_error().data(format!("unknown session `{}`", id.0))
 }
 
-/// Flatten a prompt's content blocks to the text the engine takes.
+/// Translate prompt content without silently losing attachments.
 ///
-/// Non-text blocks are dropped rather than rendered as placeholders: a model
-/// told about an image it cannot see answers about the placeholder.
-fn prompt_text(blocks: &[ContentBlock]) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Unsupported content fails explicitly rather than becoming an invisible placeholder.
+fn prompt_message(blocks: &[ContentBlock]) -> Result<keke_protocol::Message, String> {
+    let mut content = Vec::new();
+    for block in blocks {
+        content.push(match block {
+            ContentBlock::Text(text) => keke_protocol::ContentBlock::text(text.text.clone()),
+            ContentBlock::Image(image) => {
+                keke_protocol::ContentBlock::Image(keke_protocol::ImageBlock {
+                    data: image.data.clone(),
+                    media_type: image.mime_type.to_string(),
+                })
+            }
+            _ => return Err("unsupported ACP prompt content".to_string()),
+        });
+    }
+    Ok(keke_protocol::Message {
+        role: keke_protocol::Role::User,
+        content,
+    })
 }
 
 /// Forward one conversation's updates to the client for as long as it lives.
@@ -867,12 +880,62 @@ mod tests {
     }
 
     #[test]
-    fn only_text_reaches_the_model() {
+    fn prompt_preserves_text_blocks() {
         let blocks = vec![
             ContentBlock::Text(TextContent::new("first")),
             ContentBlock::Text(TextContent::new("second")),
         ];
-        assert_eq!(prompt_text(&blocks), "first\nsecond");
+        assert_eq!(
+            prompt_message(&blocks).unwrap().content,
+            vec![
+                keke_protocol::ContentBlock::text("first"),
+                keke_protocol::ContentBlock::text("second")
+            ]
+        );
+    }
+
+    #[test]
+    fn prompt_preserves_images_in_order() {
+        use agent_client_protocol::schema::v1::ImageContent;
+        let blocks = vec![
+            ContentBlock::Text(TextContent::new("before")),
+            ContentBlock::Image(ImageContent::new("Zmlyc3Q=", "image/png")),
+            ContentBlock::Text(TextContent::new("between")),
+            ContentBlock::Image(ImageContent::new("c2Vjb25k", "image/jpeg")),
+        ];
+        let message = prompt_message(&blocks).unwrap();
+        assert_eq!(message.role, keke_protocol::Role::User);
+        assert_eq!(
+            message.content,
+            vec![
+                keke_protocol::ContentBlock::text("before"),
+                keke_protocol::ContentBlock::Image(keke_protocol::ImageBlock {
+                    data: "Zmlyc3Q=".into(),
+                    media_type: "image/png".into()
+                }),
+                keke_protocol::ContentBlock::text("between"),
+                keke_protocol::ContentBlock::Image(keke_protocol::ImageBlock {
+                    data: "c2Vjb25k".into(),
+                    media_type: "image/jpeg".into()
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_prompt_content_is_rejected_instead_of_dropped() {
+        use agent_client_protocol::schema::v1::AudioContent;
+        use agent_client_protocol::schema::v1::ResourceLink;
+        for block in [
+            ContentBlock::Audio(AudioContent::new("YXVkaW8=", "audio/mp3")),
+            ContentBlock::ResourceLink(ResourceLink::new("document", "file:///document.txt")),
+        ] {
+            let blocks = [ContentBlock::Text(TextContent::new("inspect")), block];
+            assert_eq!(
+                prompt_message(&blocks).unwrap_err(),
+                "unsupported ACP prompt content"
+            );
+        }
     }
 
     /// Both versions render from `super::choices`, so what they offer cannot

@@ -144,6 +144,8 @@ pub struct Resumed {
 /// to when a person switches one from the keyboard. Grouped because they are
 /// only ever handed to `run` together.
 pub struct SessionDefaults {
+    pub image_root: std::path::PathBuf,
+    pub image_limits: keke_config_types::ImageLimits,
     pub approval: keke_config_types::ApprovalPolicy,
     /// The mode the session opened in, so a resumed session that was planning
     /// comes back with the flag already up.
@@ -242,6 +244,8 @@ pub async fn run(
     let (notices, notice_stream) = tokio::sync::mpsc::unbounded_channel();
     let is_resumed = !resumed.history.is_empty() || resumed.usage.total() > 0;
     let mut app = app
+        .with_image_limits(defaults.image_limits)
+        .with_image_root(defaults.image_root)
         .with_mcp(mcp.servers, mcp.sign_in, mcp.manage)
         .with_skills(skills)
         .with_notices(notices)
@@ -403,6 +407,7 @@ async fn event_loop(
                 app.tick_subagent_recording();
                 app.fire_due_schedules();
             }
+            Some(prepared) = app.image_preparations.recv() => app.finish_image_prompt(prepared),
             Some(update) = updates.recv() => app.apply(update),
             Some(update) = local.recv() => app.apply(update),
             Some(notice) = notices.recv() => app.apply_notice(notice),

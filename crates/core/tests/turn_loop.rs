@@ -62,6 +62,7 @@ use keke_tool::ToolOutput;
 struct ScriptedProvider {
     info: ProviderInfo,
     script: Mutex<Vec<Vec<StreamChunk>>>,
+    models: Vec<keke_provider_api::ModelInfo>,
     initial_errors: Mutex<Vec<ProviderError>>,
     stream_errors: Mutex<Vec<ProviderError>>,
     /// Every request the engine made, so a test can assert what the model saw.
@@ -81,6 +82,7 @@ impl ScriptedProvider {
                 env_key: None,
             },
             script: Mutex::new(script),
+            models: Vec::new(),
             initial_errors: Mutex::new(Vec::new()),
             stream_errors: Mutex::new(Vec::new()),
             seen: Arc::clone(&seen),
@@ -98,6 +100,10 @@ impl ScriptedProvider {
 }
 
 impl ModelProvider for ScriptedProvider {
+    fn cached_models(&self) -> Vec<keke_provider_api::ModelInfo> {
+        self.models.clone()
+    }
+
     fn info(&self) -> &ProviderInfo {
         &self.info
     }
@@ -154,6 +160,13 @@ impl Tool for Echo {
 
     fn description(&self, _ctx: &ListToolsContext) -> ToolDescription {
         ToolDescription::new("Echo the input back.")
+    }
+
+    fn should_list(&self, ctx: &ListToolsContext) -> bool {
+        // Stand in for a vision tool to exercise the provider-neutral listing seam.
+        ctx.attributes
+            .get("supports_vision")
+            .is_none_or(|value| value != "false")
     }
 
     fn capabilities(&self) -> ToolCapabilities {
@@ -390,6 +403,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         reasoning_effort: None,
         service_tier: None,
         compaction: CompactionConfig::default(),
+        images: keke_config_types::ImageLimits::default(),
         checkpoints: CheckpointConfig::default(),
         instructions: None,
         approval,
@@ -640,6 +654,132 @@ async fn approval_abort_keeps_live_and_replayed_history_equal() {
         .await
         .expect("continues");
     assert_eq!(seen.lock().expect("lock")[1].messages, expected_request);
+    assert_history_replays(&session, &harness.home);
+}
+
+#[tokio::test]
+async fn model_capabilities_reach_tool_listing_without_vendor_name_checks() {
+    for vision in [None, Some(false), Some(true)] {
+        let harness = harness();
+        let config = session_config(&harness.home);
+        let (mut provider, seen) = ScriptedProvider::new(vec![text_reply("ok")]);
+        if let Some(supported) = vision {
+            let mut info = keke_provider_api::ModelInfo::new(&config.model.model);
+            info.supports_vision = supported;
+            Arc::get_mut(&mut provider)
+                .expect("exclusive provider")
+                .models = vec![info];
+        }
+        let mut extensions = ExtensionRegistryBuilder::new();
+        extensions.tool_contributor(Arc::new(EchoPack));
+        let mut session = SessionBuilder::new()
+            .config(config)
+            .provider(provider)
+            .extensions(extensions.build())
+            .build()
+            .await
+            .expect("builds");
+        session
+            .run_turn(Message::user("hello"))
+            .await
+            .expect("turn");
+        let listed = seen.lock().expect("lock")[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "echo");
+        assert_eq!(listed, vision != Some(false));
+        assert_history_replays(&session, &harness.home);
+    }
+}
+
+#[tokio::test]
+async fn malformed_user_images_do_not_enter_the_log_or_provider_request() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![text_reply("unused")]);
+    let mut session = SessionBuilder::new()
+        .config(session_config(&harness.home))
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    let input = Message {
+        role: keke_protocol::Role::User,
+        content: vec![ContentBlock::Image(keke_protocol::ImageBlock {
+            media_type: "image/png".into(),
+            data: "invalid image bytes".into(),
+        })],
+    };
+    session.run_turn(input).await.expect_err("invalid image");
+    assert!(seen.lock().expect("lock").is_empty());
+    assert!(session.history().is_empty());
+    assert_history_replays(&session, &harness.home);
+}
+
+#[tokio::test]
+async fn a_known_text_only_model_rejects_images_before_provider_dispatch() {
+    let harness = harness();
+    let config = session_config(&harness.home);
+    let (mut provider, seen) = ScriptedProvider::new(vec![text_reply("unused")]);
+    let info = keke_provider_api::ModelInfo::new(&config.model.model);
+    Arc::get_mut(&mut provider)
+        .expect("exclusive provider")
+        .models = vec![info];
+    let mut session = SessionBuilder::new()
+        .config(config)
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    let input = Message {
+        role: keke_protocol::Role::User,
+        content: vec![ContentBlock::Image(keke_protocol::ImageBlock {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
+        })],
+    };
+    let error = session
+        .run_turn(input)
+        .await
+        .expect_err("unsupported image");
+    assert!(matches!(
+        error,
+        keke_core::CoreError::Provider(ProviderError::InvalidRequest(_))
+    ));
+    assert!(seen.lock().expect("lock").is_empty());
+    assert_history_replays(&session, &harness.home);
+}
+
+#[tokio::test]
+async fn user_images_survive_incremental_resume_and_reach_a_vision_model() {
+    let harness = harness();
+    let config = session_config(&harness.home);
+    let (mut provider, seen) = ScriptedProvider::new(vec![text_reply("seen")]);
+    let mut info = keke_provider_api::ModelInfo::new(&config.model.model);
+    info.supports_vision = true;
+    Arc::get_mut(&mut provider)
+        .expect("exclusive provider")
+        .models = vec![info];
+    let mut session = SessionBuilder::new()
+        .config(config)
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+    let mut input = Message::user("describe");
+    input
+        .content
+        .push(ContentBlock::Image(keke_protocol::ImageBlock {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
+        }));
+    session.run_turn(input.clone()).await.expect("vision turn");
+    let rewound = session
+        .rewind_to_user_turn(0, RewindScope::Conversation)
+        .await
+        .expect("rewinds")
+        .expect("original image input");
+    assert_eq!(rewound.input, input);
+    assert_eq!(seen.lock().expect("lock")[0].messages, vec![input]);
     assert_history_replays(&session, &harness.home);
 }
 

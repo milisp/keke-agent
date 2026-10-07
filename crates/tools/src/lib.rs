@@ -82,12 +82,25 @@ pub fn builtin_tools(
     sandbox: &SandboxSwitch,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) -> Vec<ArcTool> {
+    builtin_tools_with_image_limits(
+        sandbox,
+        background,
+        keke_config_types::ImageLimits::default(),
+    )
+}
+
+/// Build the pack with the deployment's image budgets.
+pub fn builtin_tools_with_image_limits(
+    sandbox: &SandboxSwitch,
+    background: Option<Arc<keke_tasks::BackgroundTasks>>,
+    image_limits: keke_config_types::ImageLimits,
+) -> Vec<ArcTool> {
     let sandbox = sandbox.current();
     let read_only = sandbox.policy().mode == SandboxMode::ReadOnly;
     let confines = sandbox.confines();
     let mut tools: Vec<ArcTool> = vec![
         Arc::new(ReadFile),
-        Arc::new(ViewImage),
+        Arc::new(ViewImage::new(image_limits)),
         Arc::new(ListDir),
         Arc::new(Grep),
         Arc::new(Bash {
@@ -108,13 +121,14 @@ pub fn builtin_tools(
 }
 
 struct BuiltinTools {
+    image_limits: keke_config_types::ImageLimits,
     sandbox: Arc<SandboxSwitch>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 }
 
 impl ToolContributor for BuiltinTools {
     fn tools(&self, _ctx: &ExtensionContext) -> Vec<ArcTool> {
-        builtin_tools(&self.sandbox, self.background.clone())
+        builtin_tools_with_image_limits(&self.sandbox, self.background.clone(), self.image_limits)
     }
 }
 
@@ -139,8 +153,24 @@ pub fn install(
     sandbox: Arc<SandboxSwitch>,
     background: Option<Arc<keke_tasks::BackgroundTasks>>,
 ) {
+    install_with_image_limits(
+        registry,
+        sandbox,
+        background,
+        keke_config_types::ImageLimits::default(),
+    );
+}
+
+/// Register the pack with configured image preparation budgets.
+pub fn install_with_image_limits(
+    registry: &mut ExtensionRegistryBuilder,
+    sandbox: Arc<SandboxSwitch>,
+    background: Option<Arc<keke_tasks::BackgroundTasks>>,
+    image_limits: keke_config_types::ImageLimits,
+) {
     let guard_sandbox = Arc::clone(&sandbox);
     registry.tool_contributor(Arc::new(BuiltinTools {
+        image_limits,
         sandbox,
         background,
     }));

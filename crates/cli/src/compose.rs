@@ -432,6 +432,7 @@ pub(crate) struct Settings<'a> {
     pub catalog_ttl: keke_config_types::ModelCatalogTtl,
     pub subagent_limits: keke_config_types::SubagentLimits,
     pub background_limits: keke_config_types::BackgroundLimits,
+    pub image_limits: keke_config_types::ImageLimits,
     pub memory: &'a keke_config_types::MemoryConfig,
     pub skills: &'a keke_config_types::SkillSelection,
     pub guardian: &'a keke_config_types::GuardianReviewConfig,
@@ -451,6 +452,7 @@ impl<'a> From<&'a keke_config::Config> for Settings<'a> {
             catalog_ttl: config.model_catalog_ttl,
             subagent_limits: config.subagents,
             background_limits: config.background,
+            image_limits: config.images,
             memory: &config.memory,
             skills: &config.skills,
             guardian: &config.guardian,
@@ -517,6 +519,7 @@ impl Composed {
             catalog_ttl,
             subagent_limits,
             background_limits,
+            image_limits,
             memory,
             skills,
             guardian,
@@ -665,10 +668,11 @@ impl Composed {
             background_limits,
             Arc::clone(&sandbox),
         ));
-        keke_tools::install(
+        keke_tools::install_with_image_limits(
             &mut extensions,
             Arc::clone(&sandbox),
             Some(Arc::clone(&background)),
+            image_limits,
         );
         // The scheduler the surface fires from and the tool writes to. One
         // handle, for the same reason the task registry is one: a loop the

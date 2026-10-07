@@ -33,7 +33,9 @@ impl App {
     /// characters race the redraw. Ignored while a permission prompt owns the
     /// keyboard, where the composer is not taking input anyway.
     pub fn handle_paste(&mut self, text: &str) {
-        if self.open_permission_id().is_some()
+        if self.picker_open()
+            || self.rewind().is_some()
+            || self.open_permission_id().is_some()
             || self.task_viewer.is_some()
             || self.open_subagent().is_some()
             || self.subagent_history.is_some()
@@ -177,7 +179,13 @@ impl App {
             KeyCode::Char('f') if alt => self.input.move_word_right(),
             KeyCode::Char('b') if control => self.input.move_left(),
             KeyCode::Char('f') if control => self.input.move_right(),
-            KeyCode::Char('u') if control => self.input.kill_to_start(),
+            KeyCode::Char('u') if control => {
+                self.input.kill_to_start();
+                self.restored_images.clear();
+            }
+            KeyCode::Backspace if control && !self.restored_images.is_empty() => {
+                self.restored_images.pop();
+            }
             KeyCode::Char('k') if control => self.input.kill_to_end(),
             KeyCode::Char('w') if control => self.input.delete_word_before(),
             // History, always, whatever the composer holds — the arrows cannot
@@ -273,12 +281,14 @@ impl App {
     fn recall_older(&mut self) {
         let current = self.input.text();
         if let Some(prompt) = self.history.older(&current) {
+            self.restored_images.clear();
             self.input.set_text(&prompt);
         }
     }
 
     fn recall_newer(&mut self) {
         if let Some(prompt) = self.history.newer() {
+            self.restored_images.clear();
             self.input.set_text(&prompt);
         }
     }

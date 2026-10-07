@@ -4,6 +4,7 @@
 //! denial looks like, when Ctrl-C quits, whether new output moves the view —
 //! is assertable without a backend.
 
+pub(crate) mod attachments;
 mod commands;
 mod completion;
 mod picker_overlay;
@@ -62,6 +63,16 @@ struct BannerInputs {
 }
 
 pub struct App {
+    pub(crate) restored_images: Vec<keke_protocol::ImageBlock>,
+    pub(crate) rewind_pending: bool,
+    pub(crate) rewind_draft: Option<String>,
+    image_root: PathBuf,
+    image_limits: keke_config_types::ImageLimits,
+    preparing_images: bool,
+    image_preparation_generation: u64,
+    image_preparation_sender: tokio::sync::mpsc::UnboundedSender<attachments::PreparedPrompt>,
+    pub(crate) image_preparations:
+        tokio::sync::mpsc::UnboundedReceiver<attachments::PreparedPrompt>,
     conversation: Arc<dyn Conversation>,
     /// Updates the surface generates for itself — a prompt that never left, a
     /// login notice. Merged with the agent's stream so the draw loop has one
@@ -268,6 +279,7 @@ impl App {
     /// Returns the app and the receiver for its self-generated updates; the
     /// event loop selects over that alongside the agent's stream.
     pub fn new(conversation: Arc<dyn Conversation>) -> (Self, UnboundedReceiver<Update>) {
+        let (image_preparation_sender, image_preparations) = tokio::sync::mpsc::unbounded_channel();
         let (local, local_updates) = tokio::sync::mpsc::unbounded_channel();
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let transcript = keke_paths::AbsPath::new(&cwd)
@@ -275,6 +287,15 @@ impl App {
             .unwrap_or_default();
         (
             Self {
+                restored_images: Vec::new(),
+                rewind_pending: false,
+                rewind_draft: None,
+                image_root: cwd.clone(),
+                image_limits: Default::default(),
+                preparing_images: false,
+                image_preparation_generation: 0,
+                image_preparation_sender,
+                image_preparations,
                 conversation,
                 local,
                 banner: None,
@@ -833,6 +854,8 @@ impl App {
                 }
             }
             Update::Failed(message) => {
+                self.rewind_pending = false;
+                self.rewind_draft = None;
                 // Deliberately does not quit: the seam promises the
                 // conversation survives a failed turn.
                 self.end_turn();
@@ -859,6 +882,10 @@ impl App {
             Update::RewindPreview { turn, files } => self.preview_rewind(turn, files),
             Update::Rewound(rewound) => self.report_rewind(&rewound),
             Update::SessionReset => {
+                self.invalidate_image_preparation();
+                self.restored_images.clear();
+                self.rewind_pending = false;
+                self.rewind_draft = None;
                 self.task_viewer = None;
                 self.task_rows.clear();
                 self.transcript.clear();
@@ -914,7 +941,13 @@ impl App {
     /// The prompt is spawned rather than awaited so a slow agent cannot stop
     /// the surface from redrawing or from accepting Ctrl-C.
     pub fn submit(&mut self) {
-        if self.input.is_empty() {
+        if (self.input.is_empty() && self.restored_images.is_empty())
+            || self.preparing_images
+            || self.rewind_pending
+        {
+            return;
+        }
+        if self.prepare_image_prompt() {
             return;
         }
         let text = self.input.take();
@@ -945,6 +978,10 @@ impl App {
     /// same reason `submit` is — rebuilding a session can mean a network
     /// round trip, and that must not stop the interface from redrawing.
     fn start_new_session(&mut self) {
+        self.invalidate_image_preparation();
+        self.restored_images.clear();
+        self.rewind_pending = false;
+        self.rewind_draft = None;
         // A loop was written against the conversation it was typed into;
         // carrying it over would keep asking a question about work the fresh
         // session has no record of.

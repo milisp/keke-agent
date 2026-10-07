@@ -33,6 +33,7 @@ use keke_config_types::CompactionConfig;
 use keke_config_types::DirectoryOverride;
 use keke_config_types::GuardianReviewConfig;
 use keke_config_types::HomeLayout;
+use keke_config_types::ImageLimits;
 use keke_config_types::MaxOutputTokens;
 use keke_config_types::MemoryConfig;
 use keke_config_types::ModelCatalogTtl;
@@ -101,6 +102,8 @@ pub struct Config {
     pub subagents: SubagentLimits,
     /// Bounds on the shell commands a session may leave running.
     pub background: BackgroundLimits,
+    /// Budgets shared by local image tools and user attachments.
+    pub images: ImageLimits,
     /// Where the agent's persistent memory lives, if anywhere.
     pub memory: MemoryConfig,
     /// Which plugin-contributed skills this deployment wants.
@@ -146,6 +149,7 @@ pub struct ConfigFile {
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
     pub background: Option<BackgroundFile>,
+    pub images: Option<ImagesFile>,
     pub memory: Option<MemoryFile>,
     pub skills: Option<SkillsFile>,
     pub guardian: Option<GuardianFile>,
@@ -161,6 +165,16 @@ pub struct ConfigFile {
     /// [`Config::from_layers`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dir: Vec<DirectoryOverride>,
+}
+
+/// Image budgets, merged field by field across configuration layers.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImagesFile {
+    pub read_bytes: Option<u64>,
+    pub decoded_pixels: Option<u64>,
+    pub max_dimension: Option<u32>,
+    pub encoded_bytes: Option<u64>,
 }
 
 /// The checkpoint section, separated for the same reason the compaction one is.
@@ -373,6 +387,13 @@ impl Config {
                 base.output_bytes = background.output_bytes.or(base.output_bytes);
                 base.kill_grace_millis = background.kill_grace_millis.or(base.kill_grace_millis);
             }
+            if let Some(images) = layer.file.images {
+                let base = merged.images.get_or_insert_with(ImagesFile::default);
+                base.read_bytes = images.read_bytes.or(base.read_bytes);
+                base.decoded_pixels = images.decoded_pixels.or(base.decoded_pixels);
+                base.max_dimension = images.max_dimension.or(base.max_dimension);
+                base.encoded_bytes = images.encoded_bytes.or(base.encoded_bytes);
+            }
             if let Some(memory) = &layer.file.memory {
                 let base = merged.memory.get_or_insert_with(MemoryFile::default);
                 base.dir = memory.dir.clone().or(base.dir.clone());
@@ -546,6 +567,16 @@ impl Config {
             },
         };
 
+        let defaults = ImageLimits::default();
+        let image_file = merged.images.unwrap_or_default();
+        let images = ImageLimits {
+            read_bytes: image_file.read_bytes.unwrap_or(defaults.read_bytes),
+            decoded_pixels: image_file.decoded_pixels.unwrap_or(defaults.decoded_pixels),
+            max_dimension: image_file.max_dimension.unwrap_or(defaults.max_dimension),
+            encoded_bytes: image_file.encoded_bytes.unwrap_or(defaults.encoded_bytes),
+        };
+        images.check().map_err(invalid)?;
+
         let memory_defaults = MemoryConfig::default();
         let memory_file = merged.memory.unwrap_or_default();
         let memory = MemoryConfig {
@@ -675,6 +706,7 @@ impl Config {
             plugins,
             subagents,
             background,
+            images,
             memory,
             skills,
             guardian,
@@ -1205,6 +1237,38 @@ mod tests {
         let layers = vec![layer("user", "[compaction]\ntrigger_percent = 0\n")];
         let error = Config::from_layers(home(), &layers).expect_err("rejected");
         assert!(matches!(error, ConfigError::Invalid { .. }), "{error}");
+    }
+
+    #[test]
+    fn image_budgets_merge_individually_and_validate_before_use() {
+        let layers = vec![
+            layer(
+                "user",
+                "[images]\nread_bytes = 8388608\nmax_dimension = 1024\n",
+            ),
+            layer("project", "[images]\nencoded_bytes = 1048576\n"),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges image limits");
+        assert_eq!(config.images.read_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.images.max_dimension, 1024);
+        assert_eq!(config.images.encoded_bytes, 1024 * 1024);
+        assert_eq!(
+            config.images.decoded_pixels,
+            ImageLimits::default().decoded_pixels
+        );
+        for field in [
+            "read_bytes",
+            "decoded_pixels",
+            "max_dimension",
+            "encoded_bytes",
+        ] {
+            let layers = vec![layer("user", &format!("[images]\n{field} = 0\n"))];
+            let error = Config::from_layers(home(), &layers).expect_err("invalid limit");
+            assert!(
+                error.to_string().contains(&format!("images.{field}")),
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,4 @@
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
+use keke_config_types::ImageLimits;
 use keke_protocol::ContentBlock;
 use keke_protocol::ImageBlock;
 use keke_tool::ListToolsContext;
@@ -14,17 +13,8 @@ use keke_tool::ToolOutput;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::io::AsyncReadExt;
 
 use crate::support;
-
-/// Largest file this tool will send.
-///
-/// Chosen so the base64 form stays under the 5 MB per-image limit Anthropic's
-/// wire enforces (base64 is 4/3 the size of its input); the OpenAI wires accept
-/// at least that. There is no resizing here, so an oversized file is refused
-/// with its size rather than silently degraded.
-const MAX_IMAGE_BYTES: u64 = 3_750_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ViewImageArgs {
@@ -58,7 +48,17 @@ impl ToolOutput for ViewImageOutput {
 }
 
 /// Shows the model an image file.
-pub struct ViewImage;
+#[derive(Default)]
+pub struct ViewImage {
+    limits: ImageLimits,
+}
+
+impl ViewImage {
+    /// Use the deployment's validated preparation budgets.
+    pub fn new(limits: ImageLimits) -> Self {
+        Self { limits }
+    }
+}
 
 impl Tool for ViewImage {
     type Args = ViewImageArgs;
@@ -76,6 +76,12 @@ impl Tool for ViewImage {
         )
     }
 
+    fn should_list(&self, ctx: &ListToolsContext) -> bool {
+        ctx.attributes
+            .get("supports_vision")
+            .is_none_or(|value| value != "false")
+    }
+
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities::of_kind(ToolKind::Read)
     }
@@ -84,65 +90,16 @@ impl Tool for ViewImage {
         let path = support::resolve(&ctx, &args.path, support::Access::Read)?;
         let display = support::display(&ctx.workspace_root, &path);
 
-        let file = tokio::fs::File::open(path.as_path())
+        let prepared = keke_image::load_path(path.as_path(), self.limits)
             .await
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => {
-                    ToolError::custom("file_not_found", format!("{display}: no such file"))
-                }
-                _ => ToolError::custom("read_failed", format!("{display}: {error}")),
-            })?;
-
-        // One byte past the limit is enough to tell "too big" from "exactly
-        // fits" without materializing a file of any size.
-        let mut buffer = Vec::new();
-        file.take(MAX_IMAGE_BYTES + 1)
-            .read_to_end(&mut buffer)
-            .await
-            .map_err(|error| ToolError::custom("read_failed", format!("{display}: {error}")))?;
-
-        if buffer.len() as u64 > MAX_IMAGE_BYTES {
-            return Err(ToolError::custom(
-                "image_too_large",
-                format!("{display}: larger than {MAX_IMAGE_BYTES} bytes, not sending"),
-            ));
-        }
-
-        // Sniffed, not taken from the extension: a mislabeled file would be
-        // rejected by the provider with an error that names neither the file
-        // nor the cause.
-        let Some(media_type) = sniff_media_type(&buffer) else {
-            return Err(ToolError::custom(
-                "unsupported_image",
-                format!("{display}: not a PNG, JPEG, GIF, or WebP file"),
-            ));
-        };
+            .map_err(|error| ToolError::custom(error.code(), format!("{display}: {error}")))?;
 
         Ok(ViewImageOutput {
             path: display,
-            media_type: media_type.to_string(),
-            bytes: buffer.len(),
-            image: ImageBlock {
-                data: STANDARD.encode(&buffer),
-                media_type: media_type.to_string(),
-            },
+            media_type: prepared.image.media_type.clone(),
+            bytes: prepared.bytes,
+            image: prepared.image,
         })
-    }
-}
-
-/// The media type named by `bytes`' magic number, for the formats every wire
-/// accepts.
-fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else {
-        None
     }
 }
 
@@ -155,7 +112,14 @@ mod tests {
 
     use super::*;
 
-    const PNG_HEADER: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    fn png() -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode");
+        bytes.into_inner()
+    }
 
     fn workspace() -> (tempfile::TempDir, ToolCallContext) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -173,12 +137,27 @@ mod tests {
         ViewImageArgs { path: path.into() }
     }
 
+    #[test]
+    fn a_known_text_only_model_is_not_offered_the_image_tool() {
+        let mut ctx = ListToolsContext::default();
+        assert!(ViewImage::default().should_list(&ctx));
+        ctx.attributes
+            .insert("supports_vision".into(), "false".into());
+        assert!(!ViewImage::default().should_list(&ctx));
+        ctx.attributes
+            .insert("supports_vision".into(), "true".into());
+        assert!(ViewImage::default().should_list(&ctx));
+    }
+
     #[tokio::test]
     async fn an_image_reaches_the_model_as_an_image_block() {
         let (_dir, ctx) = workspace();
-        std::fs::write(ctx.workspace_root.as_path().join("shot.png"), PNG_HEADER).expect("write");
+        std::fs::write(ctx.workspace_root.as_path().join("shot.png"), png()).expect("write");
 
-        let out = ViewImage.run(ctx, args("shot.png")).await.expect("views");
+        let out = ViewImage::default()
+            .run(ctx, args("shot.png"))
+            .await
+            .expect("views");
 
         let blocks = out.render();
         assert!(matches!(&blocks[0], ContentBlock::Text { text } if text.contains("shot.png")));
@@ -186,7 +165,7 @@ mod tests {
             panic!("the second block must be the image, got {blocks:?}");
         };
         assert_eq!(image.media_type, "image/png");
-        assert_eq!(STANDARD.decode(&image.data).expect("base64"), PNG_HEADER);
+        assert_eq!(STANDARD.decode(&image.data).expect("base64"), png());
     }
 
     /// The pixels are in the result's content, which resume replays; carrying
@@ -194,13 +173,16 @@ mod tests {
     #[tokio::test]
     async fn the_structured_value_does_not_carry_the_pixels() {
         let (_dir, ctx) = workspace();
-        std::fs::write(ctx.workspace_root.as_path().join("shot.png"), PNG_HEADER).expect("write");
+        std::fs::write(ctx.workspace_root.as_path().join("shot.png"), png()).expect("write");
 
-        let out = ViewImage.run(ctx, args("shot.png")).await.expect("views");
+        let out = ViewImage::default()
+            .run(ctx, args("shot.png"))
+            .await
+            .expect("views");
 
         let value = serde_json::to_value(&out).expect("serializes");
         assert!(value.get("image").is_none(), "{value}");
-        assert!(!value.to_string().contains(&STANDARD.encode(PNG_HEADER)));
+        assert!(!value.to_string().contains(&STANDARD.encode(png())));
     }
 
     /// A `.png` that is not a PNG must fail here, with the file named, rather
@@ -210,7 +192,7 @@ mod tests {
         let (_dir, ctx) = workspace();
         std::fs::write(ctx.workspace_root.as_path().join("fake.png"), "just text").expect("write");
 
-        let error = ViewImage
+        let error = ViewImage::default()
             .run(ctx, args("fake.png"))
             .await
             .expect_err("not an image");
@@ -225,11 +207,11 @@ mod tests {
     #[tokio::test]
     async fn an_oversized_file_is_refused_not_sent() {
         let (_dir, ctx) = workspace();
-        let mut bytes = PNG_HEADER.to_vec();
-        bytes.resize(MAX_IMAGE_BYTES as usize + 1, 0);
+        let mut bytes = png().to_vec();
+        bytes.resize(ImageLimits::default().read_bytes as usize + 1, 0);
         std::fs::write(ctx.workspace_root.as_path().join("big.png"), bytes).expect("write");
 
-        let error = ViewImage
+        let error = ViewImage::default()
             .run(ctx, args("big.png"))
             .await
             .expect_err("too large");
@@ -244,7 +226,7 @@ mod tests {
     async fn a_missing_file_names_itself() {
         let (_dir, ctx) = workspace();
 
-        let error = ViewImage
+        let error = ViewImage::default()
             .run(ctx, args("nope.png"))
             .await
             .expect_err("missing");
@@ -254,14 +236,5 @@ mod tests {
                 if code == "file_not_found" && message.contains("nope.png")),
             "got {error:?}"
         );
-    }
-
-    #[test]
-    fn every_supported_format_is_recognized_by_its_magic_number() {
-        assert_eq!(sniff_media_type(PNG_HEADER), Some("image/png"));
-        assert_eq!(sniff_media_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
-        assert_eq!(sniff_media_type(b"GIF89a...."), Some("image/gif"));
-        assert_eq!(sniff_media_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
-        assert_eq!(sniff_media_type(b"RIFF\0\0\0\0WAVEfmt "), None);
     }
 }

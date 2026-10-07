@@ -406,7 +406,7 @@ impl Transcript {
                 // it would bury the conversation under it on every resume.
                 Role::System => {}
                 Role::User => {
-                    let text = message.text();
+                    let text = user_message_text(message);
                     if !text.trim().is_empty() {
                         self.push(Cell::User(text));
                     }
@@ -485,6 +485,13 @@ impl Transcript {
 
     fn replay_recorded_message(&mut self, message: &Message) {
         if message.role == Role::System {
+            return;
+        }
+        if message.role == Role::User {
+            let text = user_message_text(message);
+            if !text.is_empty() {
+                self.push(Cell::User(text));
+            }
             return;
         }
         for block in &message.content {
@@ -1205,4 +1212,18 @@ mod recorded_replay_tests {
         assert_eq!(tool.state, CallState::Running);
         assert_eq!(tool.arguments, "echo first\necho second");
     }
+}
+
+/// Render images in user history without exposing their encoded bytes.
+pub(crate) fn user_message_text(message: &Message) -> String {
+    let mut text = message.text();
+    for block in &message.content {
+        if let ContentBlock::Image(image) = block {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("[image: {}]", image.media_type));
+        }
+    }
+    text
 }
