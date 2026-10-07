@@ -53,6 +53,8 @@ impl PromptKind {
 /// The commands the surface implements itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builtin {
+    /// Manage discovered skill sources and individual skills.
+    Skills,
     /// Opens the recorded child sessions, including completed work.
     Subagents,
     Help,
@@ -222,6 +224,7 @@ impl SlashCommands {
 fn builtins() -> Vec<SlashCommand> {
     [
         (Builtin::Help, "help", "list the commands"),
+        (Builtin::Skills, "skills", "manage skill sources and individual skills"),
         (Builtin::Subagents, "subagents", "inspect running and completed subagents"),
         (Builtin::Clear, "clear", "clear the transcript on screen"),
         (

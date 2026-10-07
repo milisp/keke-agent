@@ -721,6 +721,23 @@ the question that matters into a reflex.
 
 ### Skills are for both readers
 
+Native skills are discovered in `~/.agents/skills`, `$KEKE_HOME/skills`, and
+their workspace counterparts. They keep bare names; source labels belong in
+the interface rather than in the skill's name. Canonical file paths are
+deduplicated, and workspace skills take precedence over user skills with the
+same name. Within one scope, Keke and Agents sources precede Claude sources.
+Packaged plugin skills retain their qualified names.
+
+The TUI's `/skills` panel lists sources and individual skills, including
+disabled entries. Source groups start collapsed. Enter expands or collapses a
+source and shows details for an individual skill; Space toggles enablement.
+Typing filters the list and reveals matching skills even in collapsed groups.
+Choices are stored atomically in
+`$KEKE_HOME/state/skills.json` and apply on the next application launch.
+Claude's loose skill directories and foreign plugin installations (including
+Claude's cached marketplace packages) require an explicit source choice in this
+panel. Configuration denials remain authoritative over interactive choices.
+
 A skill's one-line description goes into every request and its body stays on
 disk until it is wanted — that is what keeps twenty installed plugins from
 costing twenty bodies a turn. But a skill written only for the model is one a

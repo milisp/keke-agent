@@ -35,6 +35,8 @@ const CHROME_MCP: u16 = 2;
 fn chrome(picker: &Picker) -> u16 {
     if picker.kind() == crate::picker::PickerKind::Mcp {
         CHROME_MCP
+    } else if picker.kind() == crate::picker::PickerKind::Skills {
+        CHROME + 3
     } else {
         CHROME
     }
@@ -86,6 +88,62 @@ fn content(app: &App) -> Option<(&Picker, &'static str, Vec<Row>)> {
         return Some((
             picker,
             " providers \u{2014} type to filter, enter switches, esc cancels ",
+            rows,
+        ));
+    }
+    if let Some(picker) = app.skills_picker() {
+        let rows = app
+            .picker_skills()
+            .into_iter()
+            .map(|row| match row {
+                crate::skills::SkillRow::Source {
+                    source,
+                    enabled,
+                    count,
+                    expanded,
+                } => Row {
+                    current: enabled,
+                    label: format!(
+                        "{} [{}] {source}",
+                        if expanded { "▾" } else { "▸" },
+                        if enabled { "x" } else { " " }
+                    ),
+                    detail: format!("{count} skills · source"),
+                },
+                crate::skills::SkillRow::Skill(entry) => Row {
+                    current: entry.enabled && entry.source_enabled && !entry.locked,
+                    label: format!(
+                        "  [{}] {}",
+                        if entry.locked {
+                            "-"
+                        } else if entry.enabled && entry.source_enabled {
+                            "x"
+                        } else {
+                            " "
+                        },
+                        entry.name
+                    ),
+                    detail: format!(
+                        "{}{}",
+                        entry.description,
+                        if entry.locked {
+                            " · disabled by configuration"
+                        } else if !entry.source_enabled {
+                            if entry.enabled {
+                                " · source off (individual choice: on)"
+                            } else {
+                                " · source off"
+                            }
+                        } else {
+                            ""
+                        }
+                    ),
+                },
+            })
+            .collect();
+        return Some((
+            picker,
+            " skills — enter expand/details, space toggle, esc close ",
             rows,
         ));
     }
@@ -180,9 +238,17 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         };
         // The one in force is marked rather than moved to the top: a list that
         // reorders itself as you switch is one you cannot learn.
-        let mark = if row.current { "*" } else { " " };
+        let mark = if row.current && picker.kind() != crate::picker::PickerKind::Skills {
+            "*"
+        } else {
+            " "
+        };
         let mut spans = vec![Span::styled(
-            format!(" {mark} {} ", row.label),
+            if picker.kind() == crate::picker::PickerKind::Skills {
+                format!(" {} ", row.label)
+            } else {
+                format!(" {mark} {} ", row.label)
+            },
             style.add_modifier(Modifier::BOLD),
         )];
         spans.push(Span::styled(
@@ -205,6 +271,19 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Borders::ALL
     };
+    if picker.kind() == crate::picker::PickerKind::Skills {
+        let footer = app.skills_footer();
+        let chars: Vec<char> = footer.chars().collect();
+        for chunk in chars
+            .chunks(usize::from(area.width.saturating_sub(2)).max(1))
+            .take(3)
+        {
+            lines.push(Line::styled(
+                chunk.iter().collect::<String>(),
+                Style::new().fg(Color::DarkGray),
+            ));
+        }
+    }
     let block = Block::default()
         .borders(borders)
         .border_style(Style::new().fg(Color::Cyan))

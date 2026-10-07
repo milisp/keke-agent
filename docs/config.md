@@ -367,6 +367,8 @@ collect_timeout_millis = 600000 # Default cancellable `collect_agent` wait windo
 # so the tree is one level deep by construction rather than by configuration.
 
 # Skills a plugin ships that this deployment does not want
+# The TUI /skills panel also saves source and individual choices for the next
+# launch. Configuration denials below cannot be overridden from the panel.
 [skills]
 disabled = ["acme:review", "deploy", "noisy-plugin:*"]
 # Each entry is `plugin:name`, a bare `name` matching that skill in every

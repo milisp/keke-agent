@@ -370,6 +370,18 @@ pub(super) async fn tui(
             })),
         },
         keke_tui::Session {
+            skills: {
+                let manage = super::super::skills::Manage {
+                    home: config.home.clone(),
+                    configured: config.skills.clone(),
+                };
+                let entries =
+                    keke_tui::skills::SkillsManage::refresh(&manage).map_err(anyhow::Error::msg)?;
+                keke_tui::Skills {
+                    entries,
+                    manage: Some(Arc::new(manage)),
+                }
+            },
             commands,
             history: prompts,
             schedules: composed.schedules.clone(),

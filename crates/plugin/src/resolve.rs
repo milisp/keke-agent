@@ -287,7 +287,10 @@ pub fn load_named(
         return Err(PluginError::InvalidName { name });
     }
 
-    let skills = read_skills(&root, &name, &manifest, scope)?;
+    let mut skills = read_skills(&root, &name, &manifest, scope)?;
+    for skill in &mut skills {
+        skill.native = name_override.is_some();
+    }
     let commands = read_commands(&root, &name, &manifest, scope)?;
     let hooks = read_hooks(&root, &name, &manifest, scope)?;
     let mcp_servers = read_mcp_servers(&root, &name, &manifest, scope)?;
@@ -390,6 +393,7 @@ fn read_skills(
                 .unwrap_or_else(|| format!("{name} (no description)"));
             skills.push(ResolvedSkill {
                 plugin: plugin.to_string(),
+                native: false,
                 name,
                 description,
                 path,
