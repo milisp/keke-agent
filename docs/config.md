@@ -120,6 +120,13 @@ prompt_cache_ttl = "5m"   # "1h" extends retention; "off" omits markers
 Codex, Grok, and OpenRouter use the session identity for their respective routing
 fields instead. A routing key helps reuse but cannot guarantee a cache hit.
 
+NVIDIA NIM's hosted endpoint (`integrate.api.nvidia.com`) automatically receives
+the session ID in `x-multi-turn-session-id` for Chat Completions and Responses
+requests, keeping tool steps and resumed turns on the same routing identity.
+This is a backend affinity hint, not a guarantee that caching is enabled or hits.
+See [NVIDIA session stickiness](https://docs.nvidia.com/nvcf/llm-gateway).
+For self-hosted gateways, configure the header through the provider's `headers`.
+
 After an observed cache hit, a request with nonzero input and zero cached tokens
 shows a yellow `new session to save {n} tokens` line directly above the TUI input.
 The count is the most recent successful hit's cached-input-token count, representing

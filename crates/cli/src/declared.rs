@@ -103,7 +103,12 @@ impl ModelProvider for DeclaredProvider {
         mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
         apply_openrouter_cache_affinity(&self.info.base_url, &mut request);
-        Box::pin(async move { self.client.stream(self.api, request).await })
+        let headers = nvidia_cache_affinity_headers(&self.info.base_url, self.api, &request);
+        Box::pin(async move {
+            self.client
+                .stream_with_headers(self.api, request, headers)
+                .await
+        })
     }
 
     fn cached_models(&self) -> Vec<ModelInfo> {
@@ -328,6 +333,25 @@ fn apply_openrouter_cache_affinity(base_url: &str, request: &mut ModelRequest) {
     }
 }
 
+/// NVIDIA's gateway uses this session header for sticky backend routing.
+/// Keep it request-scoped so unrelated sessions sharing a client stay isolated.
+fn nvidia_cache_affinity_headers(
+    base_url: &str,
+    api: WireApi,
+    request: &ModelRequest,
+) -> Vec<(String, String)> {
+    let is_nvidia = reqwest::Url::parse(base_url)
+        .ok()
+        .is_some_and(|url| url.host_str() == Some("integrate.api.nvidia.com"));
+    if is_nvidia
+        && matches!(api, WireApi::ChatCompletions | WireApi::Responses)
+        && let Some(id) = request.session_id
+    {
+        return vec![("x-multi-turn-session-id".to_string(), id.to_string())];
+    }
+    Vec::new()
+}
+
 fn openrouter_attribution_headers(base_url: &str) -> Vec<(String, String)> {
     if !is_openrouter(base_url) {
         return Vec::new();
@@ -461,6 +485,48 @@ mod tests {
             extra_headers(&declared),
             Err(DeclarationError::MissingHeaderEnv { .. })
         ));
+    }
+
+    #[test]
+    fn nvidia_cache_affinity_follows_sessions_and_is_scoped_to_its_endpoint() {
+        let endpoint = "https://integrate.api.nvidia.com/v1";
+        let mut request = ModelRequest {
+            session_id: Some(keke_protocol::SessionId::new()),
+            ..ModelRequest::default()
+        };
+        let first = nvidia_cache_affinity_headers(endpoint, WireApi::ChatCompletions, &request);
+        assert_eq!(first[0].0, "x-multi-turn-session-id");
+        assert_eq!(first[0].1, request.session_id.unwrap().to_string());
+        request
+            .messages
+            .push(keke_protocol::Message::user("next turn"));
+        assert_eq!(
+            nvidia_cache_affinity_headers(endpoint, WireApi::ChatCompletions, &request),
+            first
+        );
+        assert_eq!(
+            nvidia_cache_affinity_headers(endpoint, WireApi::Responses, &request),
+            first
+        );
+        request.session_id = Some(keke_protocol::SessionId::new());
+        assert_ne!(
+            nvidia_cache_affinity_headers(endpoint, WireApi::ChatCompletions, &request),
+            first
+        );
+        for other in [
+            "https://gateway.example/v1",
+            "https://integrate.api.nvidia.com.example/v1",
+            "https://integrate.api.nvidia.com@gateway.example/v1",
+        ] {
+            assert!(
+                nvidia_cache_affinity_headers(other, WireApi::ChatCompletions, &request).is_empty()
+            );
+        }
+        assert!(nvidia_cache_affinity_headers(endpoint, WireApi::Messages, &request).is_empty());
+        request.session_id = None;
+        assert!(
+            nvidia_cache_affinity_headers(endpoint, WireApi::ChatCompletions, &request).is_empty()
+        );
     }
 
     #[test]
