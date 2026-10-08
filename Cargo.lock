@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "keke-acp"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "keke-auth-api"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "serde",
@@ -1738,7 +1738,7 @@ dependencies = [
 
 [[package]]
 name = "keke-auth-codex"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64",
  "keke-auth-api",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "keke-auth-grok"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64",
  "keke-auth-api",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "keke-catalog"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-paths",
  "keke-protocol",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "keke-checkpoint"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-paths",
  "serde",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "keke-cli"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "keke-config"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "dirs",
  "keke-config-types",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "keke-config-types"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-paths",
  "keke-protocol",
@@ -1882,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "keke-core"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "chrono",
  "futures",
@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "keke-credentials"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "chrono",
  "dirs",
@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "keke-fuzzy-file-search"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ignore",
  "nucleo",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "keke-guardian"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-config-types",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "keke-hooks"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-config-types",
  "keke-paths",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "keke-image"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64",
  "image",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "keke-mcp"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-auth-api",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "keke-memory"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-config-types",
  "keke-paths",
@@ -2020,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "keke-oauth"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64",
  "keke-auth-api",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "keke-paths"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "serde",
  "thiserror",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "keke-plan"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-config-types",
  "keke-core",
@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "keke-plugin"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-paths",
  "serde",
@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "keke-plugin-api"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-protocol",
  "keke-tool",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "keke-protocol"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "serde",
  "serde_json",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "keke-provider-api"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-protocol",
@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "keke-provider-codex"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-auth-api",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "keke-provider-grok"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-auth-api",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "keke-provider-ollama"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-auth-api",
  "keke-catalog",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "keke-sandbox"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-config-types",
  "keke-paths",
@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "keke-schedule"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-paths",
  "keke-plugin-api",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "keke-skills"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-config-types",
  "keke-paths",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "keke-subagent"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-config-types",
@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "keke-tasks"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "keke-config-types",
  "keke-paths",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "keke-test-support"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "axum",
  "futures",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "keke-tool"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "futures",
  "keke-paths",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "keke-tools"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "base64",
  "dirs",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "keke-tui"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "anyhow",
  "base64",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "keke-wire"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "eventsource-stream",
  "futures",
@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "keke-workspace"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "ignore",
  "keke-config-types",
