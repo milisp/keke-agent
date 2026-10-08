@@ -363,7 +363,7 @@ pub struct ProviderDeclaration {
     /// is not the same as asking for the standard tier — see [`ServiceTier`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
-    /// Explicit Messages-wire prompt caching. Unset uses five minutes;
+    /// Explicit Messages-wire prompt caching. Unset uses one hour;
     /// `off` supports gateways that do not accept cache-control markers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_ttl: Option<PromptCacheTtl>,
@@ -371,12 +371,13 @@ pub struct ProviderDeclaration {
 
 /// Valid cache lifetimes for explicit prompt-cache breakpoints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptCacheTtl {
     #[serde(rename = "off")]
     Off,
-    #[default]
     #[serde(rename = "5m")]
     FiveMinutes,
+    #[default]
     #[serde(rename = "1h")]
     OneHour,
 }
