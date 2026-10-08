@@ -315,7 +315,10 @@ impl FuzzyFileMatcher {
             .git_global(true)
             .git_exclude(true)
             .ignore(true)
-            .hidden(true)
+            // Dot entries are not gitignored just because they are hidden.
+            // `.github/` is a normal project path people `@`-mention; `!.git`
+            // below is the override that still keeps the object store out.
+            .hidden(false)
             .require_git(false)
             .overrides(
                 OverrideBuilder::new(&self.root)
@@ -787,6 +790,55 @@ mod tests {
         assert!(matcher.tick(10).done, "a disabled tick is immediately done");
         assert_eq!(matcher.num_items(), 0);
         assert!(matcher.get_top_k(10).is_empty());
+    }
+
+    #[test]
+    fn dot_directories_are_indexed_unless_ignored() {
+        let dir = temp_repo();
+        let workflows = dir.path().join(".github").join("workflows");
+        std::fs::create_dir_all(&workflows).unwrap();
+        std::fs::write(workflows.join("ci.yml"), b"name: ci").unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".git").join("HEAD"),
+            b"ref: refs/heads/main",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".gitignore"), b"secret.txt\n").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"nope").unwrap();
+
+        let mut matcher = FuzzyFileMatcher::new_inner(dir.path(), true);
+        matcher.restart_walk_inner(|w| w, WalkMode::Serial);
+        matcher.set_query("ci", false);
+        drain_until_done(&mut matcher);
+        let hits: Vec<String> = matcher
+            .get_top_k(20)
+            .iter()
+            .map(|h| h.path.to_string())
+            .collect();
+        assert!(
+            hits.iter().any(|p| p.contains(".github")),
+            "a non-ignored dot directory must be searchable, got {hits:?}"
+        );
+
+        matcher.set_query("secret", false);
+        drain_until_done(&mut matcher);
+        assert!(
+            !matcher
+                .get_top_k(20)
+                .iter()
+                .any(|h| h.path.to_string().contains("secret")),
+            "gitignore still applies"
+        );
+        matcher.set_query("HEAD", false);
+        drain_until_done(&mut matcher);
+        assert!(
+            !matcher
+                .get_top_k(20)
+                .iter()
+                .any(|h| h.path.to_string().contains(".git")),
+            ".git stays excluded"
+        );
     }
 
     #[test]
