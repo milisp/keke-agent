@@ -413,6 +413,9 @@ async fn session_builder(
         },
         chosen => chosen.to_string(),
     };
+    if let Some(binding) = &composed.guardian_model {
+        binding.bind(&model);
+    }
     let service_tier = declared_service_tier(config, &route);
 
     let mut builder = SessionBuilder::new()

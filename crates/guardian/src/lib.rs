@@ -16,7 +16,7 @@
 //! invariant 8, "ambiguity fails loud"). It can produce an `Allow`, but never
 //! by guessing — only by parsing an explicit verdict out of the model's reply.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use futures::StreamExt;
 use keke_config_types::GuardianReviewConfig;
@@ -39,6 +39,7 @@ use keke_provider_api::StreamChunk;
 ///
 /// A disabled guardian does not participate in on-request approval.
 /// `fallback` is the session's own model, used when `config.model` is unset.
+/// Bind the returned handle after resolving the session's effective model.
 ///
 /// The route is resolved here, at composition time, rather than on the first
 /// review: a guardian configured against a route nobody registered is a
@@ -50,26 +51,39 @@ pub fn install(
     config: GuardianReviewConfig,
     providers: &ProviderRegistry,
     fallback: &ModelSelection,
-) -> Result<(), RouteError> {
+) -> Result<Option<SessionModelBinding>, RouteError> {
     let explicit_model = config.model.is_some();
     let selection = config.model.unwrap_or_else(|| fallback.clone());
     let provider = match providers.get(&selection.provider) {
         Ok(provider) => provider,
-        Err(_) if !config.enabled && !explicit_model => return Ok(()),
+        Err(_) if !config.enabled && !explicit_model => return Ok(None),
         Err(error) => return Err(error),
     };
+    let model = Arc::new(RwLock::new(selection.model));
+    let binding = (!explicit_model).then(|| SessionModelBinding(Arc::clone(&model)));
     let reviewer = Arc::new(GuardianReviewer {
-        model: selection.model,
+        model,
         reasoning_effort: config.reasoning_effort,
         on_request: config.enabled,
         provider,
     });
     registry.approval_review_contributor(reviewer);
-    Ok(())
+    Ok(binding)
+}
+
+/// Binds a default reviewer to the effective session model, not unresolved config.
+/// Explicit guardian selections never expose this handle.
+pub struct SessionModelBinding(Arc<RwLock<String>>);
+
+impl SessionModelBinding {
+    /// Called by the composition root once the session model has been resolved.
+    pub fn bind(&self, model: &str) {
+        *self.0.write().unwrap_or_else(|error| error.into_inner()) = model.to_string();
+    }
 }
 
 struct GuardianReviewer {
-    model: String,
+    model: Arc<RwLock<String>>,
     reasoning_effort: Option<keke_protocol::ReasoningEffort>,
     on_request: bool,
     provider: ArcProvider,
@@ -153,8 +167,21 @@ impl ApprovalReviewContributor for GuardianReviewer {
         request: &'a ApprovalRequest,
     ) -> ExtFuture<'a, Option<ApprovalDecision>> {
         Box::pin(async move {
+            let model = self
+                .model
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            if model.trim().is_empty() {
+                return Some(deny_and_log(
+                    ctx,
+                    &model,
+                    request,
+                    "guardian session model has not been resolved".to_string(),
+                ));
+            }
             let model_request = ModelRequest {
-                model: self.model.clone(),
+                model: model.clone(),
                 messages: vec![Message::user(Self::prompt(request))],
                 reasoning_effort: self.reasoning_effort,
                 ..ModelRequest::default()
@@ -165,7 +192,7 @@ impl ApprovalReviewContributor for GuardianReviewer {
                 Err(error) => {
                     return Some(deny_and_log(
                         ctx,
-                        &self.model,
+                        &model,
                         request,
                         format!("guardian model call failed: {error}"),
                     ));
@@ -182,7 +209,7 @@ impl ApprovalReviewContributor for GuardianReviewer {
                     Err(error) => {
                         return Some(deny_and_log(
                             ctx,
-                            &self.model,
+                            &model,
                             request,
                             format!("guardian model call failed: {error}"),
                         ));
@@ -193,7 +220,7 @@ impl ApprovalReviewContributor for GuardianReviewer {
             let decision = Self::parse(&text).unwrap_or_else(|| ApprovalDecision::Deny {
                 reason: "the guardian reviewer's reply did not parse as a verdict".to_string(),
             });
-            record(ctx, &self.model, request, &decision);
+            record(ctx, &model, request, &decision);
             Some(decision)
         })
     }
@@ -261,6 +288,14 @@ fn record(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_reviewer_receives_the_resolved_session_model() {
+        let model = Arc::new(RwLock::new(String::new()));
+        let binding = SessionModelBinding(Arc::clone(&model));
+        binding.bind("resolved-model");
+        assert_eq!(*model.read().unwrap(), "resolved-model");
+    }
 
     #[test]
     fn allow_with_no_note_parses() {

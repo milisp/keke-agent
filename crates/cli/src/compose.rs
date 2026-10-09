@@ -472,6 +472,8 @@ pub(crate) struct Composed {
     pub auth: AuthRegistry,
     pub providers: ProviderRegistry,
     pub extensions: ExtensionRegistry,
+    /// Default guardian selection is bound after session model resolution.
+    pub guardian_model: Option<keke_guardian::SessionModelBinding>,
     /// The coordinator behind `spawn_agent`. Handed the session recipe in
     /// `session_builder`, once there is a finished builder to hand it.
     pub subagents: Arc<keke_subagent::SubagentHost>,
@@ -765,8 +767,9 @@ impl Composed {
         // `providers` here, at composition time, so a guardian pointed at an
         // unregistered route fails the build rather than denying every call
         // it is later asked to review.
-        keke_guardian::install(&mut extensions, guardian.clone(), &providers, model)
-            .context("configuring the guardian reviewer")?;
+        let guardian_model =
+            keke_guardian::install(&mut extensions, guardian.clone(), &providers, model)
+                .context("configuring the guardian reviewer")?;
 
         // The surface's approval bridge registers last so a plugin hook cannot
         // answer on a person's behalf. A hook may still deny — denial is
@@ -784,6 +787,7 @@ impl Composed {
             auth,
             providers,
             extensions: extensions.build(),
+            guardian_model,
             subagents,
             background,
             sandbox,
