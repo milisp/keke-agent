@@ -97,6 +97,6 @@ implementation lost it and paid for it.
 ```sh
 cargo fmt --all --check
 RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets
-cargo test --workspace
+cargo test -p {package} 2>&1
 python3 scripts/check-layering.py
 ```
