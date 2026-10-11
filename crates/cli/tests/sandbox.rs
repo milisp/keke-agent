@@ -82,7 +82,6 @@ fn git_ssh_uses_the_domain_proxy_and_does_not_bypass_approval() {
     );
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn package_caches_are_writable_without_a_home_write_grant() {
     let (_dir, root) = workspace();
@@ -93,6 +92,56 @@ fn package_caches_are_writable_without_a_home_write_grant() {
     );
     assert!(ok, "{text}");
     assert_eq!(text.trim(), "cache-ok");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_network_grants_fail_instead_of_running_unrestricted() {
+    let helper = Some(PathBuf::from(env!("CARGO_BIN_EXE_keke")));
+    for policy in [
+        SandboxPolicy {
+            allowed_domains: vec!["example.com".into()],
+            ..Default::default()
+        },
+        SandboxPolicy {
+            deny_read: vec![AbsPath::new(PathBuf::from("/credentials")).unwrap()],
+            ..Default::default()
+        },
+    ] {
+        assert!(Sandbox::new(policy, helper.clone()).is_err());
+    }
+    let base = sandbox(SandboxMode::WorkspaceWrite, false);
+    assert!(base.with_local_network_ports(vec![8080]).is_err());
+    assert!(
+        base.with_local_network_sockets(vec!["/tmp/host.sock".into()])
+            .is_err()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restricted_commands_cannot_connect_to_host_unix_services() {
+    use std::os::unix::net::UnixListener;
+    let (_dir, root) = workspace();
+    let path = root.as_path().join("host.sock");
+    let _listener = UnixListener::bind(&path).unwrap();
+    let output = sandbox(SandboxMode::WorkspaceWrite, false)
+        .command(
+            "curl",
+            [
+                "--noproxy",
+                "*",
+                "--max-time",
+                "2",
+                "--unix-socket",
+                path.to_str().unwrap(),
+                "http://localhost/",
+            ],
+            &root,
+        )
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
 }
 
 #[cfg(target_os = "macos")]

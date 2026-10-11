@@ -900,6 +900,15 @@ session log replays the exchange. Every other test exercises one crate; this one
 exercises the wiring, which is the part that can be connected to nothing and
 still compile.
 
+On macOS, `bash scripts/test-linux-sandbox.sh` runs the sandbox unit and real
+launcher integration tests in Apple Container's Linux VM. Start the installed
+service with `container system start` first. The script downloads the Rust
+image and dependencies, mounts only a read-only snapshot of non-ignored source
+files (not `.git` or the host home), and builds on the container's native
+filesystem. Container failure or missing Landlock is a test failure, not a skip.
+This validates the Linux implementation; it does not imply that macOS-only
+domain proxies, local TCP grants or Unix socket grants are supported on Linux.
+
 Two rules the suite must keep:
 
 - **No test may read shared machine state.** The OS keyring is the trap: a suite
