@@ -55,6 +55,7 @@ fn context() -> ToolCallContext {
         permission_reviewer: None,
         approved_network_domains: Vec::new(),
         approved_local_network_ports: Vec::new(),
+        approved_local_listener_ports: Vec::new(),
         approved_local_network_sockets: Vec::new(),
         approved_writable_roots: Vec::new(),
     }

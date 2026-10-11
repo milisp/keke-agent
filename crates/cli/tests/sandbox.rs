@@ -126,6 +126,75 @@ fn namespace_backend_protects_metadata_and_masks_denied_reads() {
     let (_ok, text) = run(&confined, "cat secret", &root);
     assert!(!text.contains("credential-marker"));
     assert!(run(&confined, "test ! -e /proc/1/root", &root).0);
+    let allowed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = allowed.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = allowed.accept().unwrap();
+        let mut request = [0; 1024];
+        stream.read(&mut request).unwrap();
+        stream
+            .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 7\r\n\r\nreached")
+            .unwrap();
+    });
+    let scoped = confined.with_local_network_ports(vec![port]).unwrap();
+    let (ok, text) = run(
+        &scoped,
+        &format!("curl --noproxy '*' -sS --max-time 3 http://127.0.0.1:{port}/"),
+        &root,
+    );
+    assert!(ok, "{text}");
+    assert_eq!(text, "reached");
+    server.join().unwrap();
+    assert!(
+        !run(
+            &scoped,
+            &format!("curl --noproxy '*' -sS --max-time 1 http://192.0.2.1:{port}/"),
+            &root
+        )
+        .0
+    );
+    assert!(
+        !run(
+            &confined,
+            &format!("curl --noproxy '*' -sS --max-time 1 http://127.0.0.1:{port}/"),
+            &root
+        )
+        .0
+    );
+    use std::sync::{Arc, Mutex};
+    struct Refuse(Mutex<Vec<String>>);
+    impl keke_sandbox::NetworkAuthorizer for Refuse {
+        fn authorize(&self, host: &str) -> bool {
+            self.0.lock().unwrap().push(host.into());
+            false
+        }
+    }
+    let reviewer = Arc::new(Refuse(Mutex::new(Vec::new())));
+    let proxy = confined
+        .with_network_authorizer(reviewer.clone(), Vec::new())
+        .unwrap();
+    let (ok, text) = run(
+        &proxy,
+        "curl -sS --max-time 3 -x \"$HTTP_PROXY\" --noproxy '' https://unapproved.invalid/",
+        &root,
+    );
+    assert!(!ok, "{text}");
+    assert!(text.contains("403"), "{text}");
+    assert_eq!(*reviewer.0.lock().unwrap(), vec!["unapproved.invalid"]);
+    let (ok, text) = run(
+        &proxy,
+        "git ls-remote ssh://git@unapproved.invalid:443/repository",
+        &root,
+    );
+    assert!(!ok, "{text}");
+    assert!(text.contains("403"), "{text}");
+    // Runtime platform capability must fail explicitly on old kernels.
+    let unix = root.as_path().join("service.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&unix).unwrap();
+    match confined.with_local_network_sockets(vec![unix.to_str().unwrap().into()]) {
+        Ok(_) => {}
+        Err(error) => assert!(error.to_string().contains("ResolveUnix"), "{error}"),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -690,6 +759,7 @@ async fn empty_domain_configuration_asks_during_the_original_command() {
                 permission_reviewer: Some(Arc::new(Reviewer(Arc::clone(&calls)))),
                 approved_network_domains: Vec::new(),
                 approved_local_network_ports: Vec::new(),
+                approved_local_listener_ports: Vec::new(),
                 approved_local_network_sockets: Vec::new(),
                 approved_writable_roots: Vec::new(),
             },
@@ -699,6 +769,7 @@ async fn empty_domain_configuration_asks_during_the_original_command() {
                 timeout_ms: Some(5000),
                 allowed_domains: Vec::new(),
                 allowed_local_ports: Vec::new(),
+                exposed_local_ports: Vec::new(),
                 allowed_unix_sockets: Vec::new(),
                 additional_write_roots: Vec::new(),
             },

@@ -210,6 +210,8 @@ pub struct ToolCallContext {
     pub approved_network_domains: Vec<String>,
     /// Localhost TCP host-service access expressly approved for this command only.
     pub approved_local_network_ports: Vec<u16>,
+    /// Localhost server ports approved for host exposure for this command only.
+    pub approved_local_listener_ports: Vec<u16>,
     /// Exact Unix socket paths approved for this call, never remembered.
     pub approved_local_network_sockets: Vec<String>,
     /// Exact directory paths approved for command-scoped filesystem writes.
@@ -235,6 +237,10 @@ impl fmt::Debug for ToolCallContext {
             .field(
                 "approved_local_network_ports",
                 &self.approved_local_network_ports,
+            )
+            .field(
+                "approved_local_listener_ports",
+                &self.approved_local_listener_ports,
             )
             .field(
                 "approved_local_network_sockets",

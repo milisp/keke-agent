@@ -115,6 +115,12 @@ pub trait Tool: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Localhost server ports exposed to the host for this call only.
+    /// Implementers must enforce fresh, command-scoped approval before execution.
+    fn local_listener_ports(&self, _args: &Self::Args) -> Vec<u16> {
+        Vec::new()
+    }
+
     /// Exact absolute Unix socket paths requiring command-scoped host-service
     /// approval. Implementers must enforce the approved paths at execution.
     fn local_network_sockets(&self, _args: &Self::Args) -> Vec<String> {

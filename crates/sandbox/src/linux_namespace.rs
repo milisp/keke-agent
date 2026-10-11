@@ -86,6 +86,8 @@ pub(crate) fn command<I, S>(
     roots: &[WritableRoot],
     network: bool,
     helper: &Path,
+    broker: Option<&crate::linux_broker::Broker>,
+    unix_sockets: &[String],
     program: &str,
     args: I,
 ) -> Command
@@ -111,7 +113,13 @@ where
         if path.exists() {
             command.arg("--ro-bind").arg(&path).arg(&path);
         } else {
-            command.arg("--perms").arg("000").arg("--tmpfs").arg(&path);
+            command
+                .arg("--perms")
+                .arg("000")
+                .arg("--tmpfs")
+                .arg(&path)
+                .arg("--remount-ro")
+                .arg(&path);
         }
     }
     for denied in &policy.deny_read {
@@ -121,11 +129,53 @@ where
             if path.is_file() {
                 command.arg("--ro-bind").arg("/dev/null").arg(path);
             } else {
-                command.arg("--perms").arg("000").arg("--tmpfs").arg(path);
+                command
+                    .arg("--perms")
+                    .arg("000")
+                    .arg("--tmpfs")
+                    .arg(path)
+                    .arg("--remount-ro")
+                    .arg(path);
             }
         }
     }
-    command.arg("--").arg(helper).arg(crate::HELPER_ARG);
+    if let Some(broker) = broker {
+        command
+            .arg("--ro-bind")
+            .arg(broker.directory())
+            .arg(broker.directory());
+        command
+            .arg("--")
+            .arg(helper)
+            .arg(crate::HELPER_ARG)
+            .arg("--relay-supervisor")
+            .arg(broker.directory().join("broker.sock"))
+            .arg(policy.proxy_max_connections.to_string())
+            .arg(policy.proxy_idle_timeout_ms.to_string())
+            .arg(policy.proxy_poll_interval_ms.to_string());
+        for port in &broker.ports {
+            command.arg(port.to_string());
+        }
+        for port in &broker.exposed {
+            command.arg("--expose").arg(port.to_string());
+        }
+        command.arg("--").arg(helper).arg(crate::HELPER_ARG);
+        for port in &broker.ports {
+            command.arg("--isolated-tcp-port").arg(port.to_string());
+        }
+    } else {
+        command.arg("--").arg(helper).arg(crate::HELPER_ARG);
+    }
+    command.arg("--namespace");
+    for socket in unix_sockets {
+        command.arg("--unix-socket").arg(socket);
+    }
+    if !network
+        && policy.allow_local_binding
+        && policy.mode == keke_config_types::SandboxMode::WorkspaceWrite
+    {
+        command.arg("--isolated-tcp-binding");
+    }
     if network {
         command.arg("--network");
     }

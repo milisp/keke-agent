@@ -54,6 +54,9 @@ pub trait ToolDyn: Send + Sync + 'static {
     /// See [`Tool::local_network_ports`]; invalid arguments declare no access.
     fn local_network_ports(&self, args: &Value) -> Vec<u16>;
 
+    /// See [`Tool::local_listener_ports`]; invalid arguments declare no access.
+    fn local_listener_ports(&self, args: &Value) -> Vec<u16>;
+
     /// See [`Tool::local_network_sockets`]; invalid arguments declare no access.
     fn local_network_sockets(&self, args: &Value) -> Vec<String>;
     /// See [`Tool::writable_roots`]; invalid arguments declare no access.
@@ -108,6 +111,13 @@ impl<T: Tool> ToolDyn for T {
     fn local_network_ports(&self, args: &Value) -> Vec<u16> {
         match T::Args::deserialize(args) {
             Ok(decoded) => Tool::local_network_ports(self, &decoded),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn local_listener_ports(&self, args: &Value) -> Vec<u16> {
+        match T::Args::deserialize(args) {
+            Ok(decoded) => Tool::local_listener_ports(self, &decoded),
             Err(_) => Vec::new(),
         }
     }
@@ -217,6 +227,10 @@ mod tests {
             args.text.parse().into_iter().collect()
         }
 
+        fn local_listener_ports(&self, args: &Self::Args) -> Vec<u16> {
+            args.text.parse().into_iter().collect()
+        }
+
         fn local_network_sockets(&self, args: &Self::Args) -> Vec<String> {
             vec![args.text.clone()]
         }
@@ -266,6 +280,25 @@ mod tests {
     }
 
     #[test]
+    fn listener_ports_are_forwarded_and_invalid_arguments_declare_no_access() {
+        let tool: ArcTool = Arc::new(Echo);
+        assert_eq!(
+            tool.local_listener_ports(&serde_json::json!({"text": "3000"})),
+            vec![3000]
+        );
+        assert!(
+            tool.local_listener_ports(&serde_json::json!({"text": 3000}))
+                .is_empty()
+        );
+        let default: ArcTool = Arc::new(Silent);
+        assert!(
+            default
+                .local_listener_ports(&serde_json::json!({"text": "3000"}))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn unix_sockets_are_forwarded_and_invalid_arguments_declare_no_access() {
         let tool: ArcTool = Arc::new(Echo);
         assert_eq!(
@@ -297,6 +330,7 @@ mod tests {
             permission_reviewer: None,
             approved_network_domains: Vec::new(),
             approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
             approved_local_network_sockets: Vec::new(),
             approved_writable_roots: Vec::new(),
         }

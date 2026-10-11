@@ -163,11 +163,13 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     capabilities.approval = tool.call_approval(workspace_root, &call.arguments);
     let domains = tool.network_domains(&call.arguments);
     let ports = tool.local_network_ports(&call.arguments);
+    let listener_ports = tool.local_listener_ports(&call.arguments);
     let sockets = tool.local_network_sockets(&call.arguments);
     let roots = tool.writable_roots(&call.arguments);
     let mut approved_writable_roots = Vec::new();
     let mut approved_local_network_sockets = Vec::new();
     let mut approved_local_network_ports = Vec::new();
+    let mut approved_local_listener_ports = Vec::new();
     let mut approved_network_domains = Vec::new();
     let human = !matches!(policy, ApprovalPolicy::Auto | ApprovalPolicy::Never);
     let session_permissions = ext_ctx.get_or_insert_with(SessionNetworkPermissions::default);
@@ -188,7 +190,11 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     if !needs_network_review {
         approved_network_domains = domains.clone();
     }
-    if (needs_network_review || !ports.is_empty() || !sockets.is_empty() || !roots.is_empty())
+    if (needs_network_review
+        || !ports.is_empty()
+        || !listener_ports.is_empty()
+        || !sockets.is_empty()
+        || !roots.is_empty())
         && capabilities.approval != ApprovalRequirement::Always
     {
         capabilities.approval = ApprovalRequirement::ReviewRequired;
@@ -208,6 +214,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
             call: call.clone(),
             reason: if !needs_network_review
                 && ports.is_empty()
+                && listener_ports.is_empty()
                 && sockets.is_empty()
                 && roots.is_empty()
             {
@@ -224,6 +231,16 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
                     access.push(format!(
                         "localhost TCP ports: {} (access to services running on the host; this command only)",
                         ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                if !listener_ports.is_empty() {
+                    access.push(format!(
+                        "localhost server ports exposed to the host: {} (this command only)",
+                        listener_ports
+                            .iter()
+                            .map(u16::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                 }
                 if !sockets.is_empty() {
@@ -245,15 +262,21 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
                 approval_note = note;
                 approved_network_domains = domains.clone();
                 approved_local_network_ports = ports.clone();
+                approved_local_listener_ports = listener_ports.clone();
                 approved_local_network_sockets = sockets.clone();
                 approved_writable_roots = roots.clone();
             }
             ApprovalDecision::AllowAlways => {
-                if ports.is_empty() && sockets.is_empty() && roots.is_empty() {
+                if ports.is_empty()
+                    && listener_ports.is_empty()
+                    && sockets.is_empty()
+                    && roots.is_empty()
+                {
                     memory.allow_always(&call.name);
                 }
                 approved_network_domains = domains.clone();
                 approved_local_network_ports = ports.clone();
+                approved_local_listener_ports = listener_ports.clone();
                 approved_local_network_sockets = sockets.clone();
                 approved_writable_roots = roots.clone();
             }
@@ -268,6 +291,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         // Skipping review authorizes the declared rights for this call only.
         approved_network_domains = domains.clone();
         approved_local_network_ports = ports.clone();
+        approved_local_listener_ports = listener_ports.clone();
         approved_local_network_sockets = sockets.clone();
         approved_writable_roots = roots.clone();
     }
@@ -297,6 +321,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         permission_reviewer: Some(permission_reviewer.clone()),
         approved_network_domains,
         approved_local_network_ports,
+        approved_local_listener_ports,
         approved_local_network_sockets,
         approved_writable_roots,
     };
@@ -600,6 +625,13 @@ mod permission_tests {
                 Vec::new()
             }
         }
+        fn local_listener_ports(&self, args: &Self::Args) -> Vec<u16> {
+            if args.get("listeners").is_some() {
+                vec![3000]
+            } else {
+                Vec::new()
+            }
+        }
         fn local_network_sockets(&self, args: &Self::Args) -> Vec<String> {
             if args.get("sockets").is_some() {
                 vec!["/tmp/test-host.sock".into()]
@@ -616,6 +648,10 @@ mod permission_tests {
         }
         async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Output, ToolError> {
             assert_eq!(ctx.approved_network_domains, vec!["example.com"]);
+            assert_eq!(
+                ctx.approved_local_listener_ports,
+                self.local_listener_ports(&args)
+            );
             assert_eq!(
                 ctx.approved_local_network_ports,
                 self.local_network_ports(&args)
@@ -767,6 +803,11 @@ mod permission_tests {
                     assert!(request.reason.contains("HTTPS domains: example.com"));
                     assert!(request.reason.contains("localhost TCP ports: 8080"));
                     assert!(request.reason.contains("services running on the host"));
+                    assert!(
+                        request
+                            .reason
+                            .contains("localhost server ports exposed to the host: 3000")
+                    );
                     assert!(request.reason.contains("Unix sockets: /tmp/test-host.sock"));
                     assert!(
                         request
@@ -807,6 +848,7 @@ mod permission_tests {
                 tools.tools.insert("network".into(), Arc::new(NetworkTool));
                 let mut command = call();
                 command.arguments["ports"] = serde_json::json!([8080]);
+                command.arguments["listeners"] = serde_json::json!([3000]);
                 command.arguments["sockets"] = serde_json::json!(["/tmp/test-host.sock"]);
                 command.arguments["roots"] = serde_json::json!(["/tmp/test-cache"]);
                 for _ in 0..2 {

@@ -55,6 +55,10 @@ pub struct BashArgs {
     /// command, never remembered; may reach host services outside the workspace.
     #[serde(default)]
     pub allowed_local_ports: Vec<u16>,
+    /// Localhost dev-server ports exposed to the host for this command only.
+    /// Requires fresh approval; does not grant client access to host services.
+    #[serde(default)]
+    pub exposed_local_ports: Vec<u16>,
     /// Absolute Unix socket paths required by this command. Explicit approval
     /// is command-scoped and may reach host services. macOS workspace-write only.
     #[serde(default)]
@@ -223,6 +227,7 @@ impl Tool for Bash {
         );
         text.push_str(" Declare localhost TCP client ports in `allowed_local_ports` (1..=65535) for command-scoped approval, including HTTP, WebSocket and browser tests. This may access host services; it is not restricted to servers started by this session. Use localhost, 127.0.0.1 or ::1 directly. Supported in macOS workspace-write only; no local port grants are remembered.");
         text.push_str(" Declare absolute Unix socket paths in `allowed_unix_sockets` for explicit command-scoped host-service approval. macOS workspace-write only; grants are never remembered and do not grant filesystem writes.");
+        text.push_str(" Declare localhost dev-server ports in `exposed_local_ports` (1..=65535) to expose them to the host for this command only. Requires fresh approval and does not grant client access to host services.");
         text.push_str(" Declare existing absolute directories in `additional_write_roots` for scoped cache/install writes without escaping (for example Cargo registry caches). Prefer narrow cache directories, not HOME or credential/toolchain roots. npm/Bun/pip/uv/XDG caches are redirected to temp by default when enabled. Approval policy Never automatically authorizes these execution permissions without asking; explicit denials and kernel restrictions still apply.");
         text.push_str(" Remote proxy ports are constrained by user `proxy_allowed_ports` (default 80/443); a domain approval does not override that ceiling. macOS default Git SSH is routed through CONNECT; SSH on port 22 needs that port in user configuration. Existing SSH transport overrides are preserved but direct networking stays denied. Standalone SSH needs an explicit proxy configuration.");
         // The model cannot tell a sandbox denial from any other failure unless
@@ -286,6 +291,10 @@ impl Tool for Bash {
         }
     }
 
+    fn local_listener_ports(&self, args: &Self::Args) -> Vec<u16> {
+        args.exposed_local_ports.clone()
+    }
+
     fn local_network_sockets(&self, args: &Self::Args) -> Vec<String> {
         args.allowed_unix_sockets.clone()
     }
@@ -295,6 +304,20 @@ impl Tool for Bash {
     }
 
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
+        if args.exposed_local_ports.contains(&0) {
+            return Err(ToolError::denied(
+                "exposed_local_ports must be in 1..=65535",
+            ));
+        }
+        if args
+            .exposed_local_ports
+            .iter()
+            .any(|port| !ctx.approved_local_listener_ports.contains(port))
+        {
+            return Err(ToolError::denied(
+                "localhost server ports exposed to the host require explicit command approval",
+            ));
+        }
         for path in &args.additional_write_roots {
             if !ctx.approved_writable_roots.contains(path) {
                 return Err(ToolError::denied(
@@ -370,6 +393,9 @@ impl Tool for Bash {
                 .with_local_network_ports(args.allowed_local_ports.clone())
                 .and_then(|sandbox| {
                     sandbox.with_local_network_sockets(args.allowed_unix_sockets.clone())
+                })
+                .and_then(|sandbox| {
+                    sandbox.with_local_listener_ports(args.exposed_local_ports.clone())
                 })
                 .map_err(|error| {
                     ToolError::custom("local_network_unavailable", error.to_string())
@@ -459,7 +485,53 @@ mod network_tests {
         let args: BashArgs = serde_json::from_str(r#"{"command":"gh pr list"}"#).unwrap();
         assert!(args.allowed_domains.is_empty());
         assert!(args.allowed_local_ports.is_empty());
+        assert!(args.exposed_local_ports.is_empty());
         assert!(args.allowed_unix_sockets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn listener_ports_require_nonzero_values_and_dispatch_approval_before_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawned");
+        let tool = Bash {
+            sandbox: Arc::new(
+                Sandbox::new(
+                    keke_config_types::SandboxPolicy {
+                        mode: SandboxMode::DangerFullAccess,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap(),
+            ),
+            background: None,
+        };
+        for (ports, expected) in [
+            (vec![0], "1..=65535"),
+            (vec![3000], "explicit command approval"),
+        ] {
+            let ctx = ToolCallContext {
+                call_id: keke_protocol::ToolCallId::new("listener"),
+                workspace_root: keke_paths::AbsPath::new(dir.path()).unwrap(),
+                timeout_millis: None,
+                cancelled: Arc::new(|| false),
+                permission_reviewer: None,
+                approved_network_domains: Vec::new(),
+                approved_local_network_ports: Vec::new(),
+                approved_local_listener_ports: Vec::new(),
+                approved_local_network_sockets: Vec::new(),
+                approved_writable_roots: Vec::new(),
+            };
+            let args: BashArgs = serde_json::from_value(serde_json::json!({
+                "command": format!("touch '{}'", marker.display()),
+                "exposed_local_ports": ports,
+            }))
+            .unwrap();
+            assert_eq!(Tool::local_listener_ports(&tool, &args), ports);
+            let error = tool.run(ctx, args).await.unwrap_err();
+            assert!(error.to_string().contains(expected));
+            assert!(!marker.exists());
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -477,6 +549,7 @@ mod network_tests {
             permission_reviewer: None,
             approved_network_domains: Vec::new(),
             approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
             approved_local_network_sockets: Vec::new(),
             approved_writable_roots: Vec::new(),
         };
@@ -489,6 +562,7 @@ mod network_tests {
                     background: false,
                     allowed_domains: Vec::new(),
                     allowed_local_ports: Vec::new(),
+                    exposed_local_ports: Vec::new(),
                     allowed_unix_sockets: vec!["/host/service.sock".into()],
                     additional_write_roots: Vec::new(),
                 },
@@ -523,6 +597,7 @@ mod network_tests {
             permission_reviewer: None,
             approved_network_domains: Vec::new(),
             approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
             approved_local_network_sockets: Vec::new(),
             approved_writable_roots: Vec::new(),
         };
@@ -535,6 +610,7 @@ mod network_tests {
                     background: false,
                     allowed_domains: Vec::new(),
                     allowed_local_ports: Vec::new(),
+                    exposed_local_ports: Vec::new(),
                     allowed_unix_sockets: Vec::new(),
                     additional_write_roots: vec![dir.path().to_str().unwrap().into()],
                 },
@@ -561,6 +637,7 @@ mod network_tests {
             permission_reviewer: None,
             approved_network_domains: Vec::new(),
             approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
             approved_local_network_sockets: Vec::new(),
             approved_writable_roots: Vec::new(),
         };
@@ -573,6 +650,7 @@ mod network_tests {
                     background: false,
                     allowed_domains: Vec::new(),
                     allowed_local_ports: vec![3000],
+                    exposed_local_ports: Vec::new(),
                     allowed_unix_sockets: Vec::new(),
                     additional_write_roots: Vec::new(),
                 },

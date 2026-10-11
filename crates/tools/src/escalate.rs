@@ -104,6 +104,7 @@ impl Tool for BashUnsandboxed {
                     background: args.background,
                     allowed_domains: Vec::new(),
                     allowed_local_ports: Vec::new(),
+                    exposed_local_ports: Vec::new(),
                     allowed_unix_sockets: Vec::new(),
                     additional_write_roots: Vec::new(),
                 },
