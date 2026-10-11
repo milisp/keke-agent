@@ -39,6 +39,8 @@
 mod cache;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod linux_namespace;
 #[cfg(target_os = "macos")]
 mod proxy;
 #[cfg(target_os = "macos")]
@@ -125,6 +127,7 @@ enum Launcher {
     #[cfg(target_os = "linux")]
     Landlock {
         helper: PathBuf,
+        namespace_launcher: Option<PathBuf>,
     },
 }
 
@@ -404,7 +407,28 @@ impl Sandbox {
                 args,
             ),
             #[cfg(target_os = "linux")]
-            Launcher::Landlock { helper } => {
+            Launcher::Landlock {
+                helper,
+                namespace_launcher,
+            } => {
+                if let Some(launcher) = namespace_launcher {
+                    let mut command = linux_namespace::command(
+                        launcher,
+                        &self.policy,
+                        &self.writable_roots(workspace),
+                        self.network(),
+                        helper,
+                        program,
+                        args,
+                    );
+                    if self.policy.mode == SandboxMode::WorkspaceWrite
+                        && self.policy.redirect_package_caches
+                    {
+                        cache::redirect(&mut command, workspace);
+                    }
+                    command.current_dir(workspace.as_path());
+                    return command;
+                }
                 let mut command = Command::new(helper);
                 command.arg(HELPER_ARG);
                 if self.network() {
@@ -632,7 +656,17 @@ fn platform_launcher(
 fn platform_launcher(policy: &SandboxPolicy, helper: Option<PathBuf>) -> Result<Launcher, String> {
     let helper = helper.ok_or_else(|| "no launcher executable was configured".to_string())?;
     linux::probe(policy)?;
-    Ok(Launcher::Landlock { helper })
+    let namespace_launcher = policy
+        .linux_namespace_launcher
+        .as_ref()
+        .map(|path| path.as_path().to_path_buf());
+    if let Some(path) = &namespace_launcher {
+        linux_namespace::probe(path)?;
+    }
+    Ok(Launcher::Landlock {
+        helper,
+        namespace_launcher,
+    })
 }
 
 /// No sandbox: the result reports itself unenforced, and the tool pack puts a

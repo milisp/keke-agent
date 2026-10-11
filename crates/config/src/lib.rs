@@ -235,6 +235,9 @@ pub struct SubagentsFile {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct SandboxWorkspaceWriteFile {
+    /// Only trusted non-project layers may choose this executable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux_namespace_launcher: Option<AbsPath>,
     /// Replaces inherited ports, including an explicit empty list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_allowed_ports: Option<Vec<u16>>,
@@ -385,6 +388,9 @@ impl Config {
                 let base = merged
                     .sandbox_workspace_write
                     .get_or_insert_with(SandboxWorkspaceWriteFile::default);
+                if let Some(launcher) = &section.linux_namespace_launcher {
+                    base.linux_namespace_launcher = Some(launcher.clone());
+                }
                 base.auto_approve_bash = section.auto_approve_bash.or(base.auto_approve_bash);
                 base.allow_local_binding = section.allow_local_binding.or(base.allow_local_binding);
                 base.redirect_package_caches = section
@@ -774,6 +780,7 @@ impl Config {
                 let section = merged.sandbox_workspace_write.unwrap_or_default();
                 let policy = SandboxPolicy {
                     mode: merged.sandbox_mode.unwrap_or_default(),
+                    linux_namespace_launcher: section.linux_namespace_launcher,
                     auto_approve_bash: section.auto_approve_bash.unwrap_or(true),
                     allow_local_binding: section.allow_local_binding.unwrap_or(true),
                     redirect_package_caches: section.redirect_package_caches.unwrap_or(true),
@@ -890,6 +897,12 @@ fn check_project_sandbox(
         )));
     }
     if let Some(section) = &project.sandbox_workspace_write {
+        if section.linux_namespace_launcher.is_some() {
+            return Err(refuse(
+                "sandbox_workspace_write.linux_namespace_launcher is a user-controlled executable"
+                    .to_string(),
+            ));
+        }
         if let Some(ports) = &section.proxy_allowed_ports {
             let inherited = beneath
                 .sandbox_workspace_write
@@ -1348,6 +1361,64 @@ mod tests {
         .expect("older policies remain valid");
         assert!(policy.allow_local_binding);
         assert!(SandboxPolicy::default().allow_local_binding);
+    }
+
+    #[test]
+    fn namespace_launcher_is_opt_in_and_requires_an_absolute_path() {
+        let policy: SandboxPolicy = toml::from_str(
+            "mode = \"workspace_write\"\nnetwork_access = false\nwritable_roots = []\n",
+        )
+        .unwrap();
+        assert!(policy.linux_namespace_launcher.is_none());
+        assert!(SandboxPolicy::default().linux_namespace_launcher.is_none());
+        assert!(
+            Config::from_layers(home(), &[])
+                .unwrap()
+                .sandbox
+                .linux_namespace_launcher
+                .is_none()
+        );
+        let text = "[sandbox_workspace_write]\nlinux_namespace_launcher = \"bwrap\"\n";
+        assert!(ConfigLayer::parse(LayerSource::Managed("test".into()), text).is_err());
+    }
+
+    #[test]
+    fn namespace_launcher_layers_override_only_when_present() {
+        let first = format!("[sandbox_workspace_write]\nlinux_namespace_launcher = \"{ROOT}\"\n");
+        let second_path = AbsPath::new(std::path::Path::new(ROOT).join("bwrap")).unwrap();
+        let second = format!(
+            "[sandbox_workspace_write]\nlinux_namespace_launcher = {}\n",
+            toml::Value::String(second_path.to_string())
+        );
+        let unrelated = "[sandbox_workspace_write]\nnetwork_access = false\n";
+        let config =
+            Config::from_layers(home(), &[layer("user", &first), layer("later", unrelated)])
+                .unwrap();
+        assert_eq!(
+            config.sandbox.linux_namespace_launcher,
+            Some(AbsPath::new(ROOT).unwrap())
+        );
+        let config = Config::from_layers(
+            home(),
+            &[
+                layer("user", &first),
+                layer("later", &second),
+                project(unrelated),
+            ],
+        )
+        .unwrap();
+        assert_eq!(config.sandbox.linux_namespace_launcher, Some(second_path));
+    }
+
+    #[test]
+    fn a_repository_cannot_choose_or_restate_the_namespace_launcher() {
+        let text = format!("[sandbox_workspace_write]\nlinux_namespace_launcher = \"{ROOT}\"\n");
+        for inherited in [None, Some(layer("user", &text))] {
+            let mut layers: Vec<_> = inherited.into_iter().collect();
+            layers.push(project(&text));
+            let error = Config::from_layers(home(), &layers).unwrap_err();
+            assert!(error.to_string().contains("linux_namespace_launcher"));
+        }
     }
 
     #[test]

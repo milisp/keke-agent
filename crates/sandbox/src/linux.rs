@@ -48,7 +48,7 @@ pub(crate) fn probe(policy: &SandboxPolicy) -> Result<(), String> {
     if policy.mode == SandboxMode::WorkspaceWrite && !policy.allowed_domains.is_empty() {
         return Err("domain-restricted networking is not supported by the Linux launcher; refusing unrestricted fallback".to_string());
     }
-    if !policy.deny_read.is_empty() {
+    if !policy.deny_read.is_empty() && policy.linux_namespace_launcher.is_none() {
         return Err("Landlock cannot enforce deny_read: its root read grant cannot exclude credential paths".to_string());
     }
     Ruleset::default()

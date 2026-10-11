@@ -205,6 +205,9 @@ impl SandboxMode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxPolicy {
     pub mode: SandboxMode,
+    /// User-trusted absolute bubblewrap executable; namespace isolation is opt-in.
+    #[serde(default)]
+    pub linux_namespace_launcher: Option<AbsPath>,
     /// Whether Bash confined by an enforced sandbox skips ordinary
     /// `on-request` approval. Escalation outside the sandbox still requires review.
     #[serde(default = "default_auto_approve_bash")]
@@ -286,6 +289,7 @@ impl Default for SandboxPolicy {
     fn default() -> Self {
         Self {
             mode: SandboxMode::default(),
+            linux_namespace_launcher: None,
             auto_approve_bash: default_auto_approve_bash(),
             allow_local_binding: default_allow_local_binding(),
             redirect_package_caches: default_redirect_package_caches(),

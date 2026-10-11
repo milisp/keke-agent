@@ -14,10 +14,12 @@ container run --rm --name "keke-linux-tests-$$" --cpus 6 --memory 8G \
     --volume "$snapshot:/source:ro" rust:1.96-bookworm sh -c '
         set -eu
         uname -a
+        apt-get update -qq
+        apt-get install -y -qq bubblewrap
         mkdir /work
         cp -a /source/. /work/
         cd /work
         rustc --version
         cargo test --locked -p keke-sandbox
-        cargo test --locked -p keke-cli --test sandbox
+        KEKE_TEST_NAMESPACE_LAUNCHER=/usr/bin/bwrap cargo test --locked -p keke-cli --test sandbox -- --include-ignored
     '

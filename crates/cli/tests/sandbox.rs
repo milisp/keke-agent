@@ -96,6 +96,40 @@ fn package_caches_are_writable_without_a_home_write_grant() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires namespace launcher; scripts/test-linux-sandbox.sh runs this test"]
+fn namespace_backend_protects_metadata_and_masks_denied_reads() {
+    let launcher = std::env::var_os("KEKE_TEST_NAMESPACE_LAUNCHER")
+        .expect("namespace test must configure its trusted launcher");
+    let (_dir, root) = workspace();
+    std::fs::create_dir(root.as_path().join(".agents")).unwrap();
+    let secret = root.as_path().join("secret");
+    std::fs::write(&secret, "credential-marker").unwrap();
+    let confined = Sandbox::new(
+        SandboxPolicy {
+            linux_namespace_launcher: Some(AbsPath::new(PathBuf::from(launcher)).unwrap()),
+            deny_read: vec![AbsPath::new(secret).unwrap()],
+            ..Default::default()
+        },
+        Some(PathBuf::from(env!("CARGO_BIN_EXE_keke"))),
+    )
+    .unwrap();
+    assert!(run(&confined, "echo allowed > normal", &root).0);
+    assert!(!run(&confined, "echo forbidden > .agents/hook", &root).0);
+    assert!(
+        !run(
+            &confined,
+            "mkdir -p .keke; echo forbidden > .keke/config",
+            &root
+        )
+        .0
+    );
+    let (_ok, text) = run(&confined, "cat secret", &root);
+    assert!(!text.contains("credential-marker"));
+    assert!(run(&confined, "test ! -e /proc/1/root", &root).0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn unsupported_network_grants_fail_instead_of_running_unrestricted() {
     let helper = Some(PathBuf::from(env!("CARGO_BIN_EXE_keke")));
     for policy in [

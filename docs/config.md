@@ -515,7 +515,17 @@ accumulate. Project configuration may add denials but cannot grant domains.
 `deny_read` blocks file reads through Seatbelt, including configured paths and
 their resolved targets; it does not remove inherited environment secrets or
 implement credential masking. No credential paths are denied by default.
-Linux currently refuses domain networking or read denials rather than claiming
+Linux supports an opt-in namespace filesystem backend configured by the user
+with `linux_namespace_launcher = "/usr/bin/bwrap"` in
+`[sandbox_workspace_write]`. Install non-setuid bubblewrap first. The launcher
+and its ancestors must be root-owned and not group/world writable; repository
+configuration cannot select it. Namespace creation is actually probed and
+failure is fatal. This backend masks `deny_read` paths and overlays protected
+metadata read-only, retaining Landlock/seccomp. It currently masks `/proc`
+entirely, so workflows requiring procfs are not supported by this first stage.
+Network broker and scoped TCP/Unix socket support are not yet implemented.
+
+Without that backend, Linux refuses domain networking or read denials rather than claiming
 restrictions its launcher cannot enforce.
 
 Proxy resource budgets are configurable in the same section:
