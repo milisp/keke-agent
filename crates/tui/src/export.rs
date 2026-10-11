@@ -12,33 +12,25 @@ use crate::transcript::Cell;
 
 /// The scrollback as Markdown.
 ///
-/// The banner is left out: it says what this session was launched with, which
-/// is state of the terminal rather than something anyone said. Tool calls keep
-/// their outcome, because a transcript that shows a command without saying
+/// Terminal chrome and notices are left out: they are interface state rather
+/// than conversation content. Tool calls keep their outcome, because a
+/// transcript that shows a command without saying
 /// whether it worked is a record of intent, not of what happened.
 #[must_use]
 pub(crate) fn markdown(cells: &[Cell]) -> String {
     let mut out = String::new();
     for cell in cells {
         let block = match cell {
-            Cell::Banner(_) => continue,
+            Cell::Banner(_) | Cell::Notice(_) | Cell::Error(_) => continue,
             Cell::User(text) => format!("## User\n\n{}\n", text.trim_end()),
             Cell::Assistant(text) => format!("## Assistant\n\n{}\n", text.trim_end()),
             Cell::Plan(plan) => format!("## Plan\n\n{}\n", plan.text.trim_end()),
-            Cell::Notice(text) => format!("> {}\n", text.trim_end().replace('\n', "\n> ")),
-            Cell::Error(text) => {
-                format!("> **error:** {}\n", text.trim_end().replace('\n', "\n> "))
-            }
             Cell::Tool(call) => {
                 let state = match call.state {
                     CallState::Running => "running".to_string(),
                     CallState::Finished(status) => format!("{status:?}").to_lowercase(),
                 };
-                let mut block = format!("- `{}` {} — {state}\n", call.name, call.summary);
-                if let Some(detail) = &call.detail {
-                    block.push_str(&format!("  - {}\n", detail.trim_end()));
-                }
-                block
+                format!("- `{}` {} — {state}\n", call.name, call.summary)
             }
         };
         out.push_str(&block);
@@ -121,6 +113,17 @@ mod tests {
         assert!(text.contains("## User\n\nhi"));
     }
 
+    #[test]
+    fn interface_notices_and_errors_are_not_conversation_content() {
+        let text = markdown(&[
+            Cell::Notice("exported to previous.md".to_string()),
+            Cell::Error("could not write previous.md".to_string()),
+            Cell::User("hi".to_string()),
+            Cell::Assistant("hello".to_string()),
+        ]);
+        assert_eq!(text, "## User\n\nhi\n\n## Assistant\n\nhello\n\n");
+    }
+
     /// A command without its outcome is a record of intent, not of what
     /// happened.
     #[test]
@@ -128,7 +131,7 @@ mod tests {
         let text = markdown(&[tool()]);
         assert!(text.contains("`read` src/lib.rs"), "{text}");
         assert!(text.contains("ok"), "{text}");
-        assert!(text.contains("40 lines"), "{text}");
+        assert!(!text.contains("40 lines"), "{text}");
     }
 
     #[test]
