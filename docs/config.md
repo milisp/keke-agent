@@ -411,12 +411,71 @@ sandbox_mode = "workspace_write"
 
 [sandbox_workspace_write]
 auto_approve_bash = true       # default; sandboxed Bash skips ordinary approval
-network_access = false          # true lets commands reach the network
+network_access = false          # true grants unrestricted networking
+allow_local_binding = true      # macOS: localhost TCP listeners, no outbound grant
+allowed_domains = ["github.com", "api.github.com", "registry.npmjs.org", "crates.io"]
+denied_domains = []             # deny wins over allow, including wildcard matches
+deny_read = ["/Users/me/private-credentials"] # absolute paths
 writable_roots = ["/Users/me/.cache/sccache"]   # absolute paths, writable too
 ```
 
+On macOS, workspace-write Bash uses a command-scoped CONNECT proxy automatically;
+no hand-written allow list is required. Bash accepts a per-command `allowed_domains`
+argument naming exact HTTPS hosts, for example `api.github.com`. There is no `gh`
+special case. In Auto mode the guardian reviews the command and declared domains
+together; grants last for that execution only. An undeclared destination is denied
+without another guardian review. The result names the domain and instructs the
+model to add it to `allowed_domains` and rerun inside the sandbox.
+
+In human approval modes, a new domain prompts during execution and an ordinary
+allow lasts for the session. “Allow this domain permanently” records it under
+`$KEKE_HOME/network-permissions.json` for future human-mode sessions. Auto does not
+reuse human session or persistent grants. Missing reviewers and refusals fail
+closed; Never does not prompt for unlisted destinations. Static `allowed_domains`
+configuration remains optional for trusted endpoints. Explicit denials always
+win, including over approved command endpoints.
+
+Seatbelt permits only its `127.0.0.1` port, not arbitrary outbound connections.
+Separately, `allow_local_binding = true` (default) permits localhost TCP servers
+in macOS workspace-write mode. Use `127.0.0.1` or `::1` as the dev-server host;
+wildcard/LAN binds such as `0.0.0.0` are not granted. A host browser can access
+the server, including WebSocket traffic. Binding permission does not grant a
+sandboxed `curl`, test runner, or browser client access to arbitrary localhost
+services; scoped local client access remains unimplemented. Projects may disable
+binding but cannot restore it when the user disabled it. Read-only remains closed;
+the Linux no-network launcher does not yet implement this capability.
+The child receives upper- and lowercase HTTP/HTTPS/ALL proxy variables and empty
+NO_PROXY variables. Clients that ignore these settings remain blocked rather
+than running unconfined. Only CONNECT to port 443 is supported: plain HTTP,
+SSH, SOCKS, IP literals, and private/loopback DNS destinations are refused.
+Domain names match case-insensitively; `*.example.com` matches subdomains, not
+the apex. Redirects, download CDNs, enterprise hosts, and wrapped `gh` invocations
+request additional domains during execution in human modes; Auto must declare
+them and rerun instead of requiring an escape.
+An allowed destination can still receive data from the workspace: the proxy
+checks destinations, not tunnel contents, and does not inspect TLS.
+
+Do not combine domain lists with `network_access = true`; configuration rejects
+that bypass. Nonempty allow lists replace grants from earlier layers; denials
+accumulate. Project configuration may add denials but cannot grant domains.
+`deny_read` blocks file reads through Seatbelt, including configured paths and
+their resolved targets; it does not remove inherited environment secrets or
+implement credential masking. No credential paths are denied by default.
+Linux currently refuses domain networking or read denials rather than claiming
+restrictions its launcher cannot enforce.
+
+Proxy resource budgets are configurable in the same section:
+`proxy_max_connections = 32`, `proxy_header_timeout_ms = 10000`,
+`proxy_connect_timeout_ms = 10000`, `proxy_idle_timeout_ms = 60000`,
+and `proxy_poll_interval_ms = 10`. Values must be positive and are bounded;
+projects cannot change them. Active workers are stopped and joined when the
+sandbox is dropped; system DNS resolution may delay shutdown because the OS
+resolver is not cancellable.
+
 With `approval_policy = "on_request"` and `workspace_write`, enforced sandboxed Bash runs without
-an ordinary approval prompt when `auto_approve_bash = true`. Set it to `false`
+an ordinary approval prompt when `auto_approve_bash = true`, except when the call
+predeclares network access: that access is reviewed together with the command.
+Set it to `false`
 to put Bash through ordinary approval before it runs. Edit tools still follow the
 approval policy. This setting does not approve sandbox escapes: every
 `bash_unsandboxed` call requires review. A repository may turn auto-approval

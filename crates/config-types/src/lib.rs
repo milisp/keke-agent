@@ -208,17 +208,63 @@ pub struct SandboxPolicy {
     /// `on-request` approval. Escalation outside the sandbox still requires review.
     #[serde(default = "default_auto_approve_bash")]
     pub auto_approve_bash: bool,
+    /// Whether workspace-write commands may bind local listening sockets.
+    #[serde(default = "default_allow_local_binding")]
+    pub allow_local_binding: bool,
     /// Off by default: a command that can reach the network can send the
     /// workspace anywhere, and that is the exfiltration a sandbox exists to
     /// stop.
     pub network_access: bool,
+    /// Exact DNS names or `*.domain` patterns granted restricted network access.
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// DNS patterns refused even when an allow pattern matches.
+    #[serde(default)]
+    pub denied_domains: Vec<String>,
+    #[serde(default = "default_proxy_max_connections")]
+    pub proxy_max_connections: u16,
+    #[serde(default = "default_proxy_header_timeout_ms")]
+    pub proxy_header_timeout_ms: u64,
+    #[serde(default = "default_proxy_connect_timeout_ms")]
+    pub proxy_connect_timeout_ms: u64,
+    #[serde(default = "default_proxy_idle_timeout_ms")]
+    pub proxy_idle_timeout_ms: u64,
+    #[serde(default = "default_proxy_poll_interval_ms")]
+    pub proxy_poll_interval_ms: u64,
     /// Writable beyond the workspace and the temporary directory — a shared
     /// build cache, a sibling checkout. Absolute by type.
     pub writable_roots: Vec<AbsPath>,
+    /// Paths whose contents cannot be read by sandboxed commands.
+    #[serde(default)]
+    pub deny_read: Vec<AbsPath>,
 }
 
 fn default_auto_approve_bash() -> bool {
     true
+}
+
+fn default_allow_local_binding() -> bool {
+    true
+}
+
+fn default_proxy_max_connections() -> u16 {
+    32
+}
+
+fn default_proxy_header_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_proxy_connect_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_proxy_idle_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_proxy_poll_interval_ms() -> u64 {
+    10
 }
 
 impl Default for SandboxPolicy {
@@ -226,13 +272,95 @@ impl Default for SandboxPolicy {
         Self {
             mode: SandboxMode::default(),
             auto_approve_bash: default_auto_approve_bash(),
+            allow_local_binding: default_allow_local_binding(),
             network_access: false,
+            allowed_domains: Vec::new(),
+            denied_domains: Vec::new(),
+            proxy_max_connections: default_proxy_max_connections(),
+            proxy_header_timeout_ms: default_proxy_header_timeout_ms(),
+            proxy_connect_timeout_ms: default_proxy_connect_timeout_ms(),
+            proxy_idle_timeout_ms: default_proxy_idle_timeout_ms(),
+            proxy_poll_interval_ms: default_proxy_poll_interval_ms(),
             writable_roots: Vec::new(),
+            deny_read: Vec::new(),
         }
     }
 }
 
 impl SandboxPolicy {
+    /// Validate DNS patterns without resolving them or accepting URL/IP syntax.
+    pub fn check_domain_pattern(pattern: &str) -> Result<(), String> {
+        let domain = pattern.strip_prefix("*.").unwrap_or(pattern);
+        let valid = !domain.is_empty()
+            && domain.len() <= 253
+            && domain.parse::<std::net::IpAddr>().is_err()
+            && domain.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && label
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && label
+                        .as_bytes()
+                        .last()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            });
+        if valid {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid sandbox domain pattern {pattern:?}: expected a DNS name or *.domain"
+            ))
+        }
+    }
+
+    /// Refuse restrictions that unrestricted network access would bypass.
+    pub fn check_domains(&self) -> Result<(), String> {
+        for (name, value, maximum) in [
+            (
+                "proxy_max_connections",
+                u64::from(self.proxy_max_connections),
+                256,
+            ),
+            (
+                "proxy_header_timeout_ms",
+                self.proxy_header_timeout_ms,
+                3_600_000,
+            ),
+            (
+                "proxy_connect_timeout_ms",
+                self.proxy_connect_timeout_ms,
+                3_600_000,
+            ),
+            (
+                "proxy_idle_timeout_ms",
+                self.proxy_idle_timeout_ms,
+                3_600_000,
+            ),
+            ("proxy_poll_interval_ms", self.proxy_poll_interval_ms, 1_000),
+        ] {
+            if value == 0 || value > maximum {
+                return Err(format!("sandbox {name} must be between 1 and {maximum}"));
+            }
+        }
+        for pattern in self.allowed_domains.iter().chain(&self.denied_domains) {
+            Self::check_domain_pattern(pattern)?;
+        }
+        if self.network_access
+            && (!self.allowed_domains.is_empty() || !self.denied_domains.is_empty())
+        {
+            return Err(
+                "sandbox network_access = true conflicts with allowed_domains or denied_domains"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// A policy that confines nothing.
     #[must_use]
     pub fn unconfined() -> Self {

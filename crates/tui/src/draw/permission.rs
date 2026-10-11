@@ -55,7 +55,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(prompt.summary.clone(), Style::new().fg(Color::Gray)),
         ]),
         Line::styled(prompt.reason.clone(), Style::new().fg(Color::Gray)),
-        hints(),
+        hints(prompt.network_domain.is_some()),
     ];
 
     frame.render_widget(
@@ -64,9 +64,20 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn hints() -> Line<'static> {
+fn hints(network: bool) -> Line<'static> {
     let mut spans = Vec::new();
-    for (key, label) in [("y", "allow"), ("a", "always allow"), ("n", "deny")] {
+    for (key, label) in [
+        ("y", "allow"),
+        (
+            "a",
+            if network {
+                "allow domain permanently"
+            } else {
+                "always allow"
+            },
+        ),
+        ("n", "deny"),
+    ] {
         spans.push(Span::styled(
             format!("  {key} "),
             Style::new()

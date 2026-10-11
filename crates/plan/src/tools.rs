@@ -298,6 +298,8 @@ mod tests {
             workspace_root: AbsPath::new(&root).expect("absolute"),
             timeout_millis: None,
             cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
         };
         (dir, plan, ctx)
     }

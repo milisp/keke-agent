@@ -591,7 +591,22 @@ async fn pump(
                             .kind(tool_kind(shown.kind))
                             .raw_input(call.arguments.clone()),
                     ),
-                    permission_options(),
+                    {
+                        let mut options = permission_options();
+                        if call
+                            .arguments
+                            .get("requested_network_domain")
+                            .and_then(|d| d.as_str())
+                            .is_some()
+                        {
+                            options[1] = PermissionOption::new(
+                                super::ALLOW_ALWAYS,
+                                "Allow this domain permanently",
+                                PermissionOptionKind::AllowAlways,
+                            );
+                        }
+                        options
+                    },
                 );
                 let answer = match cx.send_request(request).block_task().await {
                     Ok(response) => chosen(&response.outcome),

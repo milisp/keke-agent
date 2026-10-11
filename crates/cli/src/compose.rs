@@ -653,6 +653,8 @@ impl Composed {
 
         // --- extensions ----------------------------------------------------
         let mut extensions = ExtensionRegistryBuilder::new();
+        let network_permissions = Arc::new(crate::network_permissions::Store::new(home.as_path()));
+        extensions.network_permission_persistence(network_permissions.clone());
         // The registry outlives every turn that starts a task, which is the
         // whole point: a command started in one turn is still running in the
         // next, and the thing holding it must not be per-turn.
@@ -772,6 +774,7 @@ impl Composed {
         // answer on a person's behalf. A hook may still deny — denial is
         // monotonic and nothing here can undo it.
         if let Some(approvals) = approvals {
+            approvals.set_network_permissions(network_permissions);
             keke_acp::install(&mut extensions, approvals);
         }
 

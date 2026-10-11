@@ -27,12 +27,26 @@ pub struct ExtensionRegistryBuilder {
     tool_lifecycle: Vec<Arc<dyn ToolLifecycleContributor>>,
     approval: Vec<Arc<dyn ApprovalReviewContributor>>,
     guards: Vec<ToolGuard>,
+    network_permissions: Option<Arc<dyn crate::NetworkPermissionPersistence>>,
 }
 
 impl ExtensionRegistryBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Compose one user-owned permission store before freezing the registry.
+    pub fn network_permission_persistence(
+        &mut self,
+        store: Arc<dyn crate::NetworkPermissionPersistence>,
+    ) -> &mut Self {
+        assert!(
+            self.network_permissions.is_none(),
+            "network permission store already installed"
+        );
+        self.network_permissions = Some(store);
+        self
     }
 
     pub fn tool_contributor(&mut self, contributor: Arc<dyn ToolContributor>) -> &mut Self {
@@ -86,6 +100,7 @@ impl ExtensionRegistryBuilder {
             tool_lifecycle: self.tool_lifecycle,
             approval: self.approval,
             guards: Arc::new(self.guards),
+            network_permissions: self.network_permissions,
         }
     }
 }
@@ -99,9 +114,16 @@ pub struct ExtensionRegistry {
     tool_lifecycle: Vec<Arc<dyn ToolLifecycleContributor>>,
     approval: Vec<Arc<dyn ApprovalReviewContributor>>,
     guards: Arc<Vec<ToolGuard>>,
+    network_permissions: Option<Arc<dyn crate::NetworkPermissionPersistence>>,
 }
 
 impl ExtensionRegistry {
+    pub fn network_permission_persistence(
+        &self,
+    ) -> Option<&Arc<dyn crate::NetworkPermissionPersistence>> {
+        self.network_permissions.as_ref()
+    }
+
     pub fn tool_contributors(&self) -> impl Iterator<Item = &Arc<dyn ToolContributor>> {
         self.tools.iter()
     }

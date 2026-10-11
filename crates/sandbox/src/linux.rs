@@ -45,6 +45,12 @@ const ABI_WANTED: ABI = ABI::V5;
 /// missing feature is a clear error before the first command rather than a
 /// launcher failing on every one.
 pub(crate) fn probe(policy: &SandboxPolicy) -> Result<(), String> {
+    if policy.mode == SandboxMode::WorkspaceWrite && !policy.allowed_domains.is_empty() {
+        return Err("domain-restricted networking is not supported by the Linux launcher; refusing unrestricted fallback".to_string());
+    }
+    if !policy.deny_read.is_empty() {
+        return Err("Landlock cannot enforce deny_read: its root read grant cannot exclude credential paths".to_string());
+    }
     Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(ABI::V1))

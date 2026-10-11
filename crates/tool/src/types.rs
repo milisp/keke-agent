@@ -204,6 +204,10 @@ pub struct ToolCallContext {
     pub timeout_millis: Option<u64>,
     /// Returns true once the turn has been aborted.
     pub cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Optional, call-scoped reviewer for additional runtime network access.
+    pub permission_reviewer: Option<Arc<dyn crate::PermissionReviewer>>,
+    /// Predeclared domains expressly approved for this call, never implicit grants.
+    pub approved_network_domains: Vec<String>,
 }
 
 impl ToolCallContext {
@@ -220,6 +224,7 @@ impl fmt::Debug for ToolCallContext {
             .field("call_id", &self.call_id)
             .field("workspace_root", &self.workspace_root)
             .field("timeout_millis", &self.timeout_millis)
+            .field("approved_network_domains", &self.approved_network_domains)
             .finish_non_exhaustive()
     }
 }

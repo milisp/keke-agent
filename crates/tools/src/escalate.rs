@@ -92,6 +92,7 @@ impl Tool for BashUnsandboxed {
                     command: args.command,
                     timeout_ms: args.timeout_ms,
                     background: false,
+                    allowed_domains: Vec::new(),
                 },
             )
             .await

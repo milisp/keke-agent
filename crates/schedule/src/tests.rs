@@ -31,6 +31,8 @@ fn context() -> ToolCallContext {
         workspace_root: AbsPath::new(std::env::temp_dir()).expect("absolute"),
         timeout_millis: None,
         cancelled: Arc::new(|| false),
+        permission_reviewer: None,
+        approved_network_domains: Vec::new(),
     }
 }
 

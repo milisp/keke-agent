@@ -157,6 +157,29 @@ The sandbox is a setting a repository could otherwise switch off, so the
 project config layer may only tighten it — the same reasoning as the plugin
 trust gate below: `git clone` is not consent.
 
+On macOS, domain-restricted egress is a host-side CONNECT proxy owned by the
+sandbox. Seatbelt allows only its loopback TCP port; proxy environment variables
+are routing hints, not the security boundary. The proxy policy checks
+allow/deny patterns before host-side DNS, rejects non-public results, and connects
+the validated address without resolving it again. Connection and time budgets
+live in `keke-config-types`; workers stop and join with their owner. Core passes
+a generic, call-scoped permission reviewer to tools. Bash bridges proxy requests
+to it without linking sandbox code to the engine; predeclared domains are approved
+with the command. Auto refuses undeclared domains and reports them for a declared
+retry, without a runtime guardian review. Human modes review extra domains before
+the connection continues, remembering grants for the session or, on explicit
+permanent consent, through a user-home store composed by the CLI. Auto never
+consumes those human grants. A scoped proxy caches exact-domain grants.
+Explicit denials precede every grant; missing reviewers fail closed. Explicit credential read
+denials use Seatbelt rules, separate from network policy. The Linux launcher
+currently rejects domain egress and read exclusions because its existing kernel
+rules cannot enforce them. No command-based network exemptions are used.
+
+Local development servers are a separate right, not domain egress. macOS
+workspace-write allows localhost TCP binding/inbound by default, controlled by
+`allow_local_binding`; wildcard/LAN bindings and arbitrary loopback client access
+are not granted. Read-only gets no listener right and a project may only narrow it.
+
 ### Tier 1 — engine
 
 `keke-core` (session lifecycle, turn loop, context assembly, tool dispatch,

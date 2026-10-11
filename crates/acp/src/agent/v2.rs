@@ -619,7 +619,22 @@ async fn pump(
                 let request = RequestPermissionRequest::new(
                     id.clone(),
                     format!("{}: {reason}", shown.title),
-                    permission_options(),
+                    {
+                        let mut options = permission_options();
+                        if call
+                            .arguments
+                            .get("requested_network_domain")
+                            .and_then(|d| d.as_str())
+                            .is_some()
+                        {
+                            options[1] = PermissionOption::new(
+                                super::ALLOW_ALWAYS,
+                                "Allow this domain permanently",
+                                PermissionOptionKind::AllowAlways,
+                            );
+                        }
+                        options
+                    },
                 )
                 .subject(RequestPermissionSubject::from(
                     ToolCallUpdate::new(call.id.to_string())

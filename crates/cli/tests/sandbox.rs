@@ -27,6 +27,7 @@ fn sandbox(mode: SandboxMode, network_access: bool) -> Sandbox {
             auto_approve_bash: true,
             network_access,
             writable_roots: Vec::new(),
+            ..Default::default()
         },
         Some(PathBuf::from(env!("CARGO_BIN_EXE_keke"))),
     )
@@ -166,6 +167,258 @@ fn network_access_opens_the_network() {
     let (ok, text) = fetch_from_loopback(&sandbox(SandboxMode::WorkspaceWrite, true), &root);
     assert!(ok, "{text}");
     assert_eq!(text, "reached");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn domain_proxy_is_reachable_but_direct_network_is_not() {
+    let (_dir, root) = workspace();
+    let sandbox = Sandbox::new(
+        SandboxPolicy {
+            allowed_domains: vec!["example.com".to_string()],
+            ..SandboxPolicy::default()
+        },
+        None,
+    )
+    .expect("domain sandbox");
+    let (ok, text) = run(
+        &sandbox,
+        "curl -v --max-time 5 https://not-allowed.invalid/ 2>&1",
+        &root,
+    );
+    assert!(!ok, "unexpected access: {text}");
+    assert!(
+        text.contains("403"),
+        "must reach the proxy and receive its denial: {text}"
+    );
+    let (ok, text) = run(
+        &sandbox,
+        "curl -f -v --max-time 2 https://127.0.0.1:443 2>&1",
+        &root,
+    );
+    assert!(!ok, "proxy must not reach loopback: {text}");
+    assert!(
+        text.contains("400"),
+        "proxy must reject IP literals: {text}"
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").expect("direct listener");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let port = listener.local_addr().expect("address").port();
+    let (ok, text) = run(
+        &sandbox,
+        &format!("curl --noproxy '*' -sS --max-time 2 http://127.0.0.1:{port}"),
+        &root,
+    );
+    assert!(!ok, "direct connection succeeded: {text}");
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "kernel must deny connection to a listening non-proxy port: {text}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn local_dev_server_can_listen_without_outbound_network_permission() {
+    let (_dir, root) = workspace();
+    let sandbox = sandbox(SandboxMode::WorkspaceWrite, false);
+    let script = "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); print(s.getsockname()[1],flush=True); c,a=s.accept(); c.sendall(b'local-dev'); c.close()";
+    let mut child = sandbox
+        .command("/usr/bin/python3", ["-u", "-c", script], &root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("server starts");
+    let mut line = String::new();
+    use std::io::BufRead;
+    std::io::BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("port");
+    let port: u16 = match line.trim().parse() {
+        Ok(port) => port,
+        Err(_) => {
+            let output = child.wait_with_output().expect("failure output");
+            panic!(
+                "listener did not start: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    let mut stream = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+        .expect("host accesses dev server");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .expect("timeout");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("response");
+    assert_eq!(response, "local-dev");
+    assert!(child.wait().expect("server exits").success());
+    let restricted = Sandbox::new(
+        SandboxPolicy {
+            allow_local_binding: false,
+            ..SandboxPolicy::default()
+        },
+        None,
+    )
+    .expect("restricted");
+    let (ok, _) = run(
+        &restricted,
+        "exec /usr/bin/python3 -c \"import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen()\"",
+        &root,
+    );
+    assert!(!ok, "disabled binding must not run a server");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bun_run_dev_serves_loopback_without_a_sandbox_escape() {
+    let bun = std::process::Command::new("sh")
+        .args(["-c", "command -v bun"])
+        .output()
+        .expect("find bun");
+    if !bun.status.success() {
+        eprintln!(
+            "bun-specific test not run: bun is not installed; generic listener test covers kernel rules"
+        );
+        return;
+    }
+    let bun = String::from_utf8(bun.stdout).expect("bun path");
+    let (_dir, root) = workspace();
+    std::fs::write(
+        root.as_path().join("package.json"),
+        r#"{"scripts":{"dev":"bun dev.ts"}}"#,
+    )
+    .expect("package");
+    std::fs::write(root.as_path().join("dev.ts"), "const s=Bun.serve({hostname:'127.0.0.1',port:0,fetch(){setTimeout(()=>s.stop(true),100);return new Response('bun-dev')}});console.log(s.port);").expect("server");
+    let sandbox = sandbox(SandboxMode::WorkspaceWrite, false);
+    let mut child = sandbox
+        .command(bun.trim(), ["run", "dev"], &root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("bun starts");
+    let mut line = String::new();
+    use std::io::BufRead;
+    std::io::BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("port");
+    let port: u16 = match line.trim().parse() {
+        Ok(port) => port,
+        Err(_) => {
+            let output = child.wait_with_output().expect("failure output");
+            panic!(
+                "bun dev did not start: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    let mut stream =
+        std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).expect("host connects");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .expect("timeout");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("request");
+    let mut response = String::new();
+    let read = stream.read_to_string(&mut response);
+    let _ = child.kill();
+    let _ = child.wait();
+    read.expect("response");
+    assert!(response.contains("bun-dev"), "{response}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn credential_denial_overrides_global_read_access_and_follows_symlinks() {
+    let (_dir, root) = workspace();
+    let secret = root.as_path().join("secret");
+    std::fs::write(&secret, "credential").expect("secret");
+    std::os::unix::fs::symlink(&secret, root.as_path().join("alias")).expect("alias");
+    let (ok, text) = run(
+        &sandbox(SandboxMode::WorkspaceWrite, false),
+        "cat secret",
+        &root,
+    );
+    assert!(
+        ok && text == "credential",
+        "control read must succeed: {text}"
+    );
+    let sandbox = Sandbox::new(
+        SandboxPolicy {
+            deny_read: vec![AbsPath::new(secret).expect("absolute")],
+            ..SandboxPolicy::default()
+        },
+        None,
+    )
+    .expect("credential sandbox");
+    for line in ["cat secret", "cat alias"] {
+        let (ok, text) = run(&sandbox, line, &root);
+        assert!(!ok, "{line} read the credential: {text}");
+        assert!(!text.contains("credential"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn empty_domain_configuration_asks_during_the_original_command() {
+    use keke_tool::Tool;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Reviewer(Arc<AtomicUsize>);
+    impl keke_tool::PermissionReviewer for Reviewer {
+        fn permission(
+            &self,
+            domain: String,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), keke_tool::ToolError>> + Send + '_>,
+        > {
+            Box::pin(async move {
+                assert_eq!(domain, "additional.invalid");
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(keke_tool::ToolError::denied("test refusal"))
+            })
+        }
+    }
+    let (_dir, root) = workspace();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bash = keke_tools::Bash {
+        sandbox: Arc::new(sandbox(SandboxMode::WorkspaceWrite, false)),
+        background: None,
+    };
+    let output = bash
+        .run(
+            keke_tool::ToolCallContext {
+                call_id: keke_protocol::ToolCallId::new("dynamic-domain"),
+                workspace_root: root,
+                timeout_millis: Some(5000),
+                cancelled: Arc::new(|| false),
+                permission_reviewer: Some(Arc::new(Reviewer(Arc::clone(&calls)))),
+                approved_network_domains: Vec::new(),
+            },
+            keke_tools::BashArgs {
+                command: "curl -v --max-time 3 https://additional.invalid/ 2>&1".into(),
+                background: false,
+                timeout_ms: Some(5000),
+                allowed_domains: Vec::new(),
+            },
+        )
+        .await
+        .expect("original command completes");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    match output {
+        keke_tools::BashOutput::Finished {
+            exit_code, output, ..
+        } => {
+            assert_ne!(exit_code, 0);
+            assert!(
+                output.contains("403"),
+                "proxy denies after review: {output}"
+            );
+        }
+        _ => panic!("expected foreground result"),
+    }
 }
 
 #[test]

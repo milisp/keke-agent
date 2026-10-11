@@ -230,6 +230,8 @@ mod tests {
             workspace_root: AbsPath::new(root).expect("absolute"),
             timeout_millis: None,
             cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
         };
         (dir, ctx)
     }
@@ -660,6 +662,7 @@ mod tests {
                 command: "echo out; echo err >&2; exit 3".into(),
                 background: false,
                 timeout_ms: None,
+                allowed_domains: Vec::new(),
             },
         )
         .await
@@ -692,6 +695,7 @@ mod tests {
                 command: "sleep 5".into(),
                 background: false,
                 timeout_ms: Some(100),
+                allowed_domains: Vec::new(),
             },
         )
         .await
@@ -727,6 +731,7 @@ mod tests {
                 command: "sleep 5".into(),
                 background: false,
                 timeout_ms: Some(30_000),
+                allowed_domains: Vec::new(),
             },
         )
         .await
@@ -921,6 +926,7 @@ mod tests {
                 command: "sleep 30".into(),
                 background: true,
                 timeout_ms: None,
+                allowed_domains: Vec::new(),
             },
         )
         .await
@@ -949,6 +955,7 @@ mod tests {
                 command: "true".into(),
                 background: true,
                 timeout_ms: None,
+                allowed_domains: Vec::new(),
             },
         )
         .await

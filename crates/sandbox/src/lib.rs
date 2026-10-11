@@ -19,11 +19,10 @@
 //! person's decision instead: the boundary is a person, and nothing claims it
 //! is a sandbox.
 //!
-//! Reads are not narrowed. Every mode may read the whole disk, as codex's
-//! profiles do, because a dependency's source under `~/.cargo` is ordinary
-//! code the model has reason to open. What is confined is writing and the
-//! network — the two ways a command changes something or sends something
-//! away.
+//! Reads are unrestricted by default, because dependency sources in shared
+//! caches are ordinary code the model has reason to open. On macOS, explicit
+//! `deny_read` paths carve credential files out of that grant. Linux refuses
+//! read exclusions it cannot enforce rather than quietly ignoring them.
 //!
 //! Inside a writable root, the metadata that could hand a command more than
 //! the sandbox gives it stays read-only: `.keke` (the project's own
@@ -39,6 +38,8 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod proxy;
 #[cfg(target_os = "macos")]
 mod seatbelt;
 
@@ -89,6 +90,15 @@ pub enum SandboxError {
 /// can hold the same line when deciding whether a write is confined.
 pub const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
 
+/// Reviews a previously unapproved domain for one command's proxy.
+///
+/// Implementers may block waiting for a decision, but must return promptly on
+/// command cancellation: proxy shutdown joins all requests before releasing
+/// this callback. Returning true grants only the exact domain, not its children.
+pub trait NetworkAuthorizer: Send + Sync {
+    fn authorize(&self, domain: &str) -> bool;
+}
+
 /// Builds the processes a model's commands run in.
 ///
 /// Holding one means the confinement it describes was checked to be
@@ -100,6 +110,8 @@ pub const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
 pub struct Sandbox {
     policy: SandboxPolicy,
     launcher: Launcher,
+    #[cfg(target_os = "macos")]
+    proxy: Option<std::sync::Arc<proxy::Proxy>>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +126,36 @@ enum Launcher {
 }
 
 impl Sandbox {
+    /// Create a command-scoped proxy without widening filesystem or network
+    /// confinement. Only macOS workspace-write with network access disabled
+    /// supports dynamic domain grants; other policies and platforms are unchanged.
+    pub fn with_network_authorizer(
+        &self,
+        authorizer: std::sync::Arc<dyn NetworkAuthorizer>,
+        approved_domains: Vec<String>,
+    ) -> Result<Self, SandboxError> {
+        let scoped = self.clone();
+        #[cfg(target_os = "macos")]
+        {
+            let mut scoped = scoped;
+            if self.policy.mode == SandboxMode::WorkspaceWrite && !self.policy.network_access {
+                scoped.proxy = Some(std::sync::Arc::new(
+                    proxy::Proxy::new_with_authorizer(&self.policy, authorizer, approved_domains)
+                        .map_err(|error| SandboxError::Unavailable {
+                        mode: self.policy.mode.as_str(),
+                        reason: format!("starting the domain-filtering proxy failed: {error}"),
+                    })?,
+                ));
+            }
+            Ok(scoped)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (authorizer, approved_domains);
+            Ok(scoped)
+        }
+    }
+
     /// Check that `policy` can be enforced on this machine, and hold it.
     ///
     /// `helper` is the executable that answers [`HELPER_ARG`] — keke's own
@@ -121,14 +163,39 @@ impl Sandbox {
     /// with no sandbox at all this succeeds unenforced; see
     /// [`Sandbox::is_enforced`].
     pub fn new(policy: SandboxPolicy, helper: Option<PathBuf>) -> Result<Self, SandboxError> {
+        policy
+            .check_domains()
+            .map_err(|reason| SandboxError::Unavailable {
+                mode: policy.mode.as_str(),
+                reason,
+            })?;
         if policy.mode == SandboxMode::DangerFullAccess {
             return Ok(Self {
                 policy,
                 launcher: Launcher::Unconfined,
+                #[cfg(target_os = "macos")]
+                proxy: None,
             });
         }
+        #[cfg(target_os = "macos")]
+        let proxy =
+            if policy.mode == SandboxMode::WorkspaceWrite && !policy.allowed_domains.is_empty() {
+                Some(std::sync::Arc::new(proxy::Proxy::new(&policy).map_err(
+                    |error| SandboxError::Unavailable {
+                        mode: policy.mode.as_str(),
+                        reason: format!("starting the domain-filtering proxy failed: {error}"),
+                    },
+                )?))
+            } else {
+                None
+            };
         match platform_launcher(&policy, helper) {
-            Ok(launcher) => Ok(Self { policy, launcher }),
+            Ok(launcher) => Ok(Self {
+                policy,
+                launcher,
+                #[cfg(target_os = "macos")]
+                proxy,
+            }),
             Err(reason) => Err(SandboxError::Unavailable {
                 mode: policy.mode.as_str(),
                 reason,
@@ -143,6 +210,8 @@ impl Sandbox {
         Self {
             policy: SandboxPolicy::unconfined(),
             launcher: Launcher::Unconfined,
+            #[cfg(target_os = "macos")]
+            proxy: None,
         }
     }
 
@@ -199,6 +268,9 @@ impl Sandbox {
             Launcher::Seatbelt => seatbelt::command(
                 &self.writable_roots(workspace),
                 self.network(),
+                self.proxy.as_ref().map(|proxy| proxy.port()),
+                self.policy.mode == SandboxMode::WorkspaceWrite && self.policy.allow_local_binding,
+                &self.policy.deny_read,
                 program,
                 args,
             ),
@@ -218,6 +290,24 @@ impl Sandbox {
                 command
             }
         };
+        #[cfg(target_os = "macos")]
+        if let Some(proxy) = &self.proxy {
+            let url = format!("http://127.0.0.1:{}", proxy.port());
+            command.envs(
+                [
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "ALL_PROXY",
+                    "http_proxy",
+                    "https_proxy",
+                    "all_proxy",
+                ]
+                .into_iter()
+                .map(|key| (key, url.as_str())),
+            );
+            // Inherited exclusions must not silently skip the proxy.
+            command.envs([("NO_PROXY", ""), ("no_proxy", "")]);
+        }
         command.current_dir(workspace.as_path());
         command
     }
@@ -552,8 +642,11 @@ mod tests {
                 auto_approve_bash: true,
                 network_access: true,
                 writable_roots: vec![AbsPath::new("/").expect("abs")],
+                ..SandboxPolicy::default()
             },
             launcher: Launcher::Unconfined,
+            #[cfg(target_os = "macos")]
+            proxy: None,
         };
         let (_dir, root) = workspace();
         assert!(sandbox.writable_roots(&root).is_empty());
@@ -573,8 +666,11 @@ mod tests {
                     root.clone(),
                     AbsPath::new("/definitely/not/here").expect("abs"),
                 ],
+                ..SandboxPolicy::default()
             },
             launcher: Launcher::Unconfined,
+            #[cfg(target_os = "macos")]
+            proxy: None,
         };
         let roots = sandbox.writable_roots(&root);
         assert_eq!(roots[0].path, root.as_path());
@@ -632,6 +728,8 @@ mod tests {
         let sandbox = Sandbox {
             policy: SandboxPolicy::default(),
             launcher: Launcher::Unconfined,
+            #[cfg(target_os = "macos")]
+            proxy: None,
         };
         let roots = sandbox.writable_roots(&root);
         assert!(!roots[0].read_only.contains(&gitdir));
@@ -668,6 +766,8 @@ mod tests {
         let sandbox = Sandbox {
             policy: SandboxPolicy::default(),
             launcher: Launcher::Unconfined,
+            #[cfg(target_os = "macos")]
+            proxy: None,
         };
         assert!(!sandbox.is_enforced());
         assert!(!sandbox.confines());

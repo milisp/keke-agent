@@ -444,6 +444,8 @@ fn ctx(root: &Path) -> ToolCallContext {
         workspace_root: abs(root),
         timeout_millis: Some(20_000),
         cancelled: Arc::new(|| false),
+        permission_reviewer: None,
+        approved_network_domains: Vec::new(),
     }
 }
 

@@ -11,7 +11,7 @@
 //! makes denial monotonic: no registration order can turn a denial back into
 //! permission.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,6 +32,13 @@ use keke_tool::ToolError;
 
 use crate::approval::ApprovalMemory;
 use crate::approval::approval_reason;
+
+/// Human network grants shared by every call in a session. The mutex also
+/// serializes network review so concurrent calls cannot ask for the same grant.
+#[derive(Default)]
+pub struct SessionNetworkPermissions {
+    pub allowed: tokio::sync::Mutex<BTreeSet<String>>,
+}
 
 /// The tools available for a session, keyed by the name the model sees.
 #[derive(Clone, Default)]
@@ -133,6 +140,18 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         contributor.on_tool_start(ext_ctx, call).await;
     }
 
+    // Only the runtime proxy may mark a request as an observed destination.
+    // Letting model arguments supply this marker could persist invented grants.
+    if call.arguments.get("requested_network_domain").is_some() {
+        return refuse(
+            call,
+            registry,
+            ext_ctx,
+            "requested_network_domain is reserved for runtime network approval".into(),
+            false,
+        )
+        .await;
+    }
     if let Some(reason) = registry.first_denial(call) {
         return refuse(call, registry, ext_ctx, reason, false).await;
     }
@@ -142,6 +161,30 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     let mut approval_note = None;
     let mut capabilities = tool.capabilities();
     capabilities.approval = tool.call_approval(workspace_root, &call.arguments);
+    let domains = tool.network_domains(&call.arguments);
+    let mut approved_network_domains = Vec::new();
+    let human = !matches!(policy, ApprovalPolicy::Auto | ApprovalPolicy::Never);
+    let session_permissions = ext_ctx.get_or_insert_with(SessionNetworkPermissions::default);
+    let mut session_allowed = if human && !domains.is_empty() {
+        Some(session_permissions.allowed.lock().await)
+    } else {
+        None
+    };
+    let needs_network_review = !domains.is_empty()
+        && !session_allowed.as_ref().is_some_and(|allowed| {
+            domains.iter().all(|d| {
+                allowed.contains(d)
+                    || registry
+                        .network_permission_persistence()
+                        .is_some_and(|store| store.contains(d))
+            })
+        });
+    if !needs_network_review {
+        approved_network_domains = domains.clone();
+    }
+    if needs_network_review && capabilities.approval != ApprovalRequirement::Always {
+        capabilities.approval = ApprovalRequirement::ReviewRequired;
+    }
     // A tool that exists to be decided is asked about every time. Remembering
     // "allow always" for one would answer every later call on a person's
     // behalf, which is the thing it said must not happen — a plan approved
@@ -155,12 +198,25 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     {
         let request = ApprovalRequest {
             call: call.clone(),
-            reason,
+            reason: if !needs_network_review {
+                reason
+            } else {
+                format!(
+                    "runs this command inside the sandbox with HTTPS access to: {}",
+                    domains.join(", ")
+                )
+            },
             evidence,
         };
         match review(registry, ext_ctx, &request, policy, capabilities.approval).await {
-            ApprovalDecision::Allow { note } => approval_note = note,
-            ApprovalDecision::AllowAlways => memory.allow_always(&call.name),
+            ApprovalDecision::Allow { note } => {
+                approval_note = note;
+                approved_network_domains = domains.clone();
+            }
+            ApprovalDecision::AllowAlways => {
+                memory.allow_always(&call.name);
+                approved_network_domains = domains.clone();
+            }
             ApprovalDecision::Deny { reason } => {
                 return refuse(call, registry, ext_ctx, reason, false).await;
             }
@@ -169,16 +225,31 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
             }
         }
     }
+    if let Some(allowed) = session_allowed.as_mut() {
+        allowed.extend(approved_network_domains.iter().cloned());
+    }
+    drop(session_allowed);
 
     // The advertised budget is enforced here rather than trusted to the tool.
     // A tool keeping its own copy of the number would let the two drift, and a
     // tool that simply ignored it would overrun with nothing to stop it.
     let budget = tool.capabilities().timeout_millis;
+    let permission_reviewer = Arc::new(RuntimePermissionReviewer {
+        registry: registry.clone(),
+        ext_ctx: ext_ctx.clone(),
+        call: call.clone(),
+        policy,
+        cancelled: cancelled.clone(),
+        closed: std::sync::atomic::AtomicBool::new(false),
+        allowed: tokio::sync::Mutex::new(approved_network_domains.clone()),
+    });
     let ctx = ToolCallContext {
         call_id: call.id.clone(),
         workspace_root: workspace_root.clone(),
         timeout_millis: budget,
         cancelled,
+        permission_reviewer: Some(permission_reviewer.clone()),
+        approved_network_domains,
     };
 
     let running = tool.call(ctx, call.arguments.clone());
@@ -193,6 +264,13 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         }
         None => running.await,
     };
+    // Background commands retain their scoped reviewer until their child
+    // exits. Failed calls cannot retain permission to ask for further access.
+    if outcome.is_err() {
+        permission_reviewer
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     let result = match &outcome {
         Ok(output) => {
             let mut content = output.model_output.clone();
@@ -228,6 +306,122 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     Dispatched {
         result,
         abort: false,
+    }
+}
+
+struct RuntimePermissionReviewer {
+    registry: ExtensionRegistry,
+    ext_ctx: ExtensionContext,
+    call: ToolCall,
+    policy: ApprovalPolicy,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    closed: std::sync::atomic::AtomicBool,
+    allowed: tokio::sync::Mutex<Vec<String>>,
+}
+
+impl keke_tool::PermissionReviewer for RuntimePermissionReviewer {
+    fn permission(
+        &self,
+        domain: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ToolError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let cancellation = async {
+                loop {
+                    if (self.cancelled)() || self.closed.load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            };
+            let request = async {
+                let mut allowed = self.allowed.lock().await;
+                if (self.cancelled)() || self.closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(ToolError::Cancelled);
+                }
+                if allowed.contains(&domain) {
+                    return Ok(());
+                }
+                if matches!(self.policy, ApprovalPolicy::Auto | ApprovalPolicy::Never) {
+                    return Err(ToolError::denied(format!(
+                        "network domain {domain} was not approved; add it to allowed_domains and rerun"
+                    )));
+                }
+                let permissions = self
+                    .ext_ctx
+                    .get_or_insert_with(SessionNetworkPermissions::default);
+                let mut session_allowed = permissions.allowed.lock().await;
+                if (self.cancelled)() || self.closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(ToolError::Cancelled);
+                }
+                if session_allowed.contains(&domain) {
+                    return Ok(());
+                }
+                if self
+                    .registry
+                    .network_permission_persistence()
+                    .is_some_and(|store| store.contains(&domain))
+                {
+                    session_allowed.insert(domain);
+                    return Ok(());
+                }
+                // Only the review copy changes: execution retains its original arguments.
+                let mut call = self.call.clone();
+                let Some(arguments) = call.arguments.as_object_mut() else {
+                    return Err(ToolError::denied(
+                        "network review requires object arguments",
+                    ));
+                };
+                arguments.insert("requested_network_domain".into(), domain.clone().into());
+                let request = ApprovalRequest {
+                    call,
+                    reason: format!(
+                        "Command {} {} requests network domain {domain}",
+                        self.call.name, self.call.arguments
+                    ),
+                    evidence: None,
+                };
+                match review(
+                    &self.registry,
+                    &self.ext_ctx,
+                    &request,
+                    self.policy,
+                    ApprovalRequirement::ReviewRequired,
+                )
+                .await
+                {
+                    decision @ (ApprovalDecision::Allow { .. } | ApprovalDecision::AllowAlways) => {
+                        if (self.cancelled)()
+                            || self.closed.load(std::sync::atomic::Ordering::Acquire)
+                        {
+                            return Err(ToolError::Cancelled);
+                        }
+                        if decision == ApprovalDecision::AllowAlways {
+                            let store = self.registry.network_permission_persistence().ok_or_else(
+                                || {
+                                    ToolError::denied(
+                                        "persistent domain permission storage is unavailable",
+                                    )
+                                },
+                            )?;
+                            store.remember(&domain).map_err(ToolError::denied)?;
+                        }
+                        session_allowed.insert(domain.clone());
+                        allowed.push(domain);
+                        Ok(())
+                    }
+                    ApprovalDecision::Deny { reason } | ApprovalDecision::Abort { reason } => {
+                        Err(ToolError::denied(reason))
+                    }
+                }
+            };
+            tokio::select! {
+                biased;
+                () = cancellation => Err(ToolError::Cancelled),
+                result = request => result,
+            }
+        })
     }
 }
 
@@ -288,4 +482,252 @@ async fn refuse(
         contributor.on_tool_finish(ext_ctx, call, Err(&error)).await;
     }
     Dispatched { result, abort }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    use keke_plugin_api::{ApprovalReviewContributor, ExtFuture, ExtensionRegistryBuilder};
+    use keke_tool::{PermissionReviewer, Tool, ToolDescription, ToolId, ToolOutput};
+
+    struct Reviewer(bool, bool);
+    impl ApprovalReviewContributor for Reviewer {
+        fn automatic(&self) -> bool {
+            self.1
+        }
+        fn review<'a>(
+            &'a self,
+            _: &'a ExtensionContext,
+            request: &'a ApprovalRequest,
+        ) -> ExtFuture<'a, Option<ApprovalDecision>> {
+            Box::pin(async move {
+                assert!(request.reason.contains("example.com"));
+                Some(if self.0 {
+                    ApprovalDecision::Allow { note: None }
+                } else {
+                    ApprovalDecision::Deny {
+                        reason: "no".into(),
+                    }
+                })
+            })
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    struct Output;
+    impl ToolOutput for Output {
+        fn render(&self) -> Vec<ContentBlock> {
+            Vec::new()
+        }
+    }
+    struct NetworkTool;
+    impl Tool for NetworkTool {
+        type Args = serde_json::Value;
+        type Output = Output;
+        fn id(&self) -> ToolId {
+            ToolId::new("network")
+        }
+        fn description(&self, _: &keke_tool::ListToolsContext) -> ToolDescription {
+            unreachable!()
+        }
+        fn capabilities(&self) -> keke_tool::ToolCapabilities {
+            keke_tool::ToolCapabilities {
+                approval: ApprovalRequirement::AutoApproved,
+                ..Default::default()
+            }
+        }
+        fn network_domains(&self, _: &Self::Args) -> Vec<String> {
+            vec!["example.com".into()]
+        }
+        async fn run(&self, ctx: ToolCallContext, _: Self::Args) -> Result<Output, ToolError> {
+            assert_eq!(ctx.approved_network_domains, vec!["example.com"]);
+            Ok(Output)
+        }
+    }
+
+    fn context() -> ExtensionContext {
+        ExtensionContext::new(
+            keke_protocol::SessionId::new(),
+            keke_protocol::ThreadId::new(),
+        )
+    }
+    fn call() -> ToolCall {
+        ToolCall {
+            id: keke_protocol::ToolCallId::new("c"),
+            name: "network".into(),
+            arguments: serde_json::json!({"command": "curl example.com"}),
+        }
+    }
+
+    struct UnexpectedReviewer;
+    impl ApprovalReviewContributor for UnexpectedReviewer {
+        fn automatic(&self) -> bool {
+            true
+        }
+        fn review<'a>(
+            &'a self,
+            _: &'a ExtensionContext,
+            _: &'a ApprovalRequest,
+        ) -> ExtFuture<'a, Option<ApprovalDecision>> {
+            panic!("runtime Auto must not consult the guardian")
+        }
+    }
+
+    fn runtime(
+        registry: ExtensionRegistry,
+        ext_ctx: ExtensionContext,
+        policy: ApprovalPolicy,
+    ) -> RuntimePermissionReviewer {
+        RuntimePermissionReviewer {
+            registry,
+            ext_ctx,
+            call: call(),
+            policy,
+            cancelled: Arc::new(|| false),
+            closed: std::sync::atomic::AtomicBool::new(false),
+            allowed: tokio::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn human_grants_cross_calls_but_auto_and_never_ignore_them() {
+        let ctx = context();
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.approval_review_contributor(Arc::new(Reviewer(true, false)));
+        let first = runtime(builder.build(), ctx.clone(), ApprovalPolicy::OnRequest);
+        first.permission("example.com".into()).await.unwrap();
+        let second = runtime(
+            ExtensionRegistryBuilder::new().build(),
+            ctx.clone(),
+            ApprovalPolicy::AcceptEdits,
+        );
+        second.permission("example.com".into()).await.unwrap();
+        for policy in [ApprovalPolicy::Auto, ApprovalPolicy::Never] {
+            let mut builder = ExtensionRegistryBuilder::new();
+            builder.approval_review_contributor(Arc::new(UnexpectedReviewer));
+            builder.approval_review_contributor(Arc::new(Reviewer(true, false)));
+            let reviewer = runtime(builder.build(), ctx.clone(), policy);
+            let error = reviewer.permission("example.com".into()).await.unwrap_err();
+            assert!(error.to_string().contains("example.com"));
+            assert!(error.to_string().contains("allowed_domains"));
+            reviewer.allowed.lock().await.push("declared.com".into());
+            reviewer.permission("declared.com".into()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn predeclared_domains_require_express_review_even_when_auto_approved_or_never() {
+        for policy in [ApprovalPolicy::Auto, ApprovalPolicy::Never] {
+            for decision in [None, Some(false), Some(true)] {
+                let mut builder = ExtensionRegistryBuilder::new();
+                if let Some(allow) = decision {
+                    builder.approval_review_contributor(Arc::new(Reviewer(
+                        allow,
+                        policy == ApprovalPolicy::Auto,
+                    )));
+                }
+                let registry = builder.build();
+                let mut tools = ToolSet::default();
+                tools.tools.insert("network".into(), Arc::new(NetworkTool));
+                let result = dispatch(
+                    &call(),
+                    Dispatch {
+                        tools: &tools,
+                        registry: &registry,
+                        ext_ctx: &context(),
+                        workspace_root: &AbsPath::new(std::env::current_dir().unwrap()).unwrap(),
+                        cancelled: Arc::new(|| false),
+                        policy,
+                        memory: &ApprovalMemory::default(),
+                        evidence: None,
+                    },
+                )
+                .await;
+                assert_eq!(
+                    result.result.status,
+                    if decision == Some(true) {
+                        ToolStatus::Ok
+                    } else {
+                        ToolStatus::Denied
+                    }
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_permissions_fail_closed_and_cache_human_allows() {
+        for decision in [None, Some(false), Some(true)] {
+            let mut builder = ExtensionRegistryBuilder::new();
+            if let Some(allow) = decision {
+                builder.approval_review_contributor(Arc::new(Reviewer(allow, false)));
+            }
+            let reviewer = RuntimePermissionReviewer {
+                registry: builder.build(),
+                ext_ctx: context(),
+                call: call(),
+                policy: ApprovalPolicy::OnRequest,
+                cancelled: Arc::new(|| false),
+                closed: std::sync::atomic::AtomicBool::new(false),
+                allowed: tokio::sync::Mutex::new(Vec::new()),
+            };
+            assert_eq!(
+                reviewer.permission("example.com".into()).await.is_ok(),
+                decision == Some(true)
+            );
+            assert_eq!(
+                reviewer.allowed.lock().await.len(),
+                usize::from(decision == Some(true))
+            );
+            assert!(
+                reviewer
+                    .call
+                    .arguments
+                    .get("requested_network_domain")
+                    .is_none()
+            );
+            reviewer
+                .closed
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert!(matches!(
+                reviewer.permission("example.com".into()).await,
+                Err(ToolError::Cancelled)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_human_grants_never_authorize_auto_runtime_access() {
+        struct Store;
+        impl keke_plugin_api::NetworkPermissionPersistence for Store {
+            fn contains(&self, domain: &str) -> bool {
+                domain == "example.com"
+            }
+            fn remember(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.network_permission_persistence(Arc::new(Store));
+        let registry = builder.build();
+        for policy in [
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::Auto,
+            ApprovalPolicy::Never,
+        ] {
+            let reviewer = RuntimePermissionReviewer {
+                registry: registry.clone(),
+                ext_ctx: context(),
+                call: call(),
+                policy,
+                cancelled: Arc::new(|| false),
+                closed: std::sync::atomic::AtomicBool::new(false),
+                allowed: tokio::sync::Mutex::new(Vec::new()),
+            };
+            assert_eq!(
+                reviewer.permission("example.com".into()).await.is_ok(),
+                policy == ApprovalPolicy::OnRequest
+            );
+        }
+    }
 }

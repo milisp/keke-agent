@@ -49,6 +49,8 @@ pub trait ToolDyn: Send + Sync + 'static {
     /// See [`Tool::call_approval`]; `args` is decoded here the same way
     /// [`ToolDyn::call`] decodes it.
     fn call_approval(&self, workspace_root: &AbsPath, args: &Value) -> ApprovalRequirement;
+    /// See [`Tool::network_domains`]; invalid arguments declare no access.
+    fn network_domains(&self, args: &Value) -> Vec<String>;
     fn should_list(&self, ctx: &ListToolsContext) -> bool;
 
     /// JSON Schema for the tool's arguments, derived from its `Args` type.
@@ -79,6 +81,13 @@ impl<T: Tool> ToolDyn for T {
         match T::Args::deserialize(args) {
             Ok(decoded) => Tool::call_approval(self, workspace_root, &decoded),
             Err(_) => Tool::capabilities(self).approval,
+        }
+    }
+
+    fn network_domains(&self, args: &Value) -> Vec<String> {
+        match T::Args::deserialize(args) {
+            Ok(decoded) => Tool::network_domains(self, &decoded),
+            Err(_) => Vec::new(),
         }
     }
 
@@ -211,6 +220,8 @@ mod tests {
             workspace_root: AbsPath::new(root).expect("absolute"),
             timeout_millis: None,
             cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
         }
     }
 
