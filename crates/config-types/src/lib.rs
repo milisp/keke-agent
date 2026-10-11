@@ -36,7 +36,8 @@ pub enum ApprovalPolicy {
     /// Legacy policy that skips ordinary approval checks. Kept for saved
     /// sessions and configurations; new sessions should use `on-request`.
     OnFailure,
-    /// Never ask. Intended for CI, not for interactive use.
+    /// Automatically authorize execution permissions, including sandbox escapes
+    /// and network access. Person-answer tools and repository plugin trust still ask.
     Never,
 }
 
@@ -211,6 +212,9 @@ pub struct SandboxPolicy {
     /// Whether workspace-write commands may bind local listening sockets.
     #[serde(default = "default_allow_local_binding")]
     pub allow_local_binding: bool,
+    /// Redirect cache-only environment variables in workspace-write mode.
+    #[serde(default = "default_redirect_package_caches")]
+    pub redirect_package_caches: bool,
     /// Off by default: a command that can reach the network can send the
     /// workspace anywhere, and that is the exfiltration a sandbox exists to
     /// stop.
@@ -221,6 +225,9 @@ pub struct SandboxPolicy {
     /// DNS patterns refused even when an allow pattern matches.
     #[serde(default)]
     pub denied_domains: Vec<String>,
+    /// Proxy destination ports; an empty list denies all proxy transport.
+    #[serde(default = "default_proxy_allowed_ports")]
+    pub proxy_allowed_ports: Vec<u16>,
     #[serde(default = "default_proxy_max_connections")]
     pub proxy_max_connections: u16,
     #[serde(default = "default_proxy_header_timeout_ms")]
@@ -245,6 +252,14 @@ fn default_auto_approve_bash() -> bool {
 
 fn default_allow_local_binding() -> bool {
     true
+}
+
+fn default_redirect_package_caches() -> bool {
+    true
+}
+
+fn default_proxy_allowed_ports() -> Vec<u16> {
+    vec![80, 443]
 }
 
 fn default_proxy_max_connections() -> u16 {
@@ -273,9 +288,11 @@ impl Default for SandboxPolicy {
             mode: SandboxMode::default(),
             auto_approve_bash: default_auto_approve_bash(),
             allow_local_binding: default_allow_local_binding(),
+            redirect_package_caches: default_redirect_package_caches(),
             network_access: false,
             allowed_domains: Vec::new(),
             denied_domains: Vec::new(),
+            proxy_allowed_ports: default_proxy_allowed_ports(),
             proxy_max_connections: default_proxy_max_connections(),
             proxy_header_timeout_ms: default_proxy_header_timeout_ms(),
             proxy_connect_timeout_ms: default_proxy_connect_timeout_ms(),
@@ -320,6 +337,16 @@ impl SandboxPolicy {
 
     /// Refuse restrictions that unrestricted network access would bypass.
     pub fn check_domains(&self) -> Result<(), String> {
+        for (index, port) in self.proxy_allowed_ports.iter().enumerate() {
+            if *port == 0 {
+                return Err("sandbox proxy_allowed_ports must not contain zero".to_string());
+            }
+            if self.proxy_allowed_ports[..index].contains(port) {
+                return Err(format!(
+                    "sandbox proxy_allowed_ports contains duplicate port {port}"
+                ));
+            }
+        }
         for (name, value, maximum) in [
             (
                 "proxy_max_connections",
@@ -1504,6 +1531,25 @@ impl Default for MemoryConfig {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn proxy_ports_default_and_validate_transport_grants() {
+        assert_eq!(SandboxPolicy::default().proxy_allowed_ports, [80, 443]);
+        for ports in [vec![], vec![22, 8443], vec![80, 443]] {
+            let policy = SandboxPolicy {
+                proxy_allowed_ports: ports,
+                ..SandboxPolicy::default()
+            };
+            assert!(policy.check_domains().is_ok());
+        }
+        for ports in [vec![0], vec![443, 443]] {
+            let policy = SandboxPolicy {
+                proxy_allowed_ports: ports,
+                ..SandboxPolicy::default()
+            };
+            assert!(policy.check_domains().is_err());
+        }
+    }
 
     /// Composing two opinions about how far a search may reach can only narrow
     /// it, so no ordering of them grants access neither one allowed.

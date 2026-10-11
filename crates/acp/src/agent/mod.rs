@@ -435,7 +435,7 @@ fn policy_label(policy: ApprovalPolicy) -> &'static str {
         ApprovalPolicy::AcceptEdits => "Accept edits",
         ApprovalPolicy::Auto => "Automatic review",
         ApprovalPolicy::OnFailure => "Legacy ask on failure",
-        ApprovalPolicy::Never => "Skip ordinary approvals",
+        ApprovalPolicy::Never => "Authorize execution without asking",
     }
 }
 

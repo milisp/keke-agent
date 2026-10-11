@@ -1,4 +1,4 @@
-//! CONNECT-only egress gate. DNS runs in the host, never in the sandbox.
+//! HTTP download and CONNECT egress gate. DNS runs in the host, never in the sandbox.
 //!
 //! The OS resolver is blocking and not cancellable in std: shutdown joins it,
 //! rather than detaching a thread that could outlive the policy owner.
@@ -27,6 +27,7 @@ pub(crate) struct Proxy {
 struct Policy {
     allow: Vec<String>,
     deny: Vec<String>,
+    ports: Vec<u16>,
     approved: Mutex<HashSet<String>>,
     authorizer: Option<Arc<dyn crate::NetworkAuthorizer>>,
     connections: usize,
@@ -65,6 +66,7 @@ impl Proxy {
         let policy = Policy {
             allow: patterns(&policy.allowed_domains)?,
             deny: patterns(&policy.denied_domains)?,
+            ports: policy.proxy_allowed_ports.clone(),
             approved: Mutex::new(approved),
             authorizer,
             connections: policy.proxy_max_connections as usize,
@@ -223,12 +225,26 @@ fn allowed(policy: &Policy, host: &str) -> bool {
     false
 }
 
-fn authority(raw: &str) -> Option<String> {
-    let host = raw.strip_suffix(":443")?;
-    domain(host)
+fn authority(raw: &str) -> Option<(String, u16)> {
+    let (host, port) = raw.rsplit_once(':')?;
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let port = port.parse::<u16>().ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some((domain(host)?, port))
 }
 
-fn request(bytes: &[u8]) -> Result<String, &'static str> {
+#[derive(Debug, PartialEq)]
+struct Request {
+    host: String,
+    port: u16,
+    forward: Option<Vec<u8>>,
+}
+
+fn request(bytes: &[u8]) -> Result<Request, &'static str> {
     let text = std::str::from_utf8(bytes).map_err(|_| "400 Bad Request")?;
     let text = text.strip_suffix("\r\n\r\n").ok_or("400 Bad Request")?;
     let mut lines = text.split("\r\n");
@@ -236,10 +252,36 @@ fn request(bytes: &[u8]) -> Result<String, &'static str> {
     if parts.len() != 3 || !["HTTP/1.0", "HTTP/1.1"].contains(&parts[2]) {
         return Err("400 Bad Request");
     }
-    if parts[0] != "CONNECT" {
-        return Err("405 HTTP not supported in initial release; use CONNECT");
-    }
-    let host = authority(parts[1]).ok_or("400 Bad Request")?;
+    let (host, port, mut forward) = if parts[0] == "CONNECT" {
+        let (host, port) = authority(parts[1]).ok_or("400 Bad Request")?;
+        (host, port, None)
+    } else if ["GET", "HEAD"].contains(&parts[0]) {
+        let url = parts[1].strip_prefix("http://").ok_or("400 Bad Request")?;
+        let split = url.find(['/', '?']).unwrap_or(url.len());
+        let raw_authority = &url[..split];
+        let (host, port) = if raw_authority.contains(':') {
+            authority(raw_authority).ok_or("400 Bad Request")?
+        } else {
+            (domain(raw_authority).ok_or("400 Bad Request")?, 80)
+        };
+        let target = if split == url.len() {
+            "/".to_string()
+        } else if url.as_bytes()[split] == b'?' {
+            format!("/{}", &url[split..])
+        } else {
+            url[split..].to_string()
+        };
+        if target.contains('#') || target.bytes().any(|b| !(33..127).contains(&b)) {
+            return Err("400 Bad Request");
+        }
+        let header = format!(
+            "{} {target} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n",
+            parts[0]
+        );
+        (host, port, Some(header.into_bytes()))
+    } else {
+        return Err("405 Only HTTP GET/HEAD downloads and HTTPS CONNECT are supported");
+    };
     let mut seen_host = false;
     for line in lines {
         let (key, value) = line.split_once(':').ok_or("400 Bad Request")?;
@@ -254,18 +296,54 @@ fn request(bytes: &[u8]) -> Result<String, &'static str> {
             return Err("400 Bad Request");
         }
         if key.eq_ignore_ascii_case("host") {
-            if seen_host || authority(value.trim()).as_ref() != Some(&host) {
+            let supplied = if forward.is_none() {
+                authority(value.trim())
+            } else {
+                if value.trim().contains(':') {
+                    authority(value.trim())
+                } else {
+                    domain(value.trim()).map(|host| (host, 80))
+                }
+            };
+            if seen_host || supplied != Some((host.clone(), port)) {
                 return Err("400 Bad Request");
             }
             seen_host = true;
         }
         if key.eq_ignore_ascii_case("content-length")
             || key.eq_ignore_ascii_case("transfer-encoding")
+            || key.eq_ignore_ascii_case("upgrade")
+            || key.eq_ignore_ascii_case("expect")
+            || key.eq_ignore_ascii_case("connection")
+                && !["close", "keep-alive"]
+                    .iter()
+                    .any(|v| value.trim().eq_ignore_ascii_case(v))
         {
             return Err("400 Bad Request");
         }
+        if let Some(header) = forward.as_mut()
+            && ![
+                "host",
+                "connection",
+                "proxy-connection",
+                "proxy-authorization",
+                "proxy-authenticate",
+            ]
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
+        {
+            header.extend_from_slice(line.as_bytes());
+            header.extend_from_slice(b"\r\n");
+        }
     }
-    Ok(host)
+    if let Some(header) = forward.as_mut() {
+        header.extend_from_slice(b"\r\n");
+    }
+    Ok(Request {
+        host,
+        port,
+        forward,
+    })
 }
 
 // Conservative global-unicast allowlist; transition/translation IPv6 ranges
@@ -352,18 +430,21 @@ fn serve(mut client: TcpStream, policy: &Policy, stop: &AtomicBool) -> io::Resul
             Err(e) => return Err(e),
         }
     }
-    let host = match request(&header) {
-        Ok(host) => host,
+    let request = match request(&header) {
+        Ok(request) => request,
         Err(status) => return response(&mut client, status, policy, stop),
     };
-    if !allowed(policy, &host) {
+    if !policy.ports.contains(&request.port) {
+        return response(&mut client, "403 Proxy port not allowed", policy, stop);
+    }
+    if !allowed(policy, &request.host) {
         return response(&mut client, "403 Forbidden", policy, stop);
     }
     // Approval waiting is not header parsing, and cancellation must not start DNS.
     if stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    let addresses: Vec<SocketAddr> = match (host.as_str(), 443).to_socket_addrs() {
+    let addresses: Vec<SocketAddr> = match (request.host.as_str(), request.port).to_socket_addrs() {
         Ok(addresses) => addresses.collect(),
         Err(_) => return response(&mut client, "502 DNS resolution failed", policy, stop),
     };
@@ -389,9 +470,24 @@ fn serve(mut client: TcpStream, policy: &Policy, stop: &AtomicBool) -> io::Resul
     let Some(mut upstream) = upstream else {
         return response(&mut client, "502 Connection failed", policy, stop);
     };
+    if let Some(header) = &request.forward {
+        upstream.set_write_timeout(Some(policy.header))?;
+        upstream.write_all(header)?;
+        // HTTP download grants never forward bodies or pipelined requests.
+        // Half-closing upstream prevents a second authority being smuggled.
+        upstream.shutdown(Shutdown::Write)?;
+    }
     upstream.set_nonblocking(true)?;
-    response(&mut client, "200 Connection Established", policy, stop)?;
-    tunnel(&mut client, &mut upstream, policy, stop)
+    if request.forward.is_none() {
+        response(&mut client, "200 Connection Established", policy, stop)?;
+    }
+    tunnel_mode(
+        &mut client,
+        &mut upstream,
+        policy,
+        stop,
+        request.forward.is_some(),
+    )
 }
 
 struct Pipe {
@@ -441,13 +537,15 @@ impl Pipe {
     }
 }
 
-fn tunnel(
+fn tunnel_mode(
     client: &mut TcpStream,
     upstream: &mut TcpStream,
     policy: &Policy,
     stop: &AtomicBool,
+    download: bool,
 ) -> io::Result<()> {
     let (mut outgoing, mut incoming) = (Pipe::new(), Pipe::new());
+    outgoing.eof = download;
     let mut active = Instant::now();
     while !stop.load(Ordering::Acquire) && active.elapsed() < policy.idle {
         let a = outgoing.step(client, upstream)?;
@@ -483,12 +581,13 @@ mod tests {
         assert!(
             request(b"GET / HTTP/1.1\r\n\r\n")
                 .unwrap_err()
-                .contains("HTTP not supported")
+                .contains("400")
         );
         for raw in [
             "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n",
             "CONNECT [::1]:443 HTTP/1.1\r\n\r\n",
-            "CONNECT example.com:80 HTTP/1.1\r\n\r\n",
+            "CONNECT example.com:0 HTTP/1.1\r\n\r\n",
+            "CONNECT example.com:65536 HTTP/1.1\r\n\r\n",
             "CONNECT example.com:443 HTTP/1.1\r\n bad: x\r\n\r\n",
             "CONNECT example.com:443 HTTP/1.1\r\nHost: evil.com:443\r\n\r\n",
         ] {
@@ -496,8 +595,153 @@ mod tests {
         }
         assert_eq!(
             request(b"CONNECT EXAMPLE.COM.:443 HTTP/1.1\r\n\r\n").unwrap(),
-            "example.com"
+            Request {
+                host: "example.com".into(),
+                port: 443,
+                forward: None
+            }
         );
+    }
+
+    #[test]
+    fn http_downloads_rewrite_absolute_target_and_reject_smuggling() {
+        let request = request(b"GET http://example.com:80/a?q=1 HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: secret\r\nAccept: */*\r\n\r\n").unwrap();
+        assert_eq!(request.host, "example.com");
+        assert_eq!(request.port, 80);
+        let header = String::from_utf8(request.forward.unwrap()).unwrap();
+        assert_eq!(
+            header,
+            "GET /a?q=1 HTTP/1.1\r\nHost: example.com:80\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+        );
+        for raw in [
+            "GET http://127.0.0.1/ HTTP/1.1\r\n\r\n",
+            "GET http://user@example.com/ HTTP/1.1\r\n\r\n",
+            "GET http://example.com:65536/ HTTP/1.1\r\n\r\n",
+            "GET http://example.com/ HTTP/1.1\r\nHost: evil.com\r\n\r\n",
+            "GET http://example.com/ HTTP/1.1\r\nContent-Length: 1\r\n\r\n",
+            "GET http://example.com/ HTTP/1.1\r\nConnection: upgrade\r\n\r\n",
+            "POST http://example.com/ HTTP/1.1\r\n\r\n",
+        ] {
+            assert!(super::request(raw.as_bytes()).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn http_downloads_do_not_forward_a_second_request() {
+        let client_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(client_listener.local_addr().unwrap()).unwrap();
+        let (mut proxy_client, _) = client_listener.accept().unwrap();
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut upstream = TcpStream::connect(upstream_listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = upstream_listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        proxy_client.set_nonblocking(true).unwrap();
+        upstream.shutdown(Shutdown::Write).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        client
+            .write_all(b"GET /evil HTTP/1.1\r\nHost: evil.example.com\r\n\r\n")
+            .unwrap();
+        let policy = Policy {
+            allow: Vec::new(),
+            deny: Vec::new(),
+            ports: vec![80, 443],
+            approved: Mutex::new(HashSet::new()),
+            authorizer: None,
+            connections: 1,
+            header: Duration::from_secs(1),
+            connect: Duration::from_secs(1),
+            idle: Duration::from_secs(2),
+            poll: Duration::from_millis(1),
+        };
+        let worker = thread::spawn(move || {
+            tunnel_mode(
+                &mut proxy_client,
+                &mut upstream,
+                &policy,
+                &AtomicBool::new(false),
+                true,
+            )
+            .unwrap()
+        });
+        let mut forwarded = Vec::new();
+        server.read_to_end(&mut forwarded).unwrap();
+        assert!(forwarded.is_empty(), "pipelined data reached upstream");
+        server
+            .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            .unwrap();
+        server.shutdown(Shutdown::Write).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.ends_with("\r\n\r\nok"));
+    }
+
+    #[test]
+    fn configured_ports_are_parsed_without_changing_the_domain_identity() {
+        for port in [22, 443, 8443] {
+            let parsed = request(
+                format!("CONNECT example.com:{port} HTTP/1.1\r\nHost: example.com:{port}\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(parsed.host, "example.com");
+            assert_eq!(parsed.port, port);
+            assert!(parsed.forward.is_none());
+        }
+        let parsed =
+            request(b"GET http://example.com:8080/a HTTP/1.1\r\nHost: example.com:8080\r\n\r\n")
+                .unwrap();
+        assert_eq!(parsed.port, 8080);
+        assert!(
+            String::from_utf8(parsed.forward.unwrap())
+                .unwrap()
+                .contains("Host: example.com:8080")
+        );
+        assert!(
+            request(b"CONNECT example.com:8443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n").is_err()
+        );
+    }
+
+    #[test]
+    fn forbidden_ports_are_refused_before_domain_authorization_or_dns() {
+        struct Unexpected;
+        impl crate::NetworkAuthorizer for Unexpected {
+            fn authorize(&self, _: &str) -> bool {
+                panic!("port denial must precede domain authorization");
+            }
+        }
+        let policy = Policy {
+            allow: Vec::new(),
+            deny: Vec::new(),
+            ports: vec![80, 443],
+            approved: Mutex::new(HashSet::new()),
+            authorizer: Some(Arc::new(Unexpected)),
+            connections: 1,
+            header: Duration::from_secs(1),
+            connect: Duration::from_secs(1),
+            idle: Duration::from_secs(1),
+            poll: Duration::from_millis(1),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let worker =
+            thread::spawn(move || serve(server, &policy, &AtomicBool::new(false)).unwrap());
+        client
+            .write_all(b"CONNECT unknown.invalid:22 HTTP/1.1\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 403 Proxy port not allowed"));
     }
 
     #[test]
@@ -541,6 +785,7 @@ mod tests {
         let make_policy = || Policy {
             allow: vec!["static.example.com".into()],
             deny: vec!["blocked.example.com".into()],
+            ports: vec![80, 443],
             approved: Mutex::new(HashSet::from([
                 "blocked.example.com".into(),
                 "preapproved.example.com".into(),
@@ -572,6 +817,7 @@ mod tests {
         let policy = Policy {
             allow: vec!["*.example.com".into()],
             deny: vec!["blocked.example.com".into()],
+            ports: vec![80, 443],
             approved: Mutex::new(HashSet::new()),
             authorizer: None,
             connections: 1,

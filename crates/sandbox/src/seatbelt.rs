@@ -23,11 +23,16 @@ pub(crate) const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const BASE_POLICY: &str = include_str!("ported/codex/seatbelt_base_policy.sbpl");
 const NETWORK_POLICY: &str = include_str!("ported/codex/seatbelt_network_policy.sbpl");
 
+// Kept at this internal profile boundary so each independent permission is
+// visible to the caller; none is implicitly enabled by another capability.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn command<I, S>(
     roots: &[WritableRoot],
     network: bool,
     proxy_port: Option<u16>,
     allow_local_binding: bool,
+    local_network_ports: &[u16],
+    local_network_sockets: &[String],
     deny_read: &[AbsPath],
     program: &str,
     args: I,
@@ -50,9 +55,27 @@ where
             "(allow network-outbound (remote tcp \"localhost:{port}\"))"
         );
     }
+    for port in local_network_ports {
+        let _ = writeln!(
+            policy,
+            "(allow network-outbound (remote tcp \"localhost:{port}\"))"
+        );
+    }
+    for index in 0..local_network_sockets.len() {
+        let _ = writeln!(
+            policy,
+            "(allow network-outbound (remote unix-socket (literal (param \"UNIX_SOCKET_{index}\"))))"
+        );
+    }
     append_read_denials(&mut policy, denied.len());
     let mut command = Command::new(SANDBOX_EXEC);
     command.arg("-p").arg(policy);
+    for (index, path) in local_network_sockets.iter().enumerate() {
+        command.arg(define(
+            &format!("UNIX_SOCKET_{index}"),
+            std::path::Path::new(path),
+        ));
+    }
     for (index, root) in roots.iter().enumerate() {
         command.arg(define(&root_param(index), &root.path));
     }
@@ -175,6 +198,8 @@ mod tests {
             None,
             false,
             &[],
+            &[],
+            &[],
             "true",
             std::iter::empty::<&str>(),
         );
@@ -219,6 +244,8 @@ mod tests {
             None,
             true,
             &[],
+            &[],
+            &[],
             "true",
             std::iter::empty::<&str>(),
         );
@@ -230,8 +257,48 @@ mod tests {
     }
 
     #[test]
+    fn local_client_permission_is_limited_to_the_approved_port() {
+        let command = command(
+            &[],
+            false,
+            None,
+            false,
+            &[3000],
+            &[],
+            &[],
+            "true",
+            [] as [&str; 0],
+        );
+        let text = command.get_args().nth(1).unwrap().to_string_lossy();
+        assert!(text.contains("(remote tcp \"localhost:3000\")"));
+        assert!(!text.contains("localhost:*"));
+        assert!(!text.contains("(allow network-outbound)"));
+    }
+
+    #[test]
     fn no_roots_means_no_write_rule() {
         assert!(!profile(0, 0, false).contains("(allow file-write*\n"));
+    }
+
+    #[test]
+    fn unix_socket_paths_are_parameters_not_filesystem_grants() {
+        let command = command(
+            &[],
+            false,
+            None,
+            false,
+            &[],
+            &["/host/quoted\".sock".into()],
+            &[],
+            "true",
+            [] as [&str; 0],
+        );
+        let args: Vec<_> = command.get_args().collect();
+        let text = args[1].to_string_lossy();
+        assert!(text.contains("(remote unix-socket (literal (param \"UNIX_SOCKET_0\")))"));
+        assert!(!text.contains("quoted"));
+        assert!(!text.contains("(allow file-write*"));
+        assert_eq!(args[2], "-DUNIX_SOCKET_0=/host/quoted\".sock");
     }
 
     #[test]

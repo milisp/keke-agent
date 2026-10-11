@@ -151,11 +151,12 @@ fn restrict_filesystem(writable: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// Refuse every socket but a Unix one, and the calls that would use one.
+/// Permit Unix socket creation/socketpair for child-process IPC, but refuse
+/// fresh connections/listeners even for Unix sockets: seccomp cannot inspect
+/// sockaddr paths to distinguish an owned build worker from a host daemon.
 ///
 /// The syscall list is codex's (`codex-rs/linux-sandbox/src/landlock.rs`).
-/// Unix sockets stay: build tools talk to their own children over
-/// `socketpair`, and a Unix socket reaches this machine, not the network.
+/// Socketpair stays for build tools; arbitrary host Unix services do not.
 fn restrict_network() -> Result<(), String> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for number in [

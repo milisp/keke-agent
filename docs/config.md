@@ -413,6 +413,8 @@ sandbox_mode = "workspace_write"
 auto_approve_bash = true       # default; sandboxed Bash skips ordinary approval
 network_access = false          # true grants unrestricted networking
 allow_local_binding = true      # macOS: localhost TCP listeners, no outbound grant
+redirect_package_caches = true  # cache-only paths in temp; toolchains/credentials unchanged
+proxy_allowed_ports = [80, 443] # user may add 22/8443; projects may only remove ports
 allowed_domains = ["github.com", "api.github.com", "registry.npmjs.org", "crates.io"]
 denied_domains = []             # deny wins over allow, including wildcard matches
 deny_read = ["/Users/me/private-credentials"] # absolute paths
@@ -431,7 +433,8 @@ In human approval modes, a new domain prompts during execution and an ordinary
 allow lasts for the session. “Allow this domain permanently” records it under
 `$KEKE_HOME/network-permissions.json` for future human-mode sessions. Auto does not
 reuse human session or persistent grants. Missing reviewers and refusals fail
-closed; Never does not prompt for unlisted destinations. Static `allowed_domains`
+closed. Never automatically approves declared and runtime domains without prompting,
+but explicit denials and public-address checks still apply. Static `allowed_domains`
 configuration remains optional for trusted endpoints. Explicit denials always
 win, including over approved command endpoints.
 
@@ -441,19 +444,70 @@ in macOS workspace-write mode. Use `127.0.0.1` or `::1` as the dev-server host;
 wildcard/LAN binds such as `0.0.0.0` are not granted. A host browser can access
 the server, including WebSocket traffic. Binding permission does not grant a
 sandboxed `curl`, test runner, or browser client access to arbitrary localhost
-services; scoped local client access remains unimplemented. Projects may disable
+services. Bash can declare `allowed_local_ports: [3000]` to approve localhost TCP
+client access together with the command, for example `curl http://127.0.0.1:3000`.
+This supports direct HTTP, HTTPS and WebSocket traffic on the approved ports,
+including clients that do not use the domain proxy. Each call requires approval
+(including Auto guardian review, except Never automatically authorizes); no port consent is remembered for the session
+or permanently. Grants apply only to the command and its descendants, including
+background commands until they exit. A grant can reach any host service owning
+that port, not just a workspace dev server, so do not approve sensitive local
+services casually. Port 0, read-only, and confined non-macOS platforms are rejected.
+Projects may disable
 binding but cannot restore it when the user disabled it. Read-only remains closed;
 the Linux no-network launcher does not yet implement this capability.
 The child receives upper- and lowercase HTTP/HTTPS/ALL proxy variables and empty
-NO_PROXY variables. Clients that ignore these settings remain blocked rather
-than running unconfined. Only CONNECT to port 443 is supported: plain HTTP,
-SSH, SOCKS, IP literals, and private/loopback DNS destinations are refused.
+NO_PROXY variables, except command-approved local access sets loopback exclusions;
+Seatbelt still denies every other local port. Clients that ignore these settings remain blocked rather
+than running unconfined. CONNECT and plain HTTP GET/HEAD downloads use only
+`proxy_allowed_ports` (default `[80, 443]`). This is a user-authorized transport
+ceiling separate from domain consent: granting a domain permits the configured
+ports, not just HTTPS. Explicit `[]` denies all proxy transports; zero/duplicate
+ports are invalid. Projects may only remove inherited ports, never add them.
+HTTP bodies, pipelining, upgrades, SOCKS, IP literals and private DNS destinations
+are refused. Use separately approved
+local TCP ports for loopback services. HTTP downloads are not encrypted.
+For macOS Git SSH, the default transport is routed through `/usr/bin/ssh` with an
+`nc -X connect` ProxyCommand to the same domain gate. Add port 22 in the user config
+for ordinary SSH, or use an SSH endpoint on an already permitted port. Domain
+approval still applies and direct SSH remains blocked. Existing `GIT_SSH` or
+`GIT_SSH_COMMAND` overrides are preserved, but cannot bypass Seatbelt. Standalone
+SSH is not rewritten; configure its ProxyCommand explicitly. Host-key checks and
+agent consent remain intact, and agent sockets still require `allowed_unix_sockets`.
+CONNECT is an opaque TCP tunnel: allowing port 22/8443 does not verify the remote
+protocol, and the proxy is not a TLS inspection boundary.
 Domain names match case-insensitively; `*.example.com` matches subdomains, not
 the apex. Redirects, download CDNs, enterprise hosts, and wrapped `gh` invocations
 request additional domains during execution in human modes; Auto must declare
 them and rerun instead of requiring an escape.
 An allowed destination can still receive data from the workspace: the proxy
 checks destinations, not tunnel contents, and does not inspect TLS.
+
+**Host services and cache writes.** Bash accepts `allowed_unix_sockets`, exact
+absolute socket paths such as the resolved Docker socket or `$SSH_AUTH_SOCK`.
+macOS workspace-write grants outbound connection access only to reviewed paths;
+other sockets remain blocked. Resolve shell variables before declaring paths.
+The consent is per command, never stored. Docker access can control containers
+and host mounts; SSH agent access can request signatures, so neither is a harmless
+cache permission. Linux/read-only reject scoped socket grants.
+
+`redirect_package_caches = true` redirects only npm, Bun, pip, uv and XDG cache
+environment variables to a stable per-workspace temporary location. The tools
+create their caches there; keke does not copy or change the user's existing caches.
+Cargo/Rust toolchain roots, credentials, HOME, PATH and install destinations stay
+unchanged. Temp cleanup may remove the cache. Shell-level overrides remain subject
+to filesystem permissions. The user may disable the redirects; projects may only
+disable, never restore an inherited disabled setting.
+
+Bash also accepts `additional_write_roots`, exact absolute existing directories,
+reviewed with the command. This allows Cargo's existing registry/cache directories
+or a chosen install destination without escaping the filesystem sandbox. Keke
+canonicalizes approved roots, refuses missing directories rather than creating them
+on the host, and keeps grants command-scoped; existing metadata protections apply
+on macOS (Linux Landlock cannot carve out metadata). Grant narrow cache directories,
+not HOME, the whole filesystem or directories holding toolchains/credentials.
+Read-only rejects extra roots. Never authorizes them without review; Auto reviews
+them with the command, and human modes ask afresh, without permanent or session grants.
 
 Do not combine domain lists with `network_access = true`; configuration rejects
 that bypass. Nonempty allow lists replace grants from earlier layers; denials
@@ -478,14 +532,18 @@ predeclares network access: that access is reviewed together with the command.
 Set it to `false`
 to put Bash through ordinary approval before it runs. Edit tools still follow the
 approval policy. This setting does not approve sandbox escapes: every
-`bash_unsandboxed` call requires review. A repository may turn auto-approval
+`bash_unsandboxed` call requires review unless the user selected Never. A repository may turn auto-approval
 off, but may not turn it back on after the user turned it off.
 
 `approval_policy = "auto"` sends ordinary approval requests to the model-backed
 guardian reviewer. Its model defaults to the session model and can be selected
 with `[guardian] provider` and `model`. A failed or unclear review denies the
-call. Sandbox escapes also go to the guardian, on every call. `never` skips ordinary
-approval entirely; it is not Auto mode.
+call. Sandbox escapes also go to the guardian, on every call. `never` automatically
+authorizes execution permissions, including escapes and scoped domain/port/socket/write
+grants, without review; it is not Auto mode. It does not remove explicit guard
+denials, sandbox restrictions, tools requiring a person's answer, or repository
+plugin-content execution consent. Unconfined execution still requires using the
+escape tool; Never does not silently run a failed sandboxed command unrestricted.
 
 In Auto mode, `write_file`, `edit`, and `apply_patch` are decided by the paths
 they write rather than by the reviewer: a call whose every path — for a patch,
@@ -531,7 +589,9 @@ rest of the workspace.
 **Stepping outside.** When a command fails because of the sandbox — it needs
 the network or writes outside the workspace — the model can
 rerun it with `bash_unsandboxed`, giving a reason. In Auto mode the guardian
-reviews every escape; other policies ask you every time. A standing "allow
+reviews every escape; human policies ask you every time, and Never skips execution
+review. `background: true` explicitly requests a tracked unconfined task, with that
+lifetime included in review; it ends on exit or `kill_task`. A standing "allow
 always" never skips this review. If the required reviewer is unavailable,
 the call is refused; `keke exec` can review escapes in Auto mode.
 

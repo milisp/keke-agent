@@ -109,6 +109,24 @@ pub trait Tool: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Localhost TCP ports this command needs to access host services.
+    /// These require fresh express approval for each call, never standing grants.
+    fn local_network_ports(&self, _args: &Self::Args) -> Vec<u16> {
+        Vec::new()
+    }
+
+    /// Exact absolute Unix socket paths requiring command-scoped host-service
+    /// approval. Implementers must enforce the approved paths at execution.
+    fn local_network_sockets(&self, _args: &Self::Args) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Existing absolute directories requiring command-scoped write approval.
+    /// Implementers must verify the exact approved paths before execution.
+    fn writable_roots(&self, _args: &Self::Args) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Whether to advertise this tool for the given turn.
     fn should_list(&self, _ctx: &ListToolsContext) -> bool {
         true

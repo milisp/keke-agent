@@ -151,7 +151,9 @@ there `Sandbox::is_enforced` is false and the tool pack makes every command
 a person's decision; the boundary is a person, and nothing calls it a
 sandbox. Where there is a sandbox, `bash_unsandboxed` is how a command steps
 out of it: every call requires review with the model's stated reason. Auto
-uses the guardian reviewer; other policies require a person's answer.
+uses the guardian reviewer; human policies require a person's answer. Never
+automatically authorizes execution, including escapes, but does not override
+guards, Always/person-answer tools, or repository plugin execution consent.
 
 The sandbox is a setting a repository could otherwise switch off, so the
 project config layer may only tighten it — the same reasoning as the plugin
@@ -179,6 +181,25 @@ Local development servers are a separate right, not domain egress. macOS
 workspace-write allows localhost TCP binding/inbound by default, controlled by
 `allow_local_binding`; wildcard/LAN bindings and arbitrary loopback client access
 are not granted. Read-only gets no listener right and a project may only narrow it.
+For client access, Bash declares `allowed_local_ports`, reviewed with the command
+and granted only to that command's sandbox. These grants are never session or
+permanent grants and Auto must review them too (Never authorizes without asking): a loopback port may belong to a
+host service, not this workspace. Seatbelt permits direct TCP only to the named
+localhost ports; proxy exclusions route loopback traffic directly but cannot
+open other ports. Linux and read-only reject this capability rather than silently
+ignoring it. Port consent does not authenticate which process owns that port.
+The same command-scoped approval covers exact Unix socket paths on macOS via
+`allowed_unix_sockets`; these expose potentially privileged host services, so
+neither a path under the workspace nor a standing Bash grant exempts them.
+Cache-only environment redirects point npm/Bun/pip/uv/XDG caches to a per-workspace
+temporary location. They do not relocate Cargo/Rust toolchains, credentials or
+installation roots, and can be disabled by the user or narrowed by a project.
+Proxy ports are an explicit validated user ceiling (`proxy_allowed_ports`, default
+80/443) separate from domain approval; projects may only reduce it. Both CONNECT
+and HTTP download destinations are checked against it before approval or DNS.
+Default Git SSH is routed through the same CONNECT gate on macOS without replacing
+explicit user SSH transport overrides or host-key checks. The tunnel is opaque TCP,
+not a promise that a permitted port carries a particular protocol.
 
 ### Tier 1 — engine
 

@@ -51,6 +51,13 @@ pub trait ToolDyn: Send + Sync + 'static {
     fn call_approval(&self, workspace_root: &AbsPath, args: &Value) -> ApprovalRequirement;
     /// See [`Tool::network_domains`]; invalid arguments declare no access.
     fn network_domains(&self, args: &Value) -> Vec<String>;
+    /// See [`Tool::local_network_ports`]; invalid arguments declare no access.
+    fn local_network_ports(&self, args: &Value) -> Vec<u16>;
+
+    /// See [`Tool::local_network_sockets`]; invalid arguments declare no access.
+    fn local_network_sockets(&self, args: &Value) -> Vec<String>;
+    /// See [`Tool::writable_roots`]; invalid arguments declare no access.
+    fn writable_roots(&self, args: &Value) -> Vec<String>;
     fn should_list(&self, ctx: &ListToolsContext) -> bool;
 
     /// JSON Schema for the tool's arguments, derived from its `Args` type.
@@ -87,6 +94,27 @@ impl<T: Tool> ToolDyn for T {
     fn network_domains(&self, args: &Value) -> Vec<String> {
         match T::Args::deserialize(args) {
             Ok(decoded) => Tool::network_domains(self, &decoded),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn local_network_sockets(&self, args: &Value) -> Vec<String> {
+        match serde_json::from_value::<T::Args>(args.clone()) {
+            Ok(decoded) => Tool::local_network_sockets(self, &decoded),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn local_network_ports(&self, args: &Value) -> Vec<u16> {
+        match T::Args::deserialize(args) {
+            Ok(decoded) => Tool::local_network_ports(self, &decoded),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn writable_roots(&self, args: &Value) -> Vec<String> {
+        match T::Args::deserialize(args) {
+            Ok(decoded) => Tool::writable_roots(self, &decoded),
             Err(_) => Vec::new(),
         }
     }
@@ -185,6 +213,14 @@ mod tests {
             ToolCapabilities::of_kind(ToolKind::Meta)
         }
 
+        fn local_network_ports(&self, args: &Self::Args) -> Vec<u16> {
+            args.text.parse().into_iter().collect()
+        }
+
+        fn local_network_sockets(&self, args: &Self::Args) -> Vec<String> {
+            vec![args.text.clone()]
+        }
+
         async fn run(
             &self,
             _ctx: ToolCallContext,
@@ -210,6 +246,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_ports_are_forwarded_and_invalid_arguments_declare_no_access() {
+        let tool: ArcTool = Arc::new(Echo);
+        assert_eq!(
+            tool.local_network_ports(&serde_json::json!({"text": "8080"})),
+            vec![8080]
+        );
+        assert!(
+            tool.local_network_ports(&serde_json::json!({"text": 8080}))
+                .is_empty()
+        );
+        let default: ArcTool = Arc::new(Silent);
+        assert!(
+            default
+                .local_network_ports(&serde_json::json!({"text": "8080"}))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unix_sockets_are_forwarded_and_invalid_arguments_declare_no_access() {
+        let tool: ArcTool = Arc::new(Echo);
+        assert_eq!(
+            tool.local_network_sockets(&serde_json::json!({"text":"/host/service.sock"})),
+            vec!["/host/service.sock"]
+        );
+        assert!(
+            tool.local_network_sockets(&serde_json::json!({"text":42}))
+                .is_empty()
+        );
+        let default: ArcTool = Arc::new(Silent);
+        assert!(
+            default
+                .local_network_sockets(&serde_json::json!({"text":"/host/service.sock"}))
+                .is_empty()
+        );
+    }
+
     fn ctx() -> ToolCallContext {
         #[cfg(unix)]
         let root = "/tmp";
@@ -222,6 +296,9 @@ mod tests {
             cancelled: Arc::new(|| false),
             permission_reviewer: None,
             approved_network_domains: Vec::new(),
+            approved_local_network_ports: Vec::new(),
+            approved_local_network_sockets: Vec::new(),
+            approved_writable_roots: Vec::new(),
         }
     }
 

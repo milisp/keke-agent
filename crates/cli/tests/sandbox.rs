@@ -40,6 +40,117 @@ fn workspace() -> (tempfile::TempDir, AbsPath) {
     (dir, root)
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn git_ssh_uses_the_domain_proxy_and_does_not_bypass_approval() {
+    use std::sync::{Arc, Mutex};
+    struct Refuse(Mutex<Vec<String>>);
+    impl keke_sandbox::NetworkAuthorizer for Refuse {
+        fn authorize(&self, host: &str) -> bool {
+            self.0.lock().unwrap().push(host.to_string());
+            false
+        }
+    }
+    let (_dir, root) = workspace();
+    let reviewer = Arc::new(Refuse(Mutex::new(Vec::new())));
+    let base = Sandbox::new(
+        SandboxPolicy {
+            proxy_allowed_ports: vec![22, 80, 443, 8443],
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    let scoped = base
+        .with_network_authorizer(reviewer.clone(), Vec::new())
+        .unwrap();
+    let mut command = scoped.shell(
+        "git ls-remote ssh://git@unapproved.invalid:22/repository",
+        &root,
+    );
+    assert!(
+        command.get_envs().any(|(key, _)| key == "GIT_SSH_COMMAND"),
+        "test needs the default SSH transport, not an inherited override"
+    );
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(*reviewer.0.lock().unwrap(), vec!["unapproved.invalid"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("403"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn package_caches_are_writable_without_a_home_write_grant() {
+    let (_dir, root) = workspace();
+    let (ok, text) = run(
+        &sandbox(SandboxMode::WorkspaceWrite, false),
+        "mkdir -p \"$npm_config_cache\" \"$BUN_INSTALL_CACHE_DIR\" \"$PIP_CACHE_DIR\" \"$UV_CACHE_DIR\" \"$XDG_CACHE_HOME\" && for p in \"$npm_config_cache\" \"$BUN_INSTALL_CACHE_DIR\" \"$PIP_CACHE_DIR\" \"$UV_CACHE_DIR\" \"$XDG_CACHE_HOME\"; do echo cached > \"$p/keke-test\" || exit; done; echo cache-ok",
+        &root,
+    );
+    assert!(ok, "{text}");
+    assert_eq!(text.trim(), "cache-ok");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unix_socket_client_grants_are_exact_and_command_scoped() {
+    use std::os::unix::net::UnixListener;
+    let (_workspace, root) = workspace();
+    let host = outside();
+    let path = host.path().join("host.sock");
+    let other = host.path().join("other.sock");
+    let _listener = UnixListener::bind(&path).unwrap();
+    let _other_listener = UnixListener::bind(&other).unwrap();
+    let base = sandbox(SandboxMode::WorkspaceWrite, false);
+    let connect = |scope: &Sandbox, path: &Path| {
+        scope
+            .command(
+                "/usr/bin/python3",
+                [
+                    "-c",
+                    "import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])",
+                    path.to_str().unwrap(),
+                ],
+                &root,
+            )
+            .output()
+            .unwrap()
+    };
+    assert!(!connect(&base, &path).status.success());
+    let scoped = base
+        .with_local_network_sockets(vec![path.to_str().unwrap().into()])
+        .unwrap();
+    let result = connect(&scoped, &path);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!connect(&scoped, &other).status.success());
+    assert!(!connect(&base, &path).status.success());
+    assert!(
+        !run(
+            &scoped,
+            &format!("echo forbidden > '{}'", host.path().join("file").display()),
+            &root
+        )
+        .0
+    );
+    assert!(
+        base.with_local_network_sockets(vec!["relative.sock".into()])
+            .is_err()
+    );
+    assert!(
+        sandbox(SandboxMode::ReadOnly, false)
+            .with_local_network_sockets(vec![path.to_str().unwrap().into()])
+            .is_err()
+    );
+}
+
 /// A directory no mode grants: not the workspace, not a temporary directory.
 fn outside() -> tempfile::TempDir {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
@@ -77,6 +188,31 @@ fn workspace_write_may_write_the_workspace() {
     );
     assert!(ok, "{text}");
     assert_eq!(text.trim(), "hi");
+}
+
+#[test]
+fn additional_write_root_is_scoped_and_kernel_enforced() {
+    let (_dir, root) = workspace();
+    let host = outside();
+    let base = sandbox(SandboxMode::WorkspaceWrite, false);
+    assert!(base.is_enforced());
+    let line = format!(
+        "echo granted > '{}'",
+        host.path().join("installed").display()
+    );
+    let (ok, text) = run(&base, &line, &root);
+    assert!(!ok, "base write succeeded: {text}");
+    assert!(
+        !text.contains("sandbox_apply"),
+        "sandbox must be active: {text}"
+    );
+    let scoped = base
+        .with_additional_write_roots(vec![host.path().to_str().unwrap().into()])
+        .unwrap();
+    let (ok, text) = run(&scoped, &line, &root);
+    assert!(ok, "scoped write failed: {text}");
+    let (ok, text) = run(&base, &line, &root);
+    assert!(!ok, "grant leaked: {text}");
 }
 
 #[test]
@@ -167,6 +303,80 @@ fn network_access_opens_the_network() {
     let (ok, text) = fetch_from_loopback(&sandbox(SandboxMode::WorkspaceWrite, true), &root);
     assert!(ok, "{text}");
     assert_eq!(text, "reached");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn approved_local_client_port_is_scoped_and_other_ports_stay_blocked() {
+    let (_dir, root) = workspace();
+    let allowed = TcpListener::bind("127.0.0.1:0").expect("bind approved server");
+    let denied = TcpListener::bind("127.0.0.1:0").expect("bind unrelated service");
+    let port = allowed.local_addr().unwrap().port();
+    let other = denied.local_addr().unwrap().port();
+    let _keep_approved_listener_alive = allowed.try_clone().unwrap();
+    allowed.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok((mut stream, _)) = allowed.accept() {
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 7\r\n\r\nreached")
+                    .unwrap();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+    let base = Sandbox::new(
+        SandboxPolicy {
+            allowed_domains: vec!["example.com".into()],
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    let scoped = base.with_local_network_ports(vec![port]).unwrap();
+    let (ok, text) = run(
+        &scoped,
+        &format!("curl -fsS --max-time 3 http://127.0.0.1:{port}/"),
+        &root,
+    );
+    server.join().unwrap();
+    assert!(ok, "approved port must bypass the HTTPS proxy: {text}");
+    assert_eq!(text, "reached");
+    for client in [&base, &scoped] {
+        let (ok, text) = run(
+            client,
+            &format!("curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:{other}/"),
+            &root,
+        );
+        assert!(!ok, "unrelated host service was reached: {text}");
+        assert!(
+            !text.contains("sandbox_apply"),
+            "test requires actual confinement: {text}"
+        );
+    }
+    let (ok, text) = run(
+        &base,
+        &format!("curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:{port}/"),
+        &root,
+    );
+    assert!(!ok, "port grant leaked into the base sandbox: {text}");
+    assert!(
+        !text.contains("sandbox_apply"),
+        "test requires actual confinement: {text}"
+    );
+    assert!(base.with_local_network_ports(vec![0]).is_err());
+    assert!(
+        sandbox(SandboxMode::ReadOnly, false)
+            .with_local_network_ports(vec![port])
+            .is_err()
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -396,12 +606,18 @@ async fn empty_domain_configuration_asks_during_the_original_command() {
                 cancelled: Arc::new(|| false),
                 permission_reviewer: Some(Arc::new(Reviewer(Arc::clone(&calls)))),
                 approved_network_domains: Vec::new(),
+                approved_local_network_ports: Vec::new(),
+                approved_local_network_sockets: Vec::new(),
+                approved_writable_roots: Vec::new(),
             },
             keke_tools::BashArgs {
                 command: "curl -v --max-time 3 https://additional.invalid/ 2>&1".into(),
                 background: false,
                 timeout_ms: Some(5000),
                 allowed_domains: Vec::new(),
+                allowed_local_ports: Vec::new(),
+                allowed_unix_sockets: Vec::new(),
+                additional_write_roots: Vec::new(),
             },
         )
         .await

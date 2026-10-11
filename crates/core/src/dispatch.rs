@@ -162,6 +162,12 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     let mut capabilities = tool.capabilities();
     capabilities.approval = tool.call_approval(workspace_root, &call.arguments);
     let domains = tool.network_domains(&call.arguments);
+    let ports = tool.local_network_ports(&call.arguments);
+    let sockets = tool.local_network_sockets(&call.arguments);
+    let roots = tool.writable_roots(&call.arguments);
+    let mut approved_writable_roots = Vec::new();
+    let mut approved_local_network_sockets = Vec::new();
+    let mut approved_local_network_ports = Vec::new();
     let mut approved_network_domains = Vec::new();
     let human = !matches!(policy, ApprovalPolicy::Auto | ApprovalPolicy::Never);
     let session_permissions = ext_ctx.get_or_insert_with(SessionNetworkPermissions::default);
@@ -182,7 +188,9 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     if !needs_network_review {
         approved_network_domains = domains.clone();
     }
-    if needs_network_review && capabilities.approval != ApprovalRequirement::Always {
+    if (needs_network_review || !ports.is_empty() || !sockets.is_empty() || !roots.is_empty())
+        && capabilities.approval != ApprovalRequirement::Always
+    {
         capabilities.approval = ApprovalRequirement::ReviewRequired;
     }
     // A tool that exists to be decided is asked about every time. Remembering
@@ -198,12 +206,36 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     {
         let request = ApprovalRequest {
             call: call.clone(),
-            reason: if !needs_network_review {
+            reason: if !needs_network_review
+                && ports.is_empty()
+                && sockets.is_empty()
+                && roots.is_empty()
+            {
                 reason
             } else {
+                let mut access = Vec::new();
+                if !domains.is_empty() {
+                    access.push(format!(
+                        "HTTP download/HTTPS domains: {}",
+                        domains.join(", ")
+                    ));
+                }
+                if !ports.is_empty() {
+                    access.push(format!(
+                        "localhost TCP ports: {} (access to services running on the host; this command only)",
+                        ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                if !sockets.is_empty() {
+                    access.push(format!("Unix sockets: {} (host service access, potentially privileged; this command only)", sockets.join(", ")));
+                }
+                if !roots.is_empty() {
+                    access.push(format!("additional writable directories: {} (outside-workspace filesystem access; this command only)", roots.join(", ")));
+                }
                 format!(
-                    "runs this command inside the sandbox with HTTPS access to: {}",
-                    domains.join(", ")
+                    "{}; requested network access — {}",
+                    reason,
+                    access.join("; ")
                 )
             },
             evidence,
@@ -212,10 +244,18 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
             ApprovalDecision::Allow { note } => {
                 approval_note = note;
                 approved_network_domains = domains.clone();
+                approved_local_network_ports = ports.clone();
+                approved_local_network_sockets = sockets.clone();
+                approved_writable_roots = roots.clone();
             }
             ApprovalDecision::AllowAlways => {
-                memory.allow_always(&call.name);
+                if ports.is_empty() && sockets.is_empty() && roots.is_empty() {
+                    memory.allow_always(&call.name);
+                }
                 approved_network_domains = domains.clone();
+                approved_local_network_ports = ports.clone();
+                approved_local_network_sockets = sockets.clone();
+                approved_writable_roots = roots.clone();
             }
             ApprovalDecision::Deny { reason } => {
                 return refuse(call, registry, ext_ctx, reason, false).await;
@@ -224,6 +264,12 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
                 return refuse(call, registry, ext_ctx, reason, true).await;
             }
         }
+    } else if policy == ApprovalPolicy::Never {
+        // Skipping review authorizes the declared rights for this call only.
+        approved_network_domains = domains.clone();
+        approved_local_network_ports = ports.clone();
+        approved_local_network_sockets = sockets.clone();
+        approved_writable_roots = roots.clone();
     }
     if let Some(allowed) = session_allowed.as_mut() {
         allowed.extend(approved_network_domains.iter().cloned());
@@ -250,6 +296,9 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         cancelled,
         permission_reviewer: Some(permission_reviewer.clone()),
         approved_network_domains,
+        approved_local_network_ports,
+        approved_local_network_sockets,
+        approved_writable_roots,
     };
 
     let running = tool.call(ctx, call.arguments.clone());
@@ -343,7 +392,12 @@ impl keke_tool::PermissionReviewer for RuntimePermissionReviewer {
                 if allowed.contains(&domain) {
                     return Ok(());
                 }
-                if matches!(self.policy, ApprovalPolicy::Auto | ApprovalPolicy::Never) {
+                if self.policy == ApprovalPolicy::Never {
+                    // Never grants stay scoped to this command, not human consent stores.
+                    allowed.push(domain);
+                    return Ok(());
+                }
+                if self.policy == ApprovalPolicy::Auto {
                     return Err(ToolError::denied(format!(
                         "network domain {domain} was not approved; add it to allowed_domains and rerun"
                     )));
@@ -539,8 +593,38 @@ mod permission_tests {
         fn network_domains(&self, _: &Self::Args) -> Vec<String> {
             vec!["example.com".into()]
         }
-        async fn run(&self, ctx: ToolCallContext, _: Self::Args) -> Result<Output, ToolError> {
+        fn local_network_ports(&self, args: &Self::Args) -> Vec<u16> {
+            if args.get("ports").is_some() {
+                vec![8080]
+            } else {
+                Vec::new()
+            }
+        }
+        fn local_network_sockets(&self, args: &Self::Args) -> Vec<String> {
+            if args.get("sockets").is_some() {
+                vec!["/tmp/test-host.sock".into()]
+            } else {
+                Vec::new()
+            }
+        }
+        fn writable_roots(&self, args: &Self::Args) -> Vec<String> {
+            if args.get("roots").is_some() {
+                vec!["/tmp/test-cache".into()]
+            } else {
+                Vec::new()
+            }
+        }
+        async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Output, ToolError> {
             assert_eq!(ctx.approved_network_domains, vec!["example.com"]);
+            assert_eq!(
+                ctx.approved_local_network_ports,
+                self.local_network_ports(&args)
+            );
+            assert_eq!(
+                ctx.approved_local_network_sockets,
+                self.local_network_sockets(&args)
+            );
+            assert_eq!(ctx.approved_writable_roots, self.writable_roots(&args));
             Ok(Output)
         }
     }
@@ -607,16 +691,21 @@ mod permission_tests {
             builder.approval_review_contributor(Arc::new(UnexpectedReviewer));
             builder.approval_review_contributor(Arc::new(Reviewer(true, false)));
             let reviewer = runtime(builder.build(), ctx.clone(), policy);
-            let error = reviewer.permission("example.com".into()).await.unwrap_err();
-            assert!(error.to_string().contains("example.com"));
-            assert!(error.to_string().contains("allowed_domains"));
+            if policy == ApprovalPolicy::Never {
+                reviewer.permission("new.example.com".into()).await.unwrap();
+                assert_eq!(*reviewer.allowed.lock().await, vec!["new.example.com"]);
+            } else {
+                let error = reviewer.permission("example.com".into()).await.unwrap_err();
+                assert!(error.to_string().contains("example.com"));
+                assert!(error.to_string().contains("allowed_domains"));
+            }
             reviewer.allowed.lock().await.push("declared.com".into());
             reviewer.permission("declared.com".into()).await.unwrap();
         }
     }
 
     #[tokio::test]
-    async fn predeclared_domains_require_express_review_even_when_auto_approved_or_never() {
+    async fn declared_domains_are_reviewed_in_auto_and_granted_without_review_in_never() {
         for policy in [ApprovalPolicy::Auto, ApprovalPolicy::Never] {
             for decision in [None, Some(false), Some(true)] {
                 let mut builder = ExtensionRegistryBuilder::new();
@@ -645,7 +734,7 @@ mod permission_tests {
                 .await;
                 assert_eq!(
                     result.result.status,
-                    if decision == Some(true) {
+                    if policy == ApprovalPolicy::Never || decision == Some(true) {
                         ToolStatus::Ok
                     } else {
                         ToolStatus::Denied
@@ -653,6 +742,152 @@ mod permission_tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn local_ports_require_fresh_command_review_and_never_caches_them() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct PortReviewer {
+            calls: Arc<AtomicUsize>,
+            automatic: bool,
+            allow: bool,
+        }
+        impl ApprovalReviewContributor for PortReviewer {
+            fn automatic(&self) -> bool {
+                self.automatic
+            }
+            fn review<'a>(
+                &'a self,
+                _: &'a ExtensionContext,
+                request: &'a ApprovalRequest,
+            ) -> ExtFuture<'a, Option<ApprovalDecision>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    assert!(request.reason.contains("HTTPS domains: example.com"));
+                    assert!(request.reason.contains("localhost TCP ports: 8080"));
+                    assert!(request.reason.contains("services running on the host"));
+                    assert!(request.reason.contains("Unix sockets: /tmp/test-host.sock"));
+                    assert!(
+                        request
+                            .reason
+                            .contains("additional writable directories: /tmp/test-cache")
+                    );
+                    Some(if self.allow {
+                        ApprovalDecision::AllowAlways
+                    } else {
+                        ApprovalDecision::Deny {
+                            reason: "no ports".into(),
+                        }
+                    })
+                })
+            }
+        }
+
+        for policy in [
+            ApprovalPolicy::Auto,
+            ApprovalPolicy::Never,
+            ApprovalPolicy::OnRequest,
+        ] {
+            for allow in [false, true] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let mut builder = ExtensionRegistryBuilder::new();
+                builder.approval_review_contributor(Arc::new(PortReviewer {
+                    calls: calls.clone(),
+                    automatic: policy == ApprovalPolicy::Auto,
+                    allow,
+                }));
+                let registry = builder.build();
+                let ext_ctx = context();
+                let memory = ApprovalMemory::default();
+                memory.allow_always("network");
+                let session = ext_ctx.get_or_insert_with(SessionNetworkPermissions::default);
+                session.allowed.lock().await.insert("example.com".into());
+                let mut tools = ToolSet::default();
+                tools.tools.insert("network".into(), Arc::new(NetworkTool));
+                let mut command = call();
+                command.arguments["ports"] = serde_json::json!([8080]);
+                command.arguments["sockets"] = serde_json::json!(["/tmp/test-host.sock"]);
+                command.arguments["roots"] = serde_json::json!(["/tmp/test-cache"]);
+                for _ in 0..2 {
+                    let result = dispatch(
+                        &command,
+                        Dispatch {
+                            tools: &tools,
+                            registry: &registry,
+                            ext_ctx: &ext_ctx,
+                            workspace_root: &AbsPath::new(std::env::current_dir().unwrap())
+                                .unwrap(),
+                            cancelled: Arc::new(|| false),
+                            policy,
+                            memory: &memory,
+                            evidence: None,
+                        },
+                    )
+                    .await;
+                    assert_eq!(
+                        result.result.status,
+                        if allow || policy == ApprovalPolicy::Never {
+                            ToolStatus::Ok
+                        } else {
+                            ToolStatus::Denied
+                        }
+                    );
+                }
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    if policy == ApprovalPolicy::Never {
+                        0
+                    } else {
+                        2
+                    }
+                );
+                assert_eq!(
+                    *session.allowed.lock().await,
+                    BTreeSet::from(["example.com".into()])
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn never_runtime_grants_are_call_scoped_and_cancellation_still_fails() {
+        struct UnexpectedStore;
+        impl keke_plugin_api::NetworkPermissionPersistence for UnexpectedStore {
+            fn contains(&self, _: &str) -> bool {
+                panic!("Never must not consume human grants")
+            }
+            fn remember(&self, _: &str) -> Result<(), String> {
+                panic!("Never must not persist grants")
+            }
+        }
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.network_permission_persistence(Arc::new(UnexpectedStore));
+        let ctx = context();
+        let mut reviewer = runtime(builder.build(), ctx.clone(), ApprovalPolicy::Never);
+        reviewer.permission("new.example.com".into()).await.unwrap();
+        assert!(
+            ctx.get_or_insert_with(SessionNetworkPermissions::default)
+                .allowed
+                .lock()
+                .await
+                .is_empty()
+        );
+        reviewer.cancelled = Arc::new(|| true);
+        for domain in ["new.example.com", "another.example.com"] {
+            assert!(matches!(
+                reviewer.permission(domain.into()).await,
+                Err(ToolError::Cancelled)
+            ));
+        }
+        reviewer.cancelled = Arc::new(|| false);
+        reviewer
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            reviewer.permission("another.example.com".into()).await,
+            Err(ToolError::Cancelled)
+        ));
     }
 
     #[tokio::test]
@@ -726,7 +961,7 @@ mod permission_tests {
             };
             assert_eq!(
                 reviewer.permission("example.com".into()).await.is_ok(),
-                policy == ApprovalPolicy::OnRequest
+                policy != ApprovalPolicy::Auto
             );
         }
     }

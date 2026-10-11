@@ -336,7 +336,9 @@ pub fn policy_detail(policy: ApprovalPolicy) -> &'static str {
         ApprovalPolicy::AcceptEdits => "accept edits and scoped Git commits; ask for other escapes",
         ApprovalPolicy::Auto => "automatic review for edits and sandbox escapes",
         ApprovalPolicy::OnFailure => "legacy: skips ordinary approval checks",
-        ApprovalPolicy::Never => "skip ordinary approvals; sandbox escapes still ask",
+        ApprovalPolicy::Never => {
+            "authorize execution without asking; person answers and plugin trust still ask"
+        }
     }
 }
 

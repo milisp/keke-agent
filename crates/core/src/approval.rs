@@ -30,6 +30,9 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
     if capabilities.approval == ApprovalRequirement::Always {
         return Some("needs a person's answer".to_string());
     }
+    if policy == ApprovalPolicy::Never {
+        return None;
+    }
     if capabilities.approval == ApprovalRequirement::ReviewRequired {
         return Some("runs a command outside the sandbox".to_string());
     }
@@ -140,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_escapes_require_review_under_every_policy() {
+    fn sandbox_escapes_require_review_unless_policy_is_never() {
         let mut escape = capabilities(ToolKind::Execute);
         escape.approval = ApprovalRequirement::ReviewRequired;
         for policy in [
@@ -150,7 +153,11 @@ mod tests {
             ApprovalPolicy::OnFailure,
             ApprovalPolicy::Never,
         ] {
-            assert!(approval_reason(policy, &escape).is_some(), "{policy:?}");
+            assert_eq!(
+                approval_reason(policy, &escape).is_some(),
+                policy != ApprovalPolicy::Never,
+                "{policy:?}"
+            );
         }
     }
 

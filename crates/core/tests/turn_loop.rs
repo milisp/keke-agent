@@ -1586,7 +1586,6 @@ async fn sandbox_escapes_are_reviewed_each_time_by_the_selected_reviewer() {
         (ApprovalPolicy::OnRequest, false),
         (ApprovalPolicy::AcceptEdits, false),
         (ApprovalPolicy::OnFailure, false),
-        (ApprovalPolicy::Never, false),
     ] {
         let (events, asked) = run_with_requirement(
             Some(ApprovalDecision::AllowAlways),
@@ -1598,6 +1597,19 @@ async fn sandbox_escapes_are_reviewed_each_time_by_the_selected_reviewer() {
         assert_eq!(asked, vec!["dangerous", "dangerous"], "{policy:?}");
         assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
     }
+}
+
+#[tokio::test]
+async fn never_authorizes_sandbox_escapes_without_a_reviewer() {
+    let (events, asked) = run_with_requirement(
+        None,
+        ApprovalPolicy::Never,
+        false,
+        ApprovalRequirement::ReviewRequired,
+    )
+    .await;
+    assert!(asked.is_empty());
+    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
 }
 
 #[tokio::test]

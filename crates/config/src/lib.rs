@@ -235,6 +235,9 @@ pub struct SubagentsFile {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct SandboxWorkspaceWriteFile {
+    /// Replaces inherited ports, including an explicit empty list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_allowed_ports: Option<Vec<u16>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_max_connections: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,6 +252,8 @@ pub struct SandboxWorkspaceWriteFile {
     pub auto_approve_bash: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_local_binding: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_package_caches: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_access: Option<bool>,
     /// A nonempty list replaces the preceding layer's grants.
@@ -349,6 +354,10 @@ impl Config {
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
             if let Some(section) = &layer.file.sandbox_workspace_write {
                 SandboxPolicy {
+                    proxy_allowed_ports: section
+                        .proxy_allowed_ports
+                        .clone()
+                        .unwrap_or_else(|| SandboxPolicy::default().proxy_allowed_ports),
                     proxy_max_connections: section.proxy_max_connections.unwrap_or(32),
                     proxy_header_timeout_ms: section.proxy_header_timeout_ms.unwrap_or(10_000),
                     proxy_connect_timeout_ms: section.proxy_connect_timeout_ms.unwrap_or(10_000),
@@ -378,7 +387,13 @@ impl Config {
                     .get_or_insert_with(SandboxWorkspaceWriteFile::default);
                 base.auto_approve_bash = section.auto_approve_bash.or(base.auto_approve_bash);
                 base.allow_local_binding = section.allow_local_binding.or(base.allow_local_binding);
+                base.redirect_package_caches = section
+                    .redirect_package_caches
+                    .or(base.redirect_package_caches);
                 base.network_access = section.network_access.or(base.network_access);
+                if let Some(ports) = &section.proxy_allowed_ports {
+                    base.proxy_allowed_ports = Some(ports.clone());
+                }
                 base.proxy_max_connections =
                     section.proxy_max_connections.or(base.proxy_max_connections);
                 base.proxy_header_timeout_ms = section
@@ -761,11 +776,15 @@ impl Config {
                     mode: merged.sandbox_mode.unwrap_or_default(),
                     auto_approve_bash: section.auto_approve_bash.unwrap_or(true),
                     allow_local_binding: section.allow_local_binding.unwrap_or(true),
+                    redirect_package_caches: section.redirect_package_caches.unwrap_or(true),
                     network_access: section.network_access.unwrap_or(false),
                     allowed_domains: section.allowed_domains,
                     denied_domains: section.denied_domains,
                     writable_roots: section.writable_roots,
                     deny_read: section.deny_read,
+                    proxy_allowed_ports: section
+                        .proxy_allowed_ports
+                        .unwrap_or_else(|| SandboxPolicy::default().proxy_allowed_ports),
                     proxy_max_connections: section.proxy_max_connections.unwrap_or(32),
                     proxy_header_timeout_ms: section.proxy_header_timeout_ms.unwrap_or(10_000),
                     proxy_connect_timeout_ms: section.proxy_connect_timeout_ms.unwrap_or(10_000),
@@ -871,6 +890,19 @@ fn check_project_sandbox(
         )));
     }
     if let Some(section) = &project.sandbox_workspace_write {
+        if let Some(ports) = &section.proxy_allowed_ports {
+            let inherited = beneath
+                .sandbox_workspace_write
+                .as_ref()
+                .and_then(|base| base.proxy_allowed_ports.clone())
+                .unwrap_or_else(|| SandboxPolicy::default().proxy_allowed_ports);
+            if ports.iter().any(|port| !inherited.contains(port)) {
+                return Err(refuse(
+                    "sandbox_workspace_write.proxy_allowed_ports grants additional ports"
+                        .to_string(),
+                ));
+            }
+        }
         if section.proxy_max_connections.is_some()
             || section.proxy_header_timeout_ms.is_some()
             || section.proxy_connect_timeout_ms.is_some()
@@ -894,6 +926,17 @@ fn check_project_sandbox(
         if section.allow_local_binding == Some(true) && !local_binding_granted {
             return Err(refuse(
                 "sandbox_workspace_write.allow_local_binding = true grants local binding"
+                    .to_string(),
+            ));
+        }
+        let cache_redirects_granted = beneath
+            .sandbox_workspace_write
+            .as_ref()
+            .and_then(|base| base.redirect_package_caches)
+            .unwrap_or(true);
+        if section.redirect_package_caches == Some(true) && !cache_redirects_granted {
+            return Err(refuse(
+                "sandbox_workspace_write.redirect_package_caches = true enables cache writes"
                     .to_string(),
             ));
         }
@@ -1019,6 +1062,81 @@ mod tests {
 
         assert_eq!(config.compaction.trigger_percent, 60);
         assert_eq!(config.compaction.keep_recent_messages, 8);
+    }
+
+    #[test]
+    fn proxy_ports_default_in_policy_deserialization() {
+        let policy: SandboxPolicy = toml::from_str(
+            "mode = 'workspace_write'\nnetwork_access = false\nwritable_roots = []\n",
+        )
+        .expect("legacy policy parses");
+        assert_eq!(policy.proxy_allowed_ports, [80, 443]);
+        assert_eq!(
+            Config::from_layers(home(), &[])
+                .unwrap()
+                .sandbox
+                .proxy_allowed_ports,
+            [80, 443]
+        );
+    }
+
+    #[test]
+    fn proxy_ports_replace_and_explicit_empty_clears() {
+        let configured = layer(
+            "user",
+            "[sandbox_workspace_write]\nproxy_allowed_ports = [22, 8443]\n",
+        );
+        let config = Config::from_layers(home(), std::slice::from_ref(&configured)).unwrap();
+        assert_eq!(config.sandbox.proxy_allowed_ports, [22, 8443]);
+        let config = Config::from_layers(
+            home(),
+            &[
+                configured,
+                layer(
+                    "later",
+                    "[sandbox_workspace_write]\nproxy_allowed_ports = []\n",
+                ),
+                layer(
+                    "last",
+                    "[sandbox_workspace_write]\nallow_local_binding = false\n",
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(config.sandbox.proxy_allowed_ports.is_empty());
+        for ports in ["[0]", "[80, 80]"] {
+            let text = format!("[sandbox_workspace_write]\nproxy_allowed_ports = {ports}\n");
+            let error = Config::from_layers(home(), &[layer("invalid", &text)]).unwrap_err();
+            assert!(error.to_string().contains("proxy_allowed_ports"));
+        }
+    }
+
+    #[test]
+    fn projects_can_only_remove_inherited_proxy_ports() {
+        let project = |ports: &str| {
+            ConfigLayer::parse(
+                LayerSource::Project(home().workspace_root.as_path().to_path_buf()),
+                &format!("[sandbox_workspace_write]\nproxy_allowed_ports = {ports}\n"),
+            )
+            .unwrap()
+        };
+        for ports in ["[22]", "[80, 443, 8443]"] {
+            let error = Config::from_layers(home(), &[project(ports)]).unwrap_err();
+            assert!(error.to_string().contains("grants additional ports"));
+        }
+        for ports in ["[443]", "[]"] {
+            assert!(Config::from_layers(home(), &[project(ports)]).is_ok());
+        }
+        let user = || {
+            layer(
+                "user",
+                "[sandbox_workspace_write]\nproxy_allowed_ports = [22, 8443]\n",
+            )
+        };
+        let config = Config::from_layers(home(), &[user(), project("[22]")]).unwrap();
+        assert_eq!(config.sandbox.proxy_allowed_ports, [22]);
+        assert!(Config::from_layers(home(), &[user(), project("[443]")]).is_err());
+        assert!(Config::from_layers(home(), &[project("[]"), project("[443]")]).is_err());
     }
 
     #[test]
@@ -1259,6 +1377,48 @@ mod tests {
         let config = Config::from_layers(home(), &[layer("user", disable), layer("later", enable)])
             .expect("non-project layers may override");
         assert!(config.sandbox.allow_local_binding);
+    }
+
+    #[test]
+    fn cache_redirects_default_and_projects_can_only_disable() {
+        assert!(
+            Config::from_layers(home(), &[])
+                .unwrap()
+                .sandbox
+                .redirect_package_caches
+        );
+        let disable = "[sandbox_workspace_write]\nredirect_package_caches = false\n";
+        let enable = "[sandbox_workspace_write]\nredirect_package_caches = true\n";
+        assert!(
+            !Config::from_layers(home(), &[project(disable)])
+                .unwrap()
+                .sandbox
+                .redirect_package_caches
+        );
+        let error =
+            Config::from_layers(home(), &[layer("user", disable), project(enable)]).unwrap_err();
+        assert!(error.to_string().contains("redirect_package_caches"));
+        assert!(
+            !Config::from_layers(
+                home(),
+                &[
+                    layer("user", disable),
+                    layer(
+                        "later",
+                        "[sandbox_workspace_write]\nnetwork_access = false\n"
+                    )
+                ]
+            )
+            .unwrap()
+            .sandbox
+            .redirect_package_caches
+        );
+        assert!(
+            Config::from_layers(home(), &[layer("user", disable), layer("later", enable)])
+                .unwrap()
+                .sandbox
+                .redirect_package_caches
+        );
     }
 
     #[test]

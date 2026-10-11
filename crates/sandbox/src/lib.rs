@@ -36,6 +36,7 @@
 //! those exceptions. Landlock cannot carve an exception out of a grant, so on
 //! Linux those directories are as writable as the rest of the workspace.
 
+mod cache;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -112,6 +113,8 @@ pub struct Sandbox {
     launcher: Launcher,
     #[cfg(target_os = "macos")]
     proxy: Option<std::sync::Arc<proxy::Proxy>>,
+    local_network_ports: Vec<u16>,
+    local_network_sockets: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,7 +128,125 @@ enum Launcher {
     },
 }
 
+#[cfg(test)]
+#[test]
+fn scoped_write_roots_are_immutable_and_missing_roots_fail() {
+    let dir = tempfile::tempdir().expect("directory");
+    let base = Sandbox::new(
+        SandboxPolicy::default(),
+        Some(std::env::current_exe().expect("exe")),
+    )
+    .expect("sandbox");
+    let scoped = base
+        .with_additional_write_roots(vec![dir.path().to_str().expect("utf8").into()])
+        .expect("scope");
+    assert!(base.policy.writable_roots.is_empty());
+    assert_eq!(
+        scoped.policy.writable_roots.last().expect("root").as_path(),
+        dir.path().canonicalize().expect("canonical")
+    );
+    assert!(
+        base.with_additional_write_roots(vec![
+            dir.path().join("missing").to_str().expect("utf8").into()
+        ])
+        .is_err()
+    );
+    assert!(!dir.path().join("missing").exists());
+}
+
 impl Sandbox {
+    /// Add existing canonical directories to a command's write policy without
+    /// changing the session policy. Metadata protections use the normal roots.
+    pub fn with_additional_write_roots(&self, paths: Vec<String>) -> Result<Self, SandboxError> {
+        let invalid = |reason: String| SandboxError::Unavailable {
+            mode: self.policy.mode.as_str(),
+            reason,
+        };
+        let mut roots = Vec::new();
+        for path in paths {
+            if path.contains('\0') || !std::path::Path::new(&path).is_absolute() {
+                return Err(invalid(
+                    "additional write roots must be absolute without NUL".into(),
+                ));
+            }
+            let real = std::fs::canonicalize(&path)
+                .map_err(|error| invalid(format!("additional write root {path}: {error}")))?;
+            if !real.is_dir() {
+                return Err(invalid(format!(
+                    "additional write root {path} is not a directory"
+                )));
+            }
+            roots.push(AbsPath::new(real).map_err(|error| invalid(error.to_string()))?);
+        }
+        let mut scoped = self.clone();
+        if !roots.is_empty() && self.policy.mode == SandboxMode::ReadOnly {
+            return Err(invalid(
+                "additional write roots require workspace-write".into(),
+            ));
+        }
+        if self.confines()
+            && self.policy.mode == SandboxMode::WorkspaceWrite
+            && cfg!(any(target_os = "macos", target_os = "linux"))
+        {
+            scoped.policy.writable_roots.extend(roots);
+        }
+        Ok(scoped)
+    }
+
+    /// Grant outbound access to exact Unix socket paths for one command without
+    /// granting filesystem writes. Unsupported modes and platforms fail closed.
+    pub fn with_local_network_sockets(&self, paths: Vec<String>) -> Result<Self, SandboxError> {
+        if paths
+            .iter()
+            .any(|path| !std::path::Path::new(path).is_absolute() || path.contains('\0'))
+        {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "Unix socket paths must be absolute and contain no NUL".into(),
+            });
+        }
+        let supported = cfg!(target_os = "macos")
+            && self.policy.mode == SandboxMode::WorkspaceWrite
+            && self.confines();
+        if !paths.is_empty() && !supported {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "scoped Unix socket access requires macOS workspace-write".into(),
+            });
+        }
+        let mut scoped = self.clone();
+        scoped.local_network_sockets = paths;
+        scoped.local_network_sockets.sort();
+        scoped.local_network_sockets.dedup();
+        Ok(scoped)
+    }
+
+    /// Grant direct loopback TCP access to explicitly approved ports for this
+    /// command only. This can reach host services, not merely workspace servers.
+    /// Unsupported confined policies fail closed rather than ignoring a grant.
+    pub fn with_local_network_ports(&self, ports: Vec<u16>) -> Result<Self, SandboxError> {
+        if ports.contains(&0) {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "local network ports must be in 1..=65535".into(),
+            });
+        }
+        if !ports.is_empty()
+            && self.confines()
+            && !(cfg!(target_os = "macos") && self.policy.mode == SandboxMode::WorkspaceWrite)
+        {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "scoped local TCP client access requires macOS workspace-write".into(),
+            });
+        }
+        let mut scoped = self.clone();
+        scoped.local_network_ports = ports;
+        scoped.local_network_ports.sort_unstable();
+        scoped.local_network_ports.dedup();
+        Ok(scoped)
+    }
+
     /// Create a command-scoped proxy without widening filesystem or network
     /// confinement. Only macOS workspace-write with network access disabled
     /// supports dynamic domain grants; other policies and platforms are unchanged.
@@ -175,6 +296,8 @@ impl Sandbox {
                 launcher: Launcher::Unconfined,
                 #[cfg(target_os = "macos")]
                 proxy: None,
+                local_network_ports: Vec::new(),
+                local_network_sockets: Vec::new(),
             });
         }
         #[cfg(target_os = "macos")]
@@ -195,6 +318,8 @@ impl Sandbox {
                 launcher,
                 #[cfg(target_os = "macos")]
                 proxy,
+                local_network_ports: Vec::new(),
+                local_network_sockets: Vec::new(),
             }),
             Err(reason) => Err(SandboxError::Unavailable {
                 mode: policy.mode.as_str(),
@@ -212,6 +337,8 @@ impl Sandbox {
             launcher: Launcher::Unconfined,
             #[cfg(target_os = "macos")]
             proxy: None,
+            local_network_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         }
     }
 
@@ -270,6 +397,8 @@ impl Sandbox {
                 self.network(),
                 self.proxy.as_ref().map(|proxy| proxy.port()),
                 self.policy.mode == SandboxMode::WorkspaceWrite && self.policy.allow_local_binding,
+                &self.local_network_ports,
+                &self.local_network_sockets,
                 &self.policy.deny_read,
                 program,
                 args,
@@ -293,6 +422,18 @@ impl Sandbox {
         #[cfg(target_os = "macos")]
         if let Some(proxy) = &self.proxy {
             let url = format!("http://127.0.0.1:{}", proxy.port());
+            // Git's SSH transport ignores HTTP_PROXY. Route the default SSH
+            // invocation through the same gate, without bypassing host-key or
+            // agent checks. Explicit shell overrides still face Seatbelt.
+            let ssh = format!(
+                "/usr/bin/ssh -o 'ProxyCommand=/usr/bin/nc -X connect -x 127.0.0.1:{} %h %p'",
+                proxy.port()
+            );
+            if std::env::var_os("GIT_SSH_COMMAND").is_none()
+                && std::env::var_os("GIT_SSH").is_none()
+            {
+                command.envs([("GIT_SSH_COMMAND", ssh.as_str())]);
+            }
             command.envs(
                 [
                     "HTTP_PROXY",
@@ -306,7 +447,17 @@ impl Sandbox {
                 .map(|key| (key, url.as_str())),
             );
             // Inherited exclusions must not silently skip the proxy.
-            command.envs([("NO_PROXY", ""), ("no_proxy", "")]);
+            // Exclude loopback only when the kernel permits selected ports;
+            // all other loopback destinations remain denied by Seatbelt.
+            let exclusions = if self.local_network_ports.is_empty() {
+                ""
+            } else {
+                "localhost,127.0.0.1,::1,[::1]"
+            };
+            command.envs([("NO_PROXY", exclusions), ("no_proxy", exclusions)]);
+        }
+        if self.policy.mode == SandboxMode::WorkspaceWrite && self.policy.redirect_package_caches {
+            cache::redirect(&mut command, workspace);
         }
         command.current_dir(workspace.as_path());
         command
@@ -647,6 +798,8 @@ mod tests {
             launcher: Launcher::Unconfined,
             #[cfg(target_os = "macos")]
             proxy: None,
+            local_network_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         let (_dir, root) = workspace();
         assert!(sandbox.writable_roots(&root).is_empty());
@@ -671,6 +824,8 @@ mod tests {
             launcher: Launcher::Unconfined,
             #[cfg(target_os = "macos")]
             proxy: None,
+            local_network_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         let roots = sandbox.writable_roots(&root);
         assert_eq!(roots[0].path, root.as_path());
@@ -730,6 +885,8 @@ mod tests {
             launcher: Launcher::Unconfined,
             #[cfg(target_os = "macos")]
             proxy: None,
+            local_network_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         let roots = sandbox.writable_roots(&root);
         assert!(!roots[0].read_only.contains(&gitdir));
@@ -768,6 +925,8 @@ mod tests {
             launcher: Launcher::Unconfined,
             #[cfg(target_os = "macos")]
             proxy: None,
+            local_network_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         assert!(!sandbox.is_enforced());
         assert!(!sandbox.confines());
