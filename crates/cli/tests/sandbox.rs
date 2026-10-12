@@ -867,3 +867,88 @@ fn a_sandboxed_command_can_commit_but_not_plant_a_hook() {
     }
     assert!(!root.as_path().join(".git/hooks/pre-commit").exists());
 }
+
+/// What a person needs from `exposed_local_ports`: a dev server started inside
+/// the sandbox answers on the host, a server on any other port does not, and
+/// stopping the command takes the server down with it.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires namespace launcher; scripts/test-linux-sandbox.sh runs this test"]
+fn namespace_dev_server_is_reachable_from_the_host_only_on_exposed_ports() {
+    use std::io::Read;
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    fn free_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+    fn get(port: u16) -> Option<String> {
+        let address = ([127, 0, 0, 1], port).into();
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(300)).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok()?;
+        stream.write_all(b"GET / HTTP/1.0\r\n\r\n").ok()?;
+        let mut body = String::new();
+        stream.read_to_string(&mut body).ok()?;
+        Some(body)
+    }
+    fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if check() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("timed out waiting for: {what}");
+    }
+
+    let launcher = std::env::var_os("KEKE_TEST_NAMESPACE_LAUNCHER")
+        .expect("namespace test must configure its trusted launcher");
+    let (_dir, root) = workspace();
+    let (exposed, private) = (free_port(), free_port());
+    let confined = Sandbox::new(
+        SandboxPolicy {
+            linux_namespace_launcher: Some(AbsPath::new(PathBuf::from(launcher)).unwrap()),
+            allow_local_binding: true,
+            ..Default::default()
+        },
+        Some(PathBuf::from(env!("CARGO_BIN_EXE_keke"))),
+    )
+    .unwrap();
+    let scoped = confined.with_local_listener_ports(vec![exposed]).unwrap();
+    let serve = |port: u16| format!("python3 -m http.server {port} --bind 127.0.0.1 &");
+    let mut child = scoped
+        .shell(
+            &format!("{} {} wait", serve(exposed), serve(private)),
+            &root,
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let tree = keke_sandbox::ProcessTree::of(Some(child.id()));
+
+    eventually("the exposed server to answer on the host", || {
+        get(exposed).is_some_and(|body| body.contains("200 OK"))
+    });
+    assert!(
+        get(private).is_none(),
+        "a port that was not exposed must not be reachable from the host"
+    );
+
+    drop(tree);
+    let _ = child.wait();
+    eventually("the exposed port to close with the command", || {
+        get(exposed).is_none()
+    });
+}
