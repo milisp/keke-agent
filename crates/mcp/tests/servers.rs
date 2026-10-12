@@ -39,6 +39,13 @@ if log:
     with open(log, "a") as handle:
         handle.write("started\n")
 
+# A launcher whose real work happens in a descendant, as `npx` and `uvx` do.
+child_log = os.environ.get("KEKE_TEST_CHILD_PID_FILE")
+if child_log:
+    import subprocess
+    with open(child_log, "w") as handle:
+        handle.write(str(subprocess.Popen(["sleep", "60"]).pid))
+
 TOOLS = [
     {"name": "echo", "description": "Echo text back.",
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
@@ -892,4 +899,56 @@ async fn a_modern_server_is_not_probed_twice() {
     // calls share the one answer.
     let probes = std::fs::read_to_string(&log).expect("the server was probed");
     assert_eq!(probes.lines().count(), 1, "probed more than once: {probes}");
+}
+
+/// Killing only the server's own process left whatever it had started — the
+/// real server behind an `npx` or `uvx` launcher — running after the session.
+#[tokio::test]
+async fn dropping_a_server_stops_the_processes_it_started() {
+    let dir = TempDir::new().expect("tempdir");
+    let pid_file = dir.path().join("child.pid");
+    let server = script(dir.path(), "good.py", GOOD_SERVER);
+    let tools = installed_tools(vec![plugin_with_server(
+        "launcher",
+        dir.path(),
+        "files",
+        &server,
+        vec![("KEKE_TEST_CHILD_PID_FILE", pid_file.to_str().expect("utf8"))],
+    )]);
+    find(&tools, "launcher:files:echo")
+        .call(ctx(dir.path()), json!({"text": "hi"}))
+        .await
+        .expect("call");
+    let child: u32 = std::fs::read_to_string(&pid_file)
+        .expect("the server reported its child")
+        .trim()
+        .parse()
+        .expect("pid");
+    assert!(running(child), "the premise: the child outlives its parent");
+
+    drop(tools);
+    for _ in 0..250 {
+        if !running(child) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the server's child outlived the connection");
+}
+
+/// A zombie is dead for this purpose: PID 1 in a container may never reap the
+/// orphans a killed group leaves behind.
+fn running(pid: u32) -> bool {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        let state = stat
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.trim().chars().next());
+        return state != Some('Z');
+    }
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }

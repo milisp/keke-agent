@@ -66,6 +66,9 @@ pub(crate) struct Connection {
     next_id: AtomicU64,
     /// Held only so the child is killed when the connection is dropped.
     _child: Child,
+    /// Held for the same reason, for what the child started: dropped after the
+    /// child, so the group is signalled once the launcher itself is gone.
+    _tree: keke_sandbox::ProcessTree,
 }
 
 impl std::fmt::Debug for Connection {
@@ -80,6 +83,7 @@ impl Connection {
         let missing = |what: &str| {
             std::io::Error::other(format!("the server was spawned without a pipe on {what}"))
         };
+        let tree = keke_sandbox::ProcessTree::of(child.id());
         let stdin = child.stdin.take().ok_or_else(|| missing("stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| missing("stdout"))?;
 
@@ -91,6 +95,7 @@ impl Connection {
             pending,
             next_id: AtomicU64::new(1),
             _child: child,
+            _tree: tree,
         })
     }
 

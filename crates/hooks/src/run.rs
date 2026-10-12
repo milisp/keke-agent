@@ -9,6 +9,7 @@
 use std::process::Stdio;
 
 use keke_plugin::ResolvedHook;
+use keke_sandbox::ProcessTree;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -39,7 +40,8 @@ pub(crate) async fn run(
         ("sh", "-c")
     };
 
-    let mut child = Command::new(program)
+    let mut shell = Command::new(program);
+    shell
         .arg(flag)
         .arg(&command)
         .current_dir(hook.plugin_root.as_path())
@@ -52,9 +54,14 @@ pub(crate) async fn run(
         .stderr(Stdio::piped())
         // The timeout path drops this future; dropping it must not leave a hook
         // running behind the turn that gave up on it.
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    ProcessTree::lead(shell.as_std_mut());
+    let mut child = shell
         .spawn()
         .map_err(|error| format!("hook from plugin {} could not start: {error}", hook.plugin))?;
+    // `kill_on_drop` stops only the shell; this also stops what a hook started,
+    // when it times out or the turn gives up on it.
+    let _tree = ProcessTree::of(child.id());
 
     if let Some(mut stdin) = child.stdin.take() {
         // A hook that ignores stdin closes it early; that is a broken pipe, not
