@@ -552,9 +552,12 @@ background tasks get SIGTERM first and SIGKILL after `background.kill_grace_mill
 so a server can remove its socket. A process that detaches into a new session or
 group has left the group and is out of reach of this; on the Linux namespace
 backend the namespace ends with the launcher, which takes such a process with it.
-A command that finishes while leaving a background child behind has the child
-stopped too, which is why a server meant to outlive the call needs
-`background: true` rather than `&`.
+A foreground command returns when its shell exits, and anything it left running
+in the background is stopped at that point, so a stray `&` neither holds the call
+open until its timeout nor outlives it. A server meant to outlive the call needs
+`background: true`. Plugin hooks and MCP servers get the same treatment: a hook
+that times out, or an MCP server whose connection ends, takes down the launcher's
+descendants (`npx`, `uvx`) with it.
 
 Proxy resource budgets are configurable in the same section:
 `proxy_max_connections = 32`, `proxy_header_timeout_ms = 10000`,
