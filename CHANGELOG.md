@@ -16,6 +16,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Session logs record conversation changes incrementally instead of repeating
   full history on each turn, while preserving legacy snapshot replay.
 
+## [0.1.42] - 2026-10-11
+
+### Added
+- Validated `view_image` tool output across all three inference formats.
+- Terminal image attachments from dropped or pasted paths, with asynchronous
+  preparation, configurable budgets, and image-preserving rewind and replay.
+- Image-bearing prompts through both ACP protocol versions.
+
+### Changed
+- Session logs record conversation changes incrementally instead of repeating
+  full history on each turn, while preserving legacy snapshot replay.
+
+### Fixed
+- Hook and MCP server commands now stop their entire process tree on cancel,
+  timeout, and exit.
+- Shell tool returns when the shell exits instead of waiting for background
+  children.
+- Linux sandbox broker with host-exposed ports and process cleanup.
+- Guardian review now binds to the resolved session model.
+- TUI export keeps focus on conversation content.
+
+## [0.1.41] - 2026-10-08
+
+### Fixed
+- Fuzzy file search now indexes non-ignored dot directories like `.github`.
+
+## [0.1.40] - 2026-10-08
+
+### Changed
+- Default prompt cache TTL set to one hour; snake_case values are accepted.
+- CLI sends NVIDIA session affinity header for cache routing.
+
+## [0.1.39] - 2026-10-07
+
+### Added
+- `view_image` tool with wire improvements for all three inference formats.
+- Terminal image attachments from dropped or pasted paths, with asynchronous
+  preparation, configurable budgets, and image-preserving rewind and replay.
+- Image-bearing prompts through both ACP protocol versions.
+- TUI skill management and opt-in foreign skill sources.
+
+### Changed
+- Simplified TUI image markers and backspace removal.
+- Session history is recorded incrementally in rollout logs.
+- Improved Cargo network reliability in release workflow.
+
+### Fixed
+- Verified incremental replay across tools, rewind, and cancellation.
+
+## [0.1.38] - 2026-10-05
+
+### Added
+- Support for pre-registered OAuth clients for ACP MCP servers.
+- Hosted web search actions are preserved with improved transcript details.
+
 ## [0.1.37] - 2026-10-05
 
 ### Added
