@@ -2,24 +2,38 @@
 
 [中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
-**keke** is a local terminal coding agent built in Rust for zero vendor lock-in.  
-**7 MB download · zero external runtime dependencies · instant startup.**
+**keke** is a local coding agent: a ~7 MB native binary, no Node or Python
+runtime, with the agent surface — not just a chat box that runs a shell.
+
+Subagents, MCP, skills, Claude-compatible plugins, hooks, plan mode,
+per-turn checkpoints, OS sandboxing, ACP (so a desktop app can drive the same
+session as the TUI), and multi-provider routing. Memory and repository plugins
+stay off until you turn them on.
 
 [![asciicast](https://asciinema.org/a/1266474.svg)](https://asciinema.org/a/1266474)
 
 ## Why keke?
 
-- **Use what you already pay for**  
-  Sign in with ChatGPT (Codex) or Grok subscriptions, or drop in any API key. No need to switch providers just to try a different model.
+- **A full agent, not a thin CLI.** Interactive TUI and `keke exec` for scripts
+  and CI, both on one session protocol. Concurrent subagents (bounded, and a
+  child cannot spawn another), background shell tasks, and `/loop` for a prompt
+  that comes back later. Plan mode can research and write a plan, not the repo.
 
-- **Multi-account, per-directory routing**  
-  Log in to work and personal accounts once. keke automatically picks the right one based on the directory you’re in.
+- **Use what you already pay for.** Sign in with ChatGPT (Codex) or Grok, or
+  any API key. Codex, Grok, Claude, OpenAI-compatible endpoints, Ollama, and
+  vLLM — Chat Completions, Responses, or Anthropic Messages. Several accounts
+  for one provider, picked by the directory you are in. A compatible endpoint
+  is a few lines of `config.toml`; it does not require a new build, and
+  `keke-core` has no vendor-specific code.
 
-- **Script- and CI-friendly**  
-  `keke exec "..."` runs one-shot tasks non-interactively — ready for scripts and pipelines.
+- **Capable, but not on by default.** Skills can be disabled. Persistent memory
+  is off until you set a directory. Hooks and MCP servers that ship with a
+  repository do not run on `git clone`; a person approves their exact command
+  lines, and nothing they add can undo a denial.
 
-- **Vendor-isolated core**  
-  `keke-core` contains zero vendor-specific logic. Point it at any OpenAI-compatible endpoint with a few lines in `config.toml`.
+- **Undo without touching your git history.** Each turn snapshots the working
+  tree in a store outside your repository, so reverting the agent's edits is
+  not a stash and not a commit.
 
 ## Install
 
