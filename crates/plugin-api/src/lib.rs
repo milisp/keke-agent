@@ -35,6 +35,14 @@ use keke_tool::ToolError;
 /// not available here — unlike `keke_tool::Tool`, which is monomorphized.
 pub type ExtFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// User-owned exact-domain grants. Consumers must check policy denials first,
+/// never use this store in Auto mode, and call `remember` only after human consent
+/// to a runtime-observed network destination, never a model-declared domain.
+pub trait NetworkPermissionPersistence: Send + Sync {
+    fn contains(&self, domain: &str) -> bool;
+    fn remember(&self, domain: &str) -> Result<(), String>;
+}
+
 /// Contributes tools.
 pub trait ToolContributor: Send + Sync {
     /// Tools available for the whole session.

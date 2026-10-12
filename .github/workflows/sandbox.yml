@@ -3,7 +3,8 @@ name: sandbox
 # The macOS and Windows halves of the sandbox cost a slow runner each, and what
 # they exercise depends only on these paths — `crates/cli/tests/sandbox.rs`
 # uses nothing beyond `keke-sandbox`, `keke-config-types`, and `keke-paths`.
-# The Linux half already runs in ci.yml as part of `cargo test --workspace`.
+# The Linux Landlock/seccomp half runs in ci.yml as part of `cargo test --workspace`;
+# the `#[ignore]`d namespace half runs in the `linux-namespace` job below.
 on:
   push:
     branches: [main]
@@ -48,6 +49,28 @@ jobs:
         run: |
           cargo test -p keke-sandbox
           cargo test -p keke-cli --test sandbox
+
+  # The namespace/broker backend needs a user-configured bubblewrap, so its
+  # integration test is `#[ignore]`d in ci.yml's workspace run. Run it here.
+  linux-namespace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap openssh-client
+
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor, which
+      # would make bubblewrap fail before the sandbox is exercised.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Namespace sandbox
+        run: |
+          KEKE_TEST_NAMESPACE_LAUNCHER=/usr/bin/bwrap \
+            cargo test --locked -p keke-cli --test sandbox -- --include-ignored
 
   # Windows has no sandbox; what must hold there is that the sandbox says so
   # rather than posing as one that works.

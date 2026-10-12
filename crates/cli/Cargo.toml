@@ -61,6 +61,7 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 agent-client-protocol = { workspace = true }
 keke-test-support = { workspace = true }
+keke-tool = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

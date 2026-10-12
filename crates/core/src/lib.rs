@@ -34,6 +34,7 @@ pub use compact::estimate_tokens;
 pub use compact::should_compact;
 pub use dispatch::Dispatch;
 pub use dispatch::Dispatched;
+pub use dispatch::SessionNetworkPermissions;
 pub use dispatch::ToolSet;
 pub use dispatch::dispatch;
 pub use effort::EffortSwitch;

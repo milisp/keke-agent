@@ -51,6 +51,7 @@ pub struct PermissionCell {
     pub name: String,
     pub summary: String,
     pub reason: String,
+    pub network_domain: Option<String>,
 }
 
 /// A plan the agent asked to leave plan mode with.
@@ -332,6 +333,11 @@ impl Transcript {
             name: display_tool_name(&call.name).to_string(),
             summary: headline(&call.arguments, &self.cwd_prefix),
             reason,
+            network_domain: call
+                .arguments
+                .get("requested_network_domain")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned),
         });
     }
 

@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 use tokio::process::Command;
@@ -46,6 +47,26 @@ pub struct BashArgs {
     /// back on.
     #[serde(default)]
     pub background: bool,
+    /// HTTP download/HTTPS hosts required by this command. Auto reviews these with the
+    /// command; unlisted hosts are refused and must be declared on a retry.
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// Localhost TCP ports this command needs to access. Reviewed with the
+    /// command, never remembered; may reach host services outside the workspace.
+    #[serde(default)]
+    pub allowed_local_ports: Vec<u16>,
+    /// Localhost dev-server ports exposed to the host for this command only.
+    /// Requires fresh approval; does not grant client access to host services.
+    #[serde(default)]
+    pub exposed_local_ports: Vec<u16>,
+    /// Absolute Unix socket paths required by this command. Explicit approval
+    /// is command-scoped and may reach host services. macOS workspace-write only.
+    #[serde(default)]
+    pub allowed_unix_sockets: Vec<String>,
+    /// Existing absolute directories to write for this command only (for
+    /// example shared Cargo caches or install destinations). Requires approval.
+    #[serde(default)]
+    pub additional_write_roots: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,12 +140,71 @@ fn sandbox_limits(sandbox: &Sandbox) -> Option<String> {
               `git add` and `git commit` work, but Git hooks and configuration are read-only"
         }
     };
+    let listener = if cfg!(target_os = "macos")
+        && policy.mode == SandboxMode::WorkspaceWrite
+        && policy.allow_local_binding
+    {
+        "; local TCP servers may bind loopback (127.0.0.1 or ::1); configure dev servers to use localhost rather than 0.0.0.0; this does not grant client access to arbitrary local services"
+    } else {
+        ""
+    };
     let network = if policy.mode == SandboxMode::WorkspaceWrite && policy.network_access {
         ""
+    } else if cfg!(target_os = "macos") && policy.mode == SandboxMode::WorkspaceWrite {
+        "; HTTP GET/HEAD downloads and HTTPS CONNECT use a domain-filtering proxy; required new domains are approved within the command flow, direct connections and explicitly denied domains stay blocked"
     } else {
         "; there is no network access"
     };
-    Some(format!("{writes}{network}"))
+    Some(format!("{writes}{network}{listener}"))
+}
+
+struct NetworkReview {
+    reviewer: Arc<dyn keke_tool::PermissionReviewer>,
+    runtime: tokio::runtime::Handle,
+    stopped: Arc<AtomicBool>,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    refused: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl keke_sandbox::NetworkAuthorizer for NetworkReview {
+    fn authorize(&self, domain: &str) -> bool {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let reviewer = Arc::clone(&self.reviewer);
+        let domain = domain.to_string();
+        let refused = Arc::clone(&self.refused);
+        let task = self.runtime.spawn(async move {
+            let decision = reviewer.permission(domain).await;
+            if let Err(error) = &decision
+                && let Ok(mut failures) = refused.lock()
+            {
+                let message = error.to_string();
+                if !failures.contains(&message) {
+                    failures.push(message);
+                }
+            }
+            let _ = send.send(decision.is_ok());
+        });
+        loop {
+            if self.stopped.load(Ordering::Acquire) || (self.cancelled)() {
+                task.abort();
+                return false;
+            }
+            match receive.recv_timeout(POLL_INTERVAL) {
+                Ok(allowed) => return allowed,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+struct NetworkScope(Arc<AtomicBool>);
+impl Drop for NetworkScope {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 impl Tool for Bash {
@@ -141,17 +221,26 @@ impl Tool for Bash {
              plus the exit code when it is non-zero. Long output is truncated, so pipe through \
              `head` when you expect a lot. Set `background` for anything long-lived — a dev \
              server, a watch, a long build — to get a task id back immediately instead of \
-             blocking the turn.",
+             blocking the turn. Declare required HTTP download/HTTPS hosts in `allowed_domains` for combined \
+             command/network approval. In Auto mode, if a domain is reported as unapproved, \
+             add it to `allowed_domains` and rerun inside the sandbox, not with an escape.",
         );
+        text.push_str(" Declare localhost TCP client ports in `allowed_local_ports` (1..=65535) for command-scoped approval, including HTTP, WebSocket and browser tests. This may access host services; it is not restricted to servers started by this session. Use localhost, 127.0.0.1 or ::1 directly. Supported in macOS workspace-write only; no local port grants are remembered.");
+        text.push_str(" Declare absolute Unix socket paths in `allowed_unix_sockets` for explicit command-scoped host-service approval. macOS workspace-write only; grants are never remembered and do not grant filesystem writes.");
+        text.push_str(" Declare localhost dev-server ports in `exposed_local_ports` (1..=65535) to expose them to the host for this command only. Requires fresh approval and does not grant client access to host services.");
+        text.push_str(" Declare existing absolute directories in `additional_write_roots` for scoped cache/install writes without escaping (for example Cargo registry caches). Prefer narrow cache directories, not HOME or credential/toolchain roots. npm/Bun/pip/uv/XDG caches are redirected to temp by default when enabled. Approval policy Never automatically authorizes these execution permissions without asking; explicit denials and kernel restrictions still apply.");
+        text.push_str(" Remote proxy ports are constrained by user `proxy_allowed_ports` (default 80/443); a domain approval does not override that ceiling. macOS default Git SSH is routed through CONNECT; SSH on port 22 needs that port in user configuration. Existing SSH transport overrides are preserved but direct networking stays denied. Standalone SSH needs an explicit proxy configuration.");
         // The model cannot tell a sandbox denial from any other failure unless
         // it knows the sandbox is there, and would otherwise retry the same
         // command or give up on a task a person would happily approve.
         if let Some(limits) = sandbox_limits(&self.sandbox) {
             text.push_str(&format!(
-                "\n\nCommands run in a sandbox: {limits}. When a command fails because of \
+                "\n\nCommands run in a sandbox: {limits}. Network permissions are handled by \
+                 the harness during execution; do not request sandbox escape for an unapproved domain. \
+                 When a command fails because of \
                  that — \"Operation not permitted\", \"Permission denied\", or a network error \
                  — and it genuinely needs more, rerun it with `bash_unsandboxed`, which requires \
-                 review first (automatic in Auto mode, otherwise by a person)."
+                 review first (automatic in Auto mode, by a person in human modes; Never skips execution review)."
             ));
         }
         ToolDescription::new(text)
@@ -180,7 +269,140 @@ impl Tool for Bash {
         }
     }
 
+    fn network_domains(&self, args: &Self::Args) -> Vec<String> {
+        if cfg!(target_os = "macos")
+            && self.sandbox.policy().mode == SandboxMode::WorkspaceWrite
+            && !self.sandbox.policy().network_access
+        {
+            args.allowed_domains
+                .iter()
+                .map(|domain| domain.to_ascii_lowercase())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn local_network_ports(&self, args: &Self::Args) -> Vec<u16> {
+        if self.sandbox.confines() && !self.sandbox.policy().network_access {
+            args.allowed_local_ports.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn local_listener_ports(&self, args: &Self::Args) -> Vec<u16> {
+        args.exposed_local_ports.clone()
+    }
+
+    fn local_network_sockets(&self, args: &Self::Args) -> Vec<String> {
+        args.allowed_unix_sockets.clone()
+    }
+
+    fn writable_roots(&self, args: &Self::Args) -> Vec<String> {
+        args.additional_write_roots.clone()
+    }
+
     async fn run(&self, ctx: ToolCallContext, args: Self::Args) -> Result<Self::Output, ToolError> {
+        if args.exposed_local_ports.contains(&0) {
+            return Err(ToolError::denied(
+                "exposed_local_ports must be in 1..=65535",
+            ));
+        }
+        if args
+            .exposed_local_ports
+            .iter()
+            .any(|port| !ctx.approved_local_listener_ports.contains(port))
+        {
+            return Err(ToolError::denied(
+                "localhost server ports exposed to the host require explicit command approval",
+            ));
+        }
+        for path in &args.additional_write_roots {
+            if !ctx.approved_writable_roots.contains(path) {
+                return Err(ToolError::denied(
+                    "additional write roots require explicit command approval",
+                ));
+            }
+        }
+        let write_sandbox = self
+            .sandbox
+            .with_additional_write_roots(args.additional_write_roots.clone())
+            .map_err(|error| ToolError::denied(error.to_string()))?;
+        for path in &args.allowed_unix_sockets {
+            if !std::path::Path::new(path).is_absolute() || path.contains('\0') {
+                return Err(ToolError::denied(
+                    "allowed_unix_sockets must be absolute paths without NUL",
+                ));
+            }
+            if !ctx.approved_local_network_sockets.contains(path) {
+                return Err(ToolError::denied(
+                    "Unix socket paths require explicit command approval",
+                ));
+            }
+        }
+        if args.allowed_local_ports.contains(&0) {
+            return Err(ToolError::denied(
+                "allowed_local_ports must be in 1..=65535",
+            ));
+        }
+        if self.sandbox.confines()
+            && !self.sandbox.policy().network_access
+            && args
+                .allowed_local_ports
+                .iter()
+                .any(|port| !ctx.approved_local_network_ports.contains(port))
+        {
+            return Err(ToolError::denied(
+                "local TCP ports require explicit command approval",
+            ));
+        }
+        for domain in &args.allowed_domains {
+            keke_config_types::SandboxPolicy::check_domain_pattern(domain)
+                .map_err(ToolError::denied)?;
+            if domain.starts_with("*.") || !domain.contains('.') {
+                return Err(ToolError::denied(
+                    "per-command allowed_domains must name fully qualified exact hosts, not wildcards",
+                ));
+            }
+        }
+        let stopped = Arc::new(AtomicBool::new(false));
+        let refused = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sandbox = if let Some(reviewer) = &ctx.permission_reviewer {
+            Arc::new(
+                write_sandbox
+                    .with_network_authorizer(
+                        Arc::new(NetworkReview {
+                            reviewer: Arc::clone(reviewer),
+                            runtime: tokio::runtime::Handle::current(),
+                            stopped: Arc::clone(&stopped),
+                            cancelled: Arc::clone(&ctx.cancelled),
+                            refused: Arc::clone(&refused),
+                        }),
+                        ctx.approved_network_domains.clone(),
+                    )
+                    .map_err(|error| {
+                        ToolError::custom("network_sandbox_unavailable", error.to_string())
+                    })?,
+            )
+        } else {
+            Arc::new(write_sandbox)
+        };
+        let sandbox = Arc::new(
+            sandbox
+                .with_local_network_ports(args.allowed_local_ports.clone())
+                .and_then(|sandbox| {
+                    sandbox.with_local_network_sockets(args.allowed_unix_sockets.clone())
+                })
+                .and_then(|sandbox| {
+                    sandbox.with_local_listener_ports(args.exposed_local_ports.clone())
+                })
+                .map_err(|error| {
+                    ToolError::custom("local_network_unavailable", error.to_string())
+                })?,
+        );
+        // This must drop before the scoped proxy joins a pending reviewer.
+        let scope = NetworkScope(stopped);
         if args.background {
             let Some(tasks) = self.background.as_ref() else {
                 return Err(ToolError::custom(
@@ -189,7 +411,7 @@ impl Tool for Bash {
                 ));
             };
             let id = tasks
-                .spawn(args.command, &ctx.workspace_root)
+                .spawn_with_sandbox(args.command, &ctx.workspace_root, sandbox, scope)
                 .map_err(|error| ToolError::custom("background_refused", error.to_string()))?;
             return Ok(BashOutput::Started { task_id: id });
         }
@@ -201,7 +423,7 @@ impl Tool for Bash {
         let millis = args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(ceiling);
         let deadline = Instant::now() + Duration::from_millis(millis);
 
-        let child = Command::from(self.sandbox.shell(&args.command, &ctx.workspace_root))
+        let child = Command::from(sandbox.shell(&args.command, &ctx.workspace_root))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -239,6 +461,11 @@ impl Tool for Bash {
             }
             combined.push_str(&String::from_utf8_lossy(&output.stderr));
         }
+        if let Ok(failures) = refused.lock() {
+            for failure in failures.iter() {
+                combined.push_str(&format!("\nNetwork permission: {failure}\n"));
+            }
+        }
         let (text, truncated) = support::cap(combined, "output truncated");
 
         Ok(BashOutput::Finished {
@@ -246,5 +473,237 @@ impl Tool for Bash {
             output: text,
             truncated,
         })
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    #[test]
+    fn bash_domain_declarations_are_optional_in_existing_calls() {
+        let args: BashArgs = serde_json::from_str(r#"{"command":"gh pr list"}"#).unwrap();
+        assert!(args.allowed_domains.is_empty());
+        assert!(args.allowed_local_ports.is_empty());
+        assert!(args.exposed_local_ports.is_empty());
+        assert!(args.allowed_unix_sockets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn listener_ports_require_nonzero_values_and_dispatch_approval_before_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawned");
+        let tool = Bash {
+            sandbox: Arc::new(
+                Sandbox::new(
+                    keke_config_types::SandboxPolicy {
+                        mode: SandboxMode::DangerFullAccess,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap(),
+            ),
+            background: None,
+        };
+        for (ports, expected) in [
+            (vec![0], "1..=65535"),
+            (vec![3000], "explicit command approval"),
+        ] {
+            let ctx = ToolCallContext {
+                call_id: keke_protocol::ToolCallId::new("listener"),
+                workspace_root: keke_paths::AbsPath::new(dir.path()).unwrap(),
+                timeout_millis: None,
+                cancelled: Arc::new(|| false),
+                permission_reviewer: None,
+                approved_network_domains: Vec::new(),
+                approved_local_network_ports: Vec::new(),
+                approved_local_listener_ports: Vec::new(),
+                approved_local_network_sockets: Vec::new(),
+                approved_writable_roots: Vec::new(),
+            };
+            let args: BashArgs = serde_json::from_value(serde_json::json!({
+                "command": format!("touch '{}'", marker.display()),
+                "exposed_local_ports": ports,
+            }))
+            .unwrap();
+            assert_eq!(Tool::local_listener_ports(&tool, &args), ports);
+            let error = tool.run(ctx, args).await.unwrap_err();
+            assert!(error.to_string().contains(expected));
+            assert!(!marker.exists());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn unix_sockets_without_dispatch_approval_cannot_start_a_command() {
+        let tool = Bash {
+            sandbox: Arc::new(Sandbox::new(Default::default(), None).unwrap()),
+            background: None,
+        };
+        let ctx = ToolCallContext {
+            call_id: keke_protocol::ToolCallId::new("unapproved-socket"),
+            workspace_root: keke_paths::AbsPath::new(std::env::current_dir().unwrap()).unwrap(),
+            timeout_millis: None,
+            cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
+            approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
+            approved_local_network_sockets: Vec::new(),
+            approved_writable_roots: Vec::new(),
+        };
+        let error = tool
+            .run(
+                ctx,
+                BashArgs {
+                    command: "echo should-not-run".into(),
+                    timeout_ms: None,
+                    background: false,
+                    allowed_domains: Vec::new(),
+                    allowed_local_ports: Vec::new(),
+                    exposed_local_ports: Vec::new(),
+                    allowed_unix_sockets: vec!["/host/service.sock".into()],
+                    additional_write_roots: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit command approval"));
+    }
+
+    #[tokio::test]
+    async fn write_roots_without_approval_cannot_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawned");
+        let tool = Bash {
+            sandbox: Arc::new(
+                Sandbox::new(
+                    keke_config_types::SandboxPolicy {
+                        mode: keke_config_types::SandboxMode::DangerFullAccess,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap(),
+            ),
+            background: None,
+        };
+        let ctx = ToolCallContext {
+            call_id: keke_protocol::ToolCallId::new("unapproved-write"),
+            workspace_root: keke_paths::AbsPath::new(dir.path()).unwrap(),
+            timeout_millis: None,
+            cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
+            approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
+            approved_local_network_sockets: Vec::new(),
+            approved_writable_roots: Vec::new(),
+        };
+        let error = tool
+            .run(
+                ctx,
+                BashArgs {
+                    command: format!("touch '{}'", marker.display()),
+                    timeout_ms: None,
+                    background: false,
+                    allowed_domains: Vec::new(),
+                    allowed_local_ports: Vec::new(),
+                    exposed_local_ports: Vec::new(),
+                    allowed_unix_sockets: Vec::new(),
+                    additional_write_roots: vec![dir.path().to_str().unwrap().into()],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit command approval"));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn local_ports_without_dispatch_approval_cannot_start_a_command() {
+        let sandbox = Sandbox::new(Default::default(), None).unwrap();
+        let tool = Bash {
+            sandbox: Arc::new(sandbox),
+            background: None,
+        };
+        let ctx = ToolCallContext {
+            call_id: keke_protocol::ToolCallId::new("unapproved-local"),
+            workspace_root: keke_paths::AbsPath::new(std::env::current_dir().unwrap()).unwrap(),
+            timeout_millis: None,
+            cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
+            approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
+            approved_local_network_sockets: Vec::new(),
+            approved_writable_roots: Vec::new(),
+        };
+        let error = tool
+            .run(
+                ctx,
+                BashArgs {
+                    command: "echo should-not-run".into(),
+                    timeout_ms: None,
+                    background: false,
+                    allowed_domains: Vec::new(),
+                    allowed_local_ports: vec![3000],
+                    exposed_local_ports: Vec::new(),
+                    allowed_unix_sockets: Vec::new(),
+                    additional_write_roots: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit command approval"));
+    }
+
+    #[tokio::test]
+    async fn proxy_bridge_works_on_a_single_thread_runtime() {
+        struct Reviewer;
+        impl keke_tool::PermissionReviewer for Reviewer {
+            fn permission(
+                &self,
+                domain: String,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), ToolError>> + Send + '_>,
+            > {
+                Box::pin(async move {
+                    if domain == "example.com" {
+                        Ok(())
+                    } else {
+                        Err(ToolError::denied("not granted"))
+                    }
+                })
+            }
+        }
+        let stopped = Arc::new(AtomicBool::new(false));
+        let authorizer = Arc::new(NetworkReview {
+            reviewer: Arc::new(Reviewer),
+            runtime: tokio::runtime::Handle::current(),
+            stopped: Arc::clone(&stopped),
+            cancelled: Arc::new(|| false),
+            refused: Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let bridge = authorizer.clone();
+        assert!(
+            tokio::task::spawn_blocking(move || keke_sandbox::NetworkAuthorizer::authorize(
+                &*bridge,
+                "example.com"
+            ))
+            .await
+            .unwrap()
+        );
+        stopped.store(true, Ordering::Release);
+        assert!(
+            !tokio::task::spawn_blocking(move || keke_sandbox::NetworkAuthorizer::authorize(
+                &*authorizer,
+                "example.com"
+            ))
+            .await
+            .unwrap()
+        );
     }
 }

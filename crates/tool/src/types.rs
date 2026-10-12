@@ -204,6 +204,18 @@ pub struct ToolCallContext {
     pub timeout_millis: Option<u64>,
     /// Returns true once the turn has been aborted.
     pub cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Optional, call-scoped reviewer for additional runtime network access.
+    pub permission_reviewer: Option<Arc<dyn crate::PermissionReviewer>>,
+    /// Predeclared domains expressly approved for this call, never implicit grants.
+    pub approved_network_domains: Vec<String>,
+    /// Localhost TCP host-service access expressly approved for this command only.
+    pub approved_local_network_ports: Vec<u16>,
+    /// Localhost server ports approved for host exposure for this command only.
+    pub approved_local_listener_ports: Vec<u16>,
+    /// Exact Unix socket paths approved for this call, never remembered.
+    pub approved_local_network_sockets: Vec<String>,
+    /// Exact directory paths approved for command-scoped filesystem writes.
+    pub approved_writable_roots: Vec<String>,
 }
 
 impl ToolCallContext {
@@ -220,6 +232,20 @@ impl fmt::Debug for ToolCallContext {
             .field("call_id", &self.call_id)
             .field("workspace_root", &self.workspace_root)
             .field("timeout_millis", &self.timeout_millis)
+            .field("approved_network_domains", &self.approved_network_domains)
+            .field("approved_writable_roots", &self.approved_writable_roots)
+            .field(
+                "approved_local_network_ports",
+                &self.approved_local_network_ports,
+            )
+            .field(
+                "approved_local_listener_ports",
+                &self.approved_local_listener_ports,
+            )
+            .field(
+                "approved_local_network_sockets",
+                &self.approved_local_network_sockets,
+            )
             .finish_non_exhaustive()
     }
 }

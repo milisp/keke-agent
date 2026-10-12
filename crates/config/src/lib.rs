@@ -235,14 +235,43 @@ pub struct SubagentsFile {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub struct SandboxWorkspaceWriteFile {
+    /// Only trusted non-project layers may choose this executable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linux_namespace_launcher: Option<AbsPath>,
+    /// Replaces inherited ports, including an explicit empty list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_allowed_ports: Option<Vec<u16>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_max_connections: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_header_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_connect_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_idle_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_poll_interval_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_approve_bash: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_local_binding: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_package_caches: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_access: Option<bool>,
+    /// A nonempty list replaces the preceding layer's grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_domains: Vec<String>,
+    /// Denials accumulate so a later layer cannot undo a restriction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_domains: Vec<String>,
     /// Accumulated across layers, like `providers`: a managed layer's cache
     /// directory and a person's sibling checkout are both still wanted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writable_roots: Vec<AbsPath>,
+    /// Read denials accumulate; repository layers may add restrictions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_read: Vec<AbsPath>,
 }
 
 /// The background-command section, separated for the same reason.
@@ -327,13 +356,71 @@ impl Config {
             merged.approval_policy = layer.file.approval_policy.or(merged.approval_policy);
             merged.sandbox_mode = layer.file.sandbox_mode.or(merged.sandbox_mode);
             if let Some(section) = &layer.file.sandbox_workspace_write {
+                SandboxPolicy {
+                    proxy_allowed_ports: section
+                        .proxy_allowed_ports
+                        .clone()
+                        .unwrap_or_else(|| SandboxPolicy::default().proxy_allowed_ports),
+                    proxy_max_connections: section.proxy_max_connections.unwrap_or(32),
+                    proxy_header_timeout_ms: section.proxy_header_timeout_ms.unwrap_or(10_000),
+                    proxy_connect_timeout_ms: section.proxy_connect_timeout_ms.unwrap_or(10_000),
+                    proxy_idle_timeout_ms: section.proxy_idle_timeout_ms.unwrap_or(60_000),
+                    proxy_poll_interval_ms: section.proxy_poll_interval_ms.unwrap_or(10),
+                    ..SandboxPolicy::default()
+                }
+                .check_domains()
+                .map_err(|message| ConfigError::Invalid {
+                    path: layer.source.describe(),
+                    message,
+                })?;
+                for pattern in section
+                    .allowed_domains
+                    .iter()
+                    .chain(&section.denied_domains)
+                {
+                    SandboxPolicy::check_domain_pattern(pattern).map_err(|message| {
+                        ConfigError::Invalid {
+                            path: layer.source.describe(),
+                            message,
+                        }
+                    })?;
+                }
                 let base = merged
                     .sandbox_workspace_write
                     .get_or_insert_with(SandboxWorkspaceWriteFile::default);
+                if let Some(launcher) = &section.linux_namespace_launcher {
+                    base.linux_namespace_launcher = Some(launcher.clone());
+                }
                 base.auto_approve_bash = section.auto_approve_bash.or(base.auto_approve_bash);
+                base.allow_local_binding = section.allow_local_binding.or(base.allow_local_binding);
+                base.redirect_package_caches = section
+                    .redirect_package_caches
+                    .or(base.redirect_package_caches);
                 base.network_access = section.network_access.or(base.network_access);
+                if let Some(ports) = &section.proxy_allowed_ports {
+                    base.proxy_allowed_ports = Some(ports.clone());
+                }
+                base.proxy_max_connections =
+                    section.proxy_max_connections.or(base.proxy_max_connections);
+                base.proxy_header_timeout_ms = section
+                    .proxy_header_timeout_ms
+                    .or(base.proxy_header_timeout_ms);
+                base.proxy_connect_timeout_ms = section
+                    .proxy_connect_timeout_ms
+                    .or(base.proxy_connect_timeout_ms);
+                base.proxy_idle_timeout_ms =
+                    section.proxy_idle_timeout_ms.or(base.proxy_idle_timeout_ms);
+                base.proxy_poll_interval_ms = section
+                    .proxy_poll_interval_ms
+                    .or(base.proxy_poll_interval_ms);
+                if !section.allowed_domains.is_empty() {
+                    base.allowed_domains.clone_from(&section.allowed_domains);
+                }
+                base.denied_domains
+                    .extend(section.denied_domains.iter().cloned());
                 base.writable_roots
                     .extend(section.writable_roots.iter().cloned());
+                base.deny_read.extend(section.deny_read.iter().cloned());
             }
             merged.instructions = layer.file.instructions.clone().or(merged.instructions);
             merged.max_output_tokens = layer.file.max_output_tokens.or(merged.max_output_tokens);
@@ -691,12 +778,28 @@ impl Config {
             require_plan_approval: merged.require_plan_approval.unwrap_or(false),
             sandbox: {
                 let section = merged.sandbox_workspace_write.unwrap_or_default();
-                SandboxPolicy {
+                let policy = SandboxPolicy {
                     mode: merged.sandbox_mode.unwrap_or_default(),
+                    linux_namespace_launcher: section.linux_namespace_launcher,
                     auto_approve_bash: section.auto_approve_bash.unwrap_or(true),
+                    allow_local_binding: section.allow_local_binding.unwrap_or(true),
+                    redirect_package_caches: section.redirect_package_caches.unwrap_or(true),
                     network_access: section.network_access.unwrap_or(false),
+                    allowed_domains: section.allowed_domains,
+                    denied_domains: section.denied_domains,
                     writable_roots: section.writable_roots,
-                }
+                    deny_read: section.deny_read,
+                    proxy_allowed_ports: section
+                        .proxy_allowed_ports
+                        .unwrap_or_else(|| SandboxPolicy::default().proxy_allowed_ports),
+                    proxy_max_connections: section.proxy_max_connections.unwrap_or(32),
+                    proxy_header_timeout_ms: section.proxy_header_timeout_ms.unwrap_or(10_000),
+                    proxy_connect_timeout_ms: section.proxy_connect_timeout_ms.unwrap_or(10_000),
+                    proxy_idle_timeout_ms: section.proxy_idle_timeout_ms.unwrap_or(60_000),
+                    proxy_poll_interval_ms: section.proxy_poll_interval_ms.unwrap_or(10),
+                };
+                policy.check_domains().map_err(invalid)?;
+                policy
             },
             instructions: merged.instructions,
             max_output_tokens,
@@ -794,6 +897,62 @@ fn check_project_sandbox(
         )));
     }
     if let Some(section) = &project.sandbox_workspace_write {
+        if section.linux_namespace_launcher.is_some() {
+            return Err(refuse(
+                "sandbox_workspace_write.linux_namespace_launcher is a user-controlled executable"
+                    .to_string(),
+            ));
+        }
+        if let Some(ports) = &section.proxy_allowed_ports {
+            let inherited = beneath
+                .sandbox_workspace_write
+                .as_ref()
+                .and_then(|base| base.proxy_allowed_ports.clone())
+                .unwrap_or_else(|| SandboxPolicy::default().proxy_allowed_ports);
+            if ports.iter().any(|port| !inherited.contains(port)) {
+                return Err(refuse(
+                    "sandbox_workspace_write.proxy_allowed_ports grants additional ports"
+                        .to_string(),
+                ));
+            }
+        }
+        if section.proxy_max_connections.is_some()
+            || section.proxy_header_timeout_ms.is_some()
+            || section.proxy_connect_timeout_ms.is_some()
+            || section.proxy_idle_timeout_ms.is_some()
+            || section.proxy_poll_interval_ms.is_some()
+        {
+            return Err(refuse(
+                "sandbox proxy budgets cannot be set by a project".to_string(),
+            ));
+        }
+        if !section.allowed_domains.is_empty() {
+            return Err(refuse(
+                "sandbox_workspace_write.allowed_domains grants network access".to_string(),
+            ));
+        }
+        let local_binding_granted = beneath
+            .sandbox_workspace_write
+            .as_ref()
+            .and_then(|base| base.allow_local_binding)
+            .unwrap_or(true);
+        if section.allow_local_binding == Some(true) && !local_binding_granted {
+            return Err(refuse(
+                "sandbox_workspace_write.allow_local_binding = true grants local binding"
+                    .to_string(),
+            ));
+        }
+        let cache_redirects_granted = beneath
+            .sandbox_workspace_write
+            .as_ref()
+            .and_then(|base| base.redirect_package_caches)
+            .unwrap_or(true);
+        if section.redirect_package_caches == Some(true) && !cache_redirects_granted {
+            return Err(refuse(
+                "sandbox_workspace_write.redirect_package_caches = true enables cache writes"
+                    .to_string(),
+            ));
+        }
         let auto_approval_granted = beneath
             .sandbox_workspace_write
             .as_ref()
@@ -919,6 +1078,81 @@ mod tests {
     }
 
     #[test]
+    fn proxy_ports_default_in_policy_deserialization() {
+        let policy: SandboxPolicy = toml::from_str(
+            "mode = 'workspace_write'\nnetwork_access = false\nwritable_roots = []\n",
+        )
+        .expect("legacy policy parses");
+        assert_eq!(policy.proxy_allowed_ports, [80, 443]);
+        assert_eq!(
+            Config::from_layers(home(), &[])
+                .unwrap()
+                .sandbox
+                .proxy_allowed_ports,
+            [80, 443]
+        );
+    }
+
+    #[test]
+    fn proxy_ports_replace_and_explicit_empty_clears() {
+        let configured = layer(
+            "user",
+            "[sandbox_workspace_write]\nproxy_allowed_ports = [22, 8443]\n",
+        );
+        let config = Config::from_layers(home(), std::slice::from_ref(&configured)).unwrap();
+        assert_eq!(config.sandbox.proxy_allowed_ports, [22, 8443]);
+        let config = Config::from_layers(
+            home(),
+            &[
+                configured,
+                layer(
+                    "later",
+                    "[sandbox_workspace_write]\nproxy_allowed_ports = []\n",
+                ),
+                layer(
+                    "last",
+                    "[sandbox_workspace_write]\nallow_local_binding = false\n",
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(config.sandbox.proxy_allowed_ports.is_empty());
+        for ports in ["[0]", "[80, 80]"] {
+            let text = format!("[sandbox_workspace_write]\nproxy_allowed_ports = {ports}\n");
+            let error = Config::from_layers(home(), &[layer("invalid", &text)]).unwrap_err();
+            assert!(error.to_string().contains("proxy_allowed_ports"));
+        }
+    }
+
+    #[test]
+    fn projects_can_only_remove_inherited_proxy_ports() {
+        let project = |ports: &str| {
+            ConfigLayer::parse(
+                LayerSource::Project(home().workspace_root.as_path().to_path_buf()),
+                &format!("[sandbox_workspace_write]\nproxy_allowed_ports = {ports}\n"),
+            )
+            .unwrap()
+        };
+        for ports in ["[22]", "[80, 443, 8443]"] {
+            let error = Config::from_layers(home(), &[project(ports)]).unwrap_err();
+            assert!(error.to_string().contains("grants additional ports"));
+        }
+        for ports in ["[443]", "[]"] {
+            assert!(Config::from_layers(home(), &[project(ports)]).is_ok());
+        }
+        let user = || {
+            layer(
+                "user",
+                "[sandbox_workspace_write]\nproxy_allowed_ports = [22, 8443]\n",
+            )
+        };
+        let config = Config::from_layers(home(), &[user(), project("[22]")]).unwrap();
+        assert_eq!(config.sandbox.proxy_allowed_ports, [22]);
+        assert!(Config::from_layers(home(), &[user(), project("[443]")]).is_err());
+        assert!(Config::from_layers(home(), &[project("[]"), project("[443]")]).is_err());
+    }
+
+    #[test]
     fn defaults_apply_when_no_layer_states_a_value() {
         let config = Config::from_layers(home(), &[]).expect("merges");
         assert_eq!(config.model.provider, DEFAULT_PROVIDER);
@@ -926,7 +1160,164 @@ mod tests {
         assert_eq!(config.sandbox, SandboxPolicy::default());
         assert_eq!(config.sandbox.mode, SandboxMode::WorkspaceWrite);
         assert!(config.sandbox.auto_approve_bash);
+        assert!(config.sandbox.allow_local_binding);
         assert!(!config.sandbox.network_access);
+        assert!(config.sandbox.allowed_domains.is_empty());
+        assert!(config.sandbox.denied_domains.is_empty());
+        assert!(config.sandbox.deny_read.is_empty());
+    }
+
+    #[test]
+    fn read_denials_accumulate_and_projects_may_add_them() {
+        let user = layer(
+            "user",
+            "[sandbox_workspace_write]\ndeny_read = [\"/credentials/user\"]\n",
+        );
+        let project = ConfigLayer::parse(
+            LayerSource::Project(home().workspace_root.as_path().to_path_buf()),
+            "[sandbox_workspace_write]\ndeny_read = [\"/credentials/project\"]\n",
+        )
+        .expect("parses");
+        let empty = layer("later", "[sandbox_workspace_write]\ndeny_read = []\n");
+        let config =
+            Config::from_layers(home(), &[user, project, empty]).expect("tightening is allowed");
+        assert_eq!(
+            config.sandbox.deny_read,
+            vec![
+                AbsPath::new("/credentials/user").unwrap(),
+                AbsPath::new("/credentials/project").unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn domain_patterns_are_dns_names_not_addresses_or_urls() {
+        for field in ["allowed_domains", "denied_domains"] {
+            for pattern in [
+                "",
+                "*",
+                "*.",
+                "a.*.com",
+                "127.0.0.1",
+                "*.127.0.0.1",
+                "::1",
+                "https://example.com",
+                "example.com:443",
+                "a..com",
+                "-a.com",
+                "a-.com",
+                "a_b.com",
+                "é.com",
+                "example.com.",
+            ] {
+                let text = format!("[sandbox_workspace_write]\n{field} = [{pattern:?}]\n");
+                assert!(
+                    Config::from_layers(home(), &[layer("user", &text)]).is_err(),
+                    "accepted {pattern:?}"
+                );
+            }
+        }
+        let config = Config::from_layers(home(), &[layer("user", "[sandbox_workspace_write]\nallowed_domains = [\"EXAMPLE.com\", \"*.Sub.example.com\"]\n")]).expect("ASCII case is valid");
+        assert_eq!(config.sandbox.allowed_domains.len(), 2);
+        for pattern in [format!("{}.com", "a".repeat(64)), "a.".repeat(127)] {
+            assert!(SandboxPolicy::check_domain_pattern(&pattern).is_err());
+        }
+    }
+
+    #[test]
+    fn unrestricted_network_cannot_silently_bypass_domain_lists() {
+        for field in ["allowed_domains", "denied_domains"] {
+            let text = format!("[sandbox_workspace_write]\n{field} = [\"example.com\"]\n");
+            let error = Config::from_layers(
+                home(),
+                &[
+                    layer("user", "[sandbox_workspace_write]\nnetwork_access = true\n"),
+                    layer("later", &text),
+                ],
+            )
+            .expect_err("restriction would be bypassed");
+            assert!(error.to_string().contains("conflicts"));
+        }
+    }
+
+    #[test]
+    fn domain_lists_merge_without_repository_grants() {
+        let user = layer(
+            "user",
+            "[sandbox_workspace_write]\nallowed_domains = [\"example.com\"]\ndenied_domains = [\"bad.example.com\"]\n",
+        );
+        assert!(
+            Config::from_layers(
+                home(),
+                &[
+                    user.clone(),
+                    project("[sandbox_workspace_write]\nallowed_domains = [\"example.com\"]\n"),
+                ]
+            )
+            .is_err()
+        );
+        let config = Config::from_layers(home(), &[
+            user,
+            layer("later", "[sandbox_workspace_write]\nallowed_domains = [\"*.example.org\"]\n"),
+            project("[sandbox_workspace_write]\nallowed_domains = []\ndenied_domains = [\"bad.example.org\"]\n"),
+        ]).expect("a repository can deny, not grant");
+        assert_eq!(config.sandbox.allowed_domains, ["*.example.org"]);
+        assert_eq!(
+            config.sandbox.denied_domains,
+            ["bad.example.com", "bad.example.org"]
+        );
+    }
+
+    #[test]
+    fn proxy_budgets_validate_merge_and_reject_projects() {
+        for (field, default, maximum) in [
+            ("proxy_max_connections", 32, 256),
+            ("proxy_header_timeout_ms", 10_000, 3_600_000),
+            ("proxy_connect_timeout_ms", 10_000, 3_600_000),
+            ("proxy_idle_timeout_ms", 60_000, 3_600_000),
+            ("proxy_poll_interval_ms", 10, 1_000),
+        ] {
+            let text = |value| format!("[sandbox_workspace_write]\n{field} = {value}\n");
+            for value in [0, maximum + 1] {
+                assert!(Config::from_layers(home(), &[layer("user", &text(value))]).is_err());
+                assert!(
+                    Config::from_layers(
+                        home(),
+                        &[layer("user", &text(value)), layer("later", &text(default)),]
+                    )
+                    .is_err()
+                );
+            }
+            for value in [1, maximum] {
+                assert!(Config::from_layers(home(), &[layer("user", &text(value))]).is_ok());
+            }
+            assert!(Config::from_layers(home(), &[project(&text(default))]).is_err());
+            let config = Config::from_layers(
+                home(),
+                &[
+                    layer("user", &text(maximum)),
+                    layer("later", &text(default)),
+                ],
+            )
+            .unwrap();
+            assert_eq!(config.sandbox, SandboxPolicy::default());
+        }
+        let config = Config::from_layers(
+            home(),
+            &[
+                layer(
+                    "user",
+                    "[sandbox_workspace_write]\nproxy_max_connections = 64\n",
+                ),
+                layer(
+                    "later",
+                    "[sandbox_workspace_write]\nproxy_poll_interval_ms = 20\n",
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(config.sandbox.proxy_max_connections, 64);
+        assert_eq!(config.sandbox.proxy_poll_interval_ms, 20);
     }
 
     fn project(text: &str) -> ConfigLayer {
@@ -960,6 +1351,145 @@ mod tests {
         let config = Config::from_layers(home(), &[project("sandbox_mode = \"read_only\"\n")])
             .expect("tightening is allowed");
         assert_eq!(config.sandbox.mode, SandboxMode::ReadOnly);
+    }
+
+    #[test]
+    fn local_binding_defaults_when_deserializing_a_policy() {
+        let policy: SandboxPolicy = toml::from_str(
+            "mode = \"workspace_write\"\nnetwork_access = false\nwritable_roots = []\n",
+        )
+        .expect("older policies remain valid");
+        assert!(policy.allow_local_binding);
+        assert!(SandboxPolicy::default().allow_local_binding);
+    }
+
+    #[test]
+    fn namespace_launcher_is_opt_in_and_requires_an_absolute_path() {
+        let policy: SandboxPolicy = toml::from_str(
+            "mode = \"workspace_write\"\nnetwork_access = false\nwritable_roots = []\n",
+        )
+        .unwrap();
+        assert!(policy.linux_namespace_launcher.is_none());
+        assert!(SandboxPolicy::default().linux_namespace_launcher.is_none());
+        assert!(
+            Config::from_layers(home(), &[])
+                .unwrap()
+                .sandbox
+                .linux_namespace_launcher
+                .is_none()
+        );
+        let text = "[sandbox_workspace_write]\nlinux_namespace_launcher = \"bwrap\"\n";
+        assert!(ConfigLayer::parse(LayerSource::Managed("test".into()), text).is_err());
+    }
+
+    #[test]
+    fn namespace_launcher_layers_override_only_when_present() {
+        let first = format!("[sandbox_workspace_write]\nlinux_namespace_launcher = \"{ROOT}\"\n");
+        let second_path = AbsPath::new(std::path::Path::new(ROOT).join("bwrap")).unwrap();
+        let second = format!(
+            "[sandbox_workspace_write]\nlinux_namespace_launcher = {}\n",
+            toml::Value::String(second_path.to_string())
+        );
+        let unrelated = "[sandbox_workspace_write]\nnetwork_access = false\n";
+        let config =
+            Config::from_layers(home(), &[layer("user", &first), layer("later", unrelated)])
+                .unwrap();
+        assert_eq!(
+            config.sandbox.linux_namespace_launcher,
+            Some(AbsPath::new(ROOT).unwrap())
+        );
+        let config = Config::from_layers(
+            home(),
+            &[
+                layer("user", &first),
+                layer("later", &second),
+                project(unrelated),
+            ],
+        )
+        .unwrap();
+        assert_eq!(config.sandbox.linux_namespace_launcher, Some(second_path));
+    }
+
+    #[test]
+    fn a_repository_cannot_choose_or_restate_the_namespace_launcher() {
+        let text = format!("[sandbox_workspace_write]\nlinux_namespace_launcher = \"{ROOT}\"\n");
+        for inherited in [None, Some(layer("user", &text))] {
+            let mut layers: Vec<_> = inherited.into_iter().collect();
+            layers.push(project(&text));
+            let error = Config::from_layers(home(), &layers).unwrap_err();
+            assert!(error.to_string().contains("linux_namespace_launcher"));
+        }
+    }
+
+    #[test]
+    fn a_repository_may_disable_local_binding_but_cannot_reenable_it() {
+        let disable = "[sandbox_workspace_write]\nallow_local_binding = false\n";
+        let enable = "[sandbox_workspace_write]\nallow_local_binding = true\n";
+        let config = Config::from_layers(home(), &[project(disable)])
+            .expect("project may narrow the default");
+        assert!(!config.sandbox.allow_local_binding);
+        let error = Config::from_layers(home(), &[layer("user", disable), project(enable)])
+            .expect_err("project cannot widen the user policy");
+        assert!(error.to_string().contains("allow_local_binding"));
+        let config = Config::from_layers(home(), &[project(enable)])
+            .expect("restating the default does not widen it");
+        assert!(config.sandbox.allow_local_binding);
+    }
+
+    #[test]
+    fn local_binding_layers_override_only_when_present() {
+        let disable = "[sandbox_workspace_write]\nallow_local_binding = false\n";
+        let enable = "[sandbox_workspace_write]\nallow_local_binding = true\n";
+        let unrelated = "[sandbox_workspace_write]\nnetwork_access = false\n";
+        let config =
+            Config::from_layers(home(), &[layer("user", disable), layer("later", unrelated)])
+                .expect("omitted values preserve earlier layers");
+        assert!(!config.sandbox.allow_local_binding);
+        let config = Config::from_layers(home(), &[layer("user", disable), layer("later", enable)])
+            .expect("non-project layers may override");
+        assert!(config.sandbox.allow_local_binding);
+    }
+
+    #[test]
+    fn cache_redirects_default_and_projects_can_only_disable() {
+        assert!(
+            Config::from_layers(home(), &[])
+                .unwrap()
+                .sandbox
+                .redirect_package_caches
+        );
+        let disable = "[sandbox_workspace_write]\nredirect_package_caches = false\n";
+        let enable = "[sandbox_workspace_write]\nredirect_package_caches = true\n";
+        assert!(
+            !Config::from_layers(home(), &[project(disable)])
+                .unwrap()
+                .sandbox
+                .redirect_package_caches
+        );
+        let error =
+            Config::from_layers(home(), &[layer("user", disable), project(enable)]).unwrap_err();
+        assert!(error.to_string().contains("redirect_package_caches"));
+        assert!(
+            !Config::from_layers(
+                home(),
+                &[
+                    layer("user", disable),
+                    layer(
+                        "later",
+                        "[sandbox_workspace_write]\nnetwork_access = false\n"
+                    )
+                ]
+            )
+            .unwrap()
+            .sandbox
+            .redirect_package_caches
+        );
+        assert!(
+            Config::from_layers(home(), &[layer("user", disable), layer("later", enable)])
+                .unwrap()
+                .sandbox
+                .redirect_package_caches
+        );
     }
 
     #[test]

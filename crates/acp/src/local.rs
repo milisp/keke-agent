@@ -68,6 +68,8 @@ pub struct Approvals {
     requests: UnboundedSender<Pending>,
     waiting: Mutex<HashMap<PermissionId, oneshot::Sender<(PermissionAnswer, Option<String>)>>>,
     next: AtomicU64,
+    network_permissions:
+        std::sync::OnceLock<Arc<dyn keke_plugin_api::NetworkPermissionPersistence>>,
 }
 
 /// Build the bridge and the stream of requests it will raise.
@@ -79,6 +81,7 @@ pub fn approvals() -> (Arc<Approvals>, ApprovalRequests) {
             requests,
             waiting: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
+            network_permissions: std::sync::OnceLock::new(),
         }),
         ApprovalRequests(receiver),
     )
@@ -90,6 +93,17 @@ pub fn install(registry: &mut ExtensionRegistryBuilder, approvals: Arc<Approvals
 }
 
 impl Approvals {
+    /// Attach the user-owned store once, before exposing the human bridge.
+    pub fn set_network_permissions(
+        &self,
+        store: Arc<dyn keke_plugin_api::NetworkPermissionPersistence>,
+    ) {
+        assert!(
+            self.network_permissions.set(store).is_ok(),
+            "network store already attached"
+        );
+    }
+
     /// Deliver a person's answer. Answering an unknown or already-answered
     /// request is ignored rather than an error: a second keypress on a prompt
     /// that has just been withdrawn is not a mistake worth reporting.
@@ -145,7 +159,25 @@ impl ApprovalReviewContributor for Approvals {
             // allowing leaves the engine's own default — denial — in charge.
             match answer.await.ok()? {
                 (PermissionAnswer::Allow, note) => Some(ApprovalDecision::Allow { note }),
-                (PermissionAnswer::AllowAlways, _) => Some(ApprovalDecision::AllowAlways),
+                (PermissionAnswer::AllowAlways, _) => {
+                    if let Some(domain) = request
+                        .call
+                        .arguments
+                        .get("requested_network_domain")
+                        .and_then(|d| d.as_str())
+                    {
+                        let result = self
+                            .network_permissions
+                            .get()
+                            .ok_or_else(|| "persistent network permissions unavailable".to_string())
+                            .and_then(|store| store.remember(domain));
+                        return Some(match result {
+                            Ok(()) => ApprovalDecision::Allow { note: None },
+                            Err(reason) => ApprovalDecision::Deny { reason },
+                        });
+                    }
+                    Some(ApprovalDecision::AllowAlways)
+                }
                 // What the person said *is* the refusal, when they said
                 // anything: the reason reaches the model as the tool's result,
                 // so "declined" is the answer only for someone who declined

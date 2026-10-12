@@ -20,13 +20,18 @@ use keke_config_types::SandboxPolicy;
 use landlock::ABI;
 use landlock::Access as _;
 use landlock::AccessFs;
+use landlock::AccessNet;
 use landlock::CompatLevel;
 use landlock::Compatible as _;
+use landlock::NetPort;
 use landlock::Ruleset;
 use landlock::RulesetAttr as _;
 use landlock::RulesetCreatedAttr as _;
+use landlock::RulesetError;
 use landlock::RulesetStatus;
+use landlock::Scope;
 use landlock::path_beneath_rules;
+use landlock::{PathBeneath, PathFd};
 use seccompiler::BpfProgram;
 use seccompiler::SeccompAction;
 use seccompiler::SeccompCmpArgLen;
@@ -45,6 +50,15 @@ const ABI_WANTED: ABI = ABI::V5;
 /// missing feature is a clear error before the first command rather than a
 /// launcher failing on every one.
 pub(crate) fn probe(policy: &SandboxPolicy) -> Result<(), String> {
+    if policy.mode == SandboxMode::WorkspaceWrite
+        && !policy.allowed_domains.is_empty()
+        && policy.linux_namespace_launcher.is_none()
+    {
+        return Err("domain-restricted networking is not supported by the Linux launcher; refusing unrestricted fallback".to_string());
+    }
+    if !policy.deny_read.is_empty() && policy.linux_namespace_launcher.is_none() {
+        return Err("Landlock cannot enforce deny_read: its root read grant cannot exclude credential paths".to_string());
+    }
     Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(ABI::V1))
@@ -62,6 +76,20 @@ pub(crate) fn probe(policy: &SandboxPolicy) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether this kernel can enforce exact Unix socket grants (Landlock ABI 9).
+/// Creates a throwaway ruleset without restricting this process.
+pub(crate) fn probe_unix_socket_grants() -> Result<(), String> {
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::ResolveUnix)
+        .and_then(|ruleset| ruleset.scope(Scope::AbstractUnixSocket))
+        .and_then(|ruleset| ruleset.create())
+        .map(|_| ())
+        .map_err(|error| {
+            format!("exact Unix socket grants require Landlock ResolveUnix enforcement: {error}")
+        })
+}
+
 fn target_arch() -> Result<TargetArch, String> {
     TargetArch::try_from(std::env::consts::ARCH).map_err(|_| {
         format!(
@@ -73,6 +101,10 @@ fn target_arch() -> Result<TargetArch, String> {
 
 struct Request {
     network: bool,
+    namespace: bool,
+    isolated_tcp_ports: Vec<u16>,
+    isolated_tcp_binding: bool,
+    unix_sockets: Vec<PathBuf>,
     writable: Vec<PathBuf>,
     program: OsString,
     args: Vec<OsString>,
@@ -80,6 +112,10 @@ struct Request {
 
 fn parse(args: Vec<OsString>) -> Result<Request, String> {
     let mut network = false;
+    let mut namespace = false;
+    let mut isolated_tcp_ports = Vec::new();
+    let mut isolated_tcp_binding = false;
+    let mut unix_sockets = Vec::new();
     let mut writable = Vec::new();
     let mut rest = args.into_iter();
     loop {
@@ -87,7 +123,28 @@ fn parse(args: Vec<OsString>) -> Result<Request, String> {
             return Err("no command after the launcher's options".to_string());
         };
         match arg.to_str() {
+            Some("--unix-socket") => {
+                let path = PathBuf::from(rest.next().ok_or("--unix-socket needs a path")?);
+                if !path.is_absolute() {
+                    return Err("Unix socket path must be absolute".into());
+                }
+                unix_sockets.push(path);
+            }
             Some("--network") => network = true,
+            Some("--namespace") => namespace = true,
+            Some("--isolated-tcp-binding") => isolated_tcp_binding = true,
+            Some("--isolated-tcp-port") => {
+                let value = rest.next().ok_or("--isolated-tcp-port needs a port")?;
+                let text = value.to_str().ok_or("invalid TCP port")?;
+                if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err("invalid TCP port".to_string());
+                }
+                let port = text.parse::<u16>().map_err(|_| "invalid TCP port")?;
+                if port == 0 {
+                    return Err("isolated TCP port must be nonzero".to_string());
+                }
+                isolated_tcp_ports.push(port);
+            }
             Some("--write") => {
                 let root = rest
                     .next()
@@ -101,8 +158,15 @@ fn parse(args: Vec<OsString>) -> Result<Request, String> {
     let program = rest
         .next()
         .ok_or_else(|| "no command after --".to_string())?;
+    if network && (!isolated_tcp_ports.is_empty() || isolated_tcp_binding) {
+        return Err("--network conflicts with isolated TCP options".to_string());
+    }
     Ok(Request {
         network,
+        namespace,
+        isolated_tcp_ports,
+        isolated_tcp_binding,
+        unix_sockets,
         writable,
         program,
         args: rest.collect(),
@@ -110,6 +174,12 @@ fn parse(args: Vec<OsString>) -> Result<Request, String> {
 }
 
 pub(crate) fn run(args: Vec<OsString>) -> std::io::Error {
+    if args.as_slice() == [OsString::from("--probe-unix-sockets")] {
+        return match restrict_unix_sockets(&[]) {
+            Ok(()) => std::io::Error::other("unix-path-enforcement-ready"),
+            Err(error) => std::io::Error::other(error),
+        };
+    }
     let request = match parse(args) {
         Ok(request) => request,
         Err(message) => return std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
@@ -117,8 +187,25 @@ pub(crate) fn run(args: Vec<OsString>) -> std::io::Error {
     if let Err(message) = restrict_filesystem(&request.writable) {
         return std::io::Error::other(message);
     }
-    if !request.network
-        && let Err(message) = restrict_network()
+    let isolated = !request.isolated_tcp_ports.is_empty() || request.isolated_tcp_binding;
+    if !request.unix_sockets.is_empty()
+        && let Err(error) = restrict_unix_sockets(&request.unix_sockets)
+    {
+        return std::io::Error::other(error);
+    }
+    if (isolated || (!request.network && !request.unix_sockets.is_empty()))
+        && let Err(message) =
+            restrict_isolated_tcp(&request.isolated_tcp_ports, request.isolated_tcp_binding)
+    {
+        return std::io::Error::other(message);
+    }
+    if (request.namespace || isolated)
+        && let Err(message) = restrict_namespace()
+    {
+        return std::io::Error::other(message);
+    }
+    if (!request.network || !request.unix_sockets.is_empty())
+        && let Err(message) = restrict_network(isolated, !request.unix_sockets.is_empty())
     {
         return std::io::Error::other(message);
     }
@@ -145,12 +232,13 @@ fn restrict_filesystem(writable: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// Refuse every socket but a Unix one, and the calls that would use one.
+/// Permit Unix socket creation/socketpair for child-process IPC, but refuse
+/// fresh connections/listeners even for Unix sockets: seccomp cannot inspect
+/// sockaddr paths to distinguish an owned build worker from a host daemon.
 ///
 /// The syscall list is codex's (`codex-rs/linux-sandbox/src/landlock.rs`).
-/// Unix sockets stay: build tools talk to their own children over
-/// `socketpair`, and a Unix socket reaches this machine, not the network.
-fn restrict_network() -> Result<(), String> {
+/// Socketpair stays for build tools; arbitrary host Unix services do not.
+fn restrict_network(isolated_tcp: bool, unix: bool) -> Result<(), String> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     for number in [
         libc::SYS_connect,
@@ -176,6 +264,19 @@ fn restrict_network() -> Result<(), String> {
         libc::SYS_process_vm_readv,
         libc::SYS_process_vm_writev,
     ] {
+        if (isolated_tcp || unix)
+            && ![
+                libc::SYS_io_uring_setup,
+                libc::SYS_io_uring_enter,
+                libc::SYS_io_uring_register,
+                libc::SYS_ptrace,
+                libc::SYS_process_vm_readv,
+                libc::SYS_process_vm_writev,
+            ]
+            .contains(&number)
+        {
+            continue;
+        }
         // No conditions: the call is refused whatever its arguments.
         rules.insert(number, Vec::new());
     }
@@ -190,6 +291,136 @@ fn restrict_network() -> Result<(), String> {
     rules.insert(libc::SYS_socket, vec![not_unix.clone()]);
     rules.insert(libc::SYS_socketpair, vec![not_unix]);
 
+    if isolated_tcp || unix {
+        // Deny the complement of TCP creation, without dereferencing sockaddr.
+        // Only the two standard socket flags may accompany SOCK_STREAM.
+        let deny = |index, values: &[i32]| -> Result<SeccompRule, String> {
+            let conditions = values
+                .iter()
+                .map(|value| {
+                    SeccompCondition::new(
+                        index,
+                        SeccompCmpArgLen::Dword,
+                        SeccompCmpOp::Ne,
+                        *value as u64,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            SeccompRule::new(conditions).map_err(|error| error.to_string())
+        };
+        rules.insert(
+            libc::SYS_socket,
+            vec![
+                deny(
+                    0,
+                    &if unix {
+                        vec![libc::AF_UNIX, libc::AF_INET, libc::AF_INET6]
+                    } else {
+                        vec![libc::AF_INET, libc::AF_INET6]
+                    },
+                )?,
+                deny(
+                    1,
+                    &[
+                        libc::SOCK_STREAM,
+                        libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                        libc::SOCK_STREAM | libc::SOCK_NONBLOCK,
+                        libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                    ],
+                )?,
+                deny(2, &[0, libc::IPPROTO_TCP])?,
+            ],
+        );
+    }
+    install_filter(rules)
+}
+
+fn restrict_unix_sockets(paths: &[PathBuf]) -> Result<(), String> {
+    let enforcement_error = |error: RulesetError| {
+        format!("exact Unix socket grants require Landlock ResolveUnix enforcement: {error}")
+    };
+    // Open grants first: `PathFdError` and `RulesetError` are distinct error types.
+    let grants = paths
+        .iter()
+        .map(|path| {
+            PathFd::new(path).map_err(|error| {
+                format!(
+                    "opening Unix socket grant {} failed: {error}",
+                    path.display()
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::ResolveUnix)
+        .and_then(|ruleset| ruleset.scope(Scope::AbstractUnixSocket))
+        .and_then(|ruleset| ruleset.create())
+        .map_err(enforcement_error)?;
+    for fd in grants {
+        ruleset = ruleset
+            .add_rule(PathBeneath::new(fd, AccessFs::ResolveUnix))
+            .map_err(enforcement_error)?;
+    }
+    let status = ruleset.restrict_self().map_err(enforcement_error)?;
+    if status.ruleset != RulesetStatus::FullyEnforced {
+        return Err("Unix socket rules are not fully enforced".into());
+    }
+    Ok(())
+}
+
+/// Requires a caller-created private, loopback-only network namespace. These
+/// port grants must never be used on the host network: Landlock checks ports,
+/// not addresses. Unsupported network rights fail closed.
+fn restrict_isolated_tcp(ports: &[u16], binding: bool) -> Result<(), String> {
+    let ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessNet::ConnectTcp)
+        .map_err(|error| format!("requiring Landlock TCP connect enforcement failed: {error}"))?;
+    let ruleset = if binding {
+        ruleset
+    } else {
+        ruleset
+            .handle_access(AccessNet::BindTcp)
+            .map_err(|error| format!("requiring Landlock TCP bind enforcement failed: {error}"))?
+    };
+    let status = ruleset
+        .create()
+        .and_then(|ruleset| {
+            ruleset.add_rules(
+                ports
+                    .iter()
+                    .map(|port| Ok(NetPort::new(*port, AccessNet::ConnectTcp))),
+            )
+        })
+        .and_then(|ruleset| ruleset.restrict_self())
+        .map_err(|error| format!("installing isolated TCP Landlock rules failed: {error}"))?;
+    if status.ruleset != RulesetStatus::FullyEnforced {
+        return Err("isolated TCP Landlock rules are not fully enforced".to_string());
+    }
+    Ok(())
+}
+
+/// Prevent escaping or reconfiguring namespaces even with unrestricted TCP.
+fn restrict_namespace() -> Result<(), String> {
+    install_filter(
+        [
+            libc::SYS_setns,
+            libc::SYS_unshare,
+            libc::SYS_mount,
+            libc::SYS_umount2,
+            libc::SYS_pivot_root,
+            libc::SYS_open_by_handle_at,
+            libc::SYS_bpf,
+        ]
+        .into_iter()
+        .map(|number| (number, Vec::new()))
+        .collect(),
+    )
+}
+
+fn install_filter(rules: BTreeMap<i64, Vec<SeccompRule>>) -> Result<(), String> {
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Allow,
@@ -237,5 +468,48 @@ mod tests {
         assert!(parse(args(&["--wirte", "/w", "--", "sh"])).is_err());
         assert!(parse(args(&["--write"])).is_err());
         assert!(parse(args(&["--"])).is_err());
+    }
+
+    #[test]
+    fn isolated_options_and_independent_namespace_guard_parse() {
+        let request = parse(args(&[
+            "--namespace",
+            "--isolated-tcp-port",
+            "1234",
+            "--isolated-tcp-port",
+            "65535",
+            "--isolated-tcp-binding",
+            "--",
+            "sh",
+        ]))
+        .expect("parses");
+        assert!(request.namespace);
+        assert!(request.isolated_tcp_binding);
+        assert_eq!(request.isolated_tcp_ports, [1234, 65535]);
+        for flags in [vec!["--namespace"], vec!["--namespace", "--network"]] {
+            let mut flags = flags;
+            flags.extend(["--", "sh"]);
+            assert!(parse(args(&flags)).expect("parses").namespace);
+        }
+    }
+
+    #[test]
+    fn malformed_or_contradictory_isolated_options_are_refused() {
+        for port in ["0", "65536", "-1", "+1", "", "1.0", "tcp", "--"] {
+            assert!(parse(args(&["--isolated-tcp-port", port, "--", "sh"])).is_err());
+        }
+        assert!(parse(args(&["--isolated-tcp-port"])).is_err());
+        assert!(parse(args(&["--isolated-tcp-binding", "true", "--", "sh"])).is_err());
+        assert!(parse(args(&["--network", "--isolated-tcp-binding", "--", "sh"])).is_err());
+        assert!(
+            parse(args(&[
+                "--isolated-tcp-port",
+                "80",
+                "--network",
+                "--",
+                "sh"
+            ]))
+            .is_err()
+        );
     }
 }

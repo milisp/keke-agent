@@ -178,11 +178,23 @@ impl BackgroundTasks {
         command: String,
         cwd: &AbsPath,
     ) -> Result<TaskId, BackgroundError> {
+        self.spawn_with_sandbox(command, cwd, self.sandbox.current(), ())
+    }
+
+    /// Keep command-scoped confinement and its cancellation owner alive until
+    /// the background process finishes, rather than reverting to session policy.
+    pub fn spawn_with_sandbox(
+        self: &Arc<Self>,
+        command: String,
+        cwd: &AbsPath,
+        sandbox: Arc<keke_sandbox::Sandbox>,
+        lifetime: impl Send + 'static,
+    ) -> Result<TaskId, BackgroundError> {
         if self.running_count() >= self.limits.max_concurrent {
             return Err(BackgroundError::TooMany(self.limits.max_concurrent));
         }
 
-        let mut child = Command::from(self.sandbox.current().shell(&command, cwd))
+        let mut child = Command::from(sandbox.shell(&command, cwd))
             // A background command has nobody to answer a prompt, so its stdin
             // is closed rather than left inheriting the terminal's — a child
             // reading from the person's keyboard is the worst kind of hang.
@@ -229,6 +241,10 @@ impl BackgroundTasks {
         let waiting_id = id.clone();
         let grace = self.limits.kill_grace();
         tokio::spawn(async move {
+            // Reverse declaration order stops pending approvals before the
+            // proxy's destructor joins its workers, including on cancellation.
+            let _sandbox = sandbox;
+            let _lifetime = lifetime;
             let state = tokio::select! {
                 status = child.wait() => match status {
                     Ok(status) => TaskState::Exited(status.code()),

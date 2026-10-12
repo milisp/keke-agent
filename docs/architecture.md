@@ -151,11 +151,55 @@ there `Sandbox::is_enforced` is false and the tool pack makes every command
 a person's decision; the boundary is a person, and nothing calls it a
 sandbox. Where there is a sandbox, `bash_unsandboxed` is how a command steps
 out of it: every call requires review with the model's stated reason. Auto
-uses the guardian reviewer; other policies require a person's answer.
+uses the guardian reviewer; human policies require a person's answer. Never
+automatically authorizes execution, including escapes, but does not override
+guards, Always/person-answer tools, or repository plugin execution consent.
 
 The sandbox is a setting a repository could otherwise switch off, so the
 project config layer may only tighten it — the same reasoning as the plugin
 trust gate below: `git clone` is not consent.
+
+On macOS, domain-restricted egress is a host-side CONNECT proxy owned by the
+sandbox. Seatbelt allows only its loopback TCP port; proxy environment variables
+are routing hints, not the security boundary. The proxy policy checks
+allow/deny patterns before host-side DNS, rejects non-public results, and connects
+the validated address without resolving it again. Connection and time budgets
+live in `keke-config-types`; workers stop and join with their owner. Core passes
+a generic, call-scoped permission reviewer to tools. Bash bridges proxy requests
+to it without linking sandbox code to the engine; predeclared domains are approved
+with the command. Auto refuses undeclared domains and reports them for a declared
+retry, without a runtime guardian review. Human modes review extra domains before
+the connection continues, remembering grants for the session or, on explicit
+permanent consent, through a user-home store composed by the CLI. Auto never
+consumes those human grants. A scoped proxy caches exact-domain grants.
+Explicit denials precede every grant; missing reviewers fail closed. Explicit credential read
+denials use Seatbelt rules, separate from network policy. The Linux launcher
+currently rejects domain egress and read exclusions because its existing kernel
+rules cannot enforce them. No command-based network exemptions are used.
+
+Local development servers are a separate right, not domain egress. macOS
+workspace-write allows localhost TCP binding/inbound by default, controlled by
+`allow_local_binding`; wildcard/LAN bindings and arbitrary loopback client access
+are not granted. Read-only gets no listener right and a project may only narrow it.
+For client access, Bash declares `allowed_local_ports`, reviewed with the command
+and granted only to that command's sandbox. These grants are never session or
+permanent grants and Auto must review them too (Never authorizes without asking): a loopback port may belong to a
+host service, not this workspace. Seatbelt permits direct TCP only to the named
+localhost ports; proxy exclusions route loopback traffic directly but cannot
+open other ports. Linux and read-only reject this capability rather than silently
+ignoring it. Port consent does not authenticate which process owns that port.
+The same command-scoped approval covers exact Unix socket paths on macOS via
+`allowed_unix_sockets`; these expose potentially privileged host services, so
+neither a path under the workspace nor a standing Bash grant exempts them.
+Cache-only environment redirects point npm/Bun/pip/uv/XDG caches to a per-workspace
+temporary location. They do not relocate Cargo/Rust toolchains, credentials or
+installation roots, and can be disabled by the user or narrowed by a project.
+Proxy ports are an explicit validated user ceiling (`proxy_allowed_ports`, default
+80/443) separate from domain approval; projects may only reduce it. Both CONNECT
+and HTTP download destinations are checked against it before approval or DNS.
+Default Git SSH is routed through the same CONNECT gate on macOS without replacing
+explicit user SSH transport overrides or host-key checks. The tunnel is opaque TCP,
+not a promise that a permitted port carries a particular protocol.
 
 ### Tier 1 — engine
 
@@ -855,6 +899,15 @@ tools that exist, that the tool ran against the real workspace, and that the
 session log replays the exchange. Every other test exercises one crate; this one
 exercises the wiring, which is the part that can be connected to nothing and
 still compile.
+
+On macOS, `bash scripts/test-linux-sandbox.sh` runs the sandbox unit and real
+launcher integration tests in Apple Container's Linux VM. Start the installed
+service with `container system start` first. The script downloads the Rust
+image and dependencies, mounts only a read-only snapshot of non-ignored source
+files (not `.git` or the host home), and builds on the container's native
+filesystem. Container failure or missing Landlock is a test failure, not a skip.
+This validates the Linux implementation; it does not imply that macOS-only
+domain proxies, local TCP grants or Unix socket grants are supported on Linux.
 
 Two rules the suite must keep:
 

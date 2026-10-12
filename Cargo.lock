@@ -1843,6 +1843,7 @@ dependencies = [
  "keke-subagent",
  "keke-tasks",
  "keke-test-support",
+ "keke-tool",
  "keke-tools",
  "keke-tui",
  "keke-wire",

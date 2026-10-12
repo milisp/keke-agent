@@ -19,11 +19,10 @@
 //! person's decision instead: the boundary is a person, and nothing claims it
 //! is a sandbox.
 //!
-//! Reads are not narrowed. Every mode may read the whole disk, as codex's
-//! profiles do, because a dependency's source under `~/.cargo` is ordinary
-//! code the model has reason to open. What is confined is writing and the
-//! network — the two ways a command changes something or sends something
-//! away.
+//! Reads are unrestricted by default, because dependency sources in shared
+//! caches are ordinary code the model has reason to open. On macOS, explicit
+//! `deny_read` paths carve credential files out of that grant. Linux refuses
+//! read exclusions it cannot enforce rather than quietly ignoring them.
 //!
 //! Inside a writable root, the metadata that could hand a command more than
 //! the sandbox gives it stays read-only: `.keke` (the project's own
@@ -37,8 +36,15 @@
 //! those exceptions. Landlock cannot carve an exception out of a grant, so on
 //! Linux those directories are as writable as the rest of the workspace.
 
+mod cache;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod linux_broker;
+#[cfg(target_os = "linux")]
+mod linux_namespace;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod proxy;
 #[cfg(target_os = "macos")]
 mod seatbelt;
 
@@ -89,6 +95,15 @@ pub enum SandboxError {
 /// can hold the same line when deciding whether a write is confined.
 pub const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
 
+/// Reviews a previously unapproved domain for one command's proxy.
+///
+/// Implementers may block waiting for a decision, but must return promptly on
+/// command cancellation: proxy shutdown joins all requests before releasing
+/// this callback. Returning true grants only the exact domain, not its children.
+pub trait NetworkAuthorizer: Send + Sync {
+    fn authorize(&self, domain: &str) -> bool;
+}
+
 /// Builds the processes a model's commands run in.
 ///
 /// Holding one means the confinement it describes was checked to be
@@ -100,6 +115,13 @@ pub const PROTECTED_NAMES: &[&str] = &[".git", ".agents", ".keke"];
 pub struct Sandbox {
     policy: SandboxPolicy,
     launcher: Launcher,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    proxy: Option<std::sync::Arc<proxy::Proxy>>,
+    #[cfg(target_os = "linux")]
+    broker: Option<std::sync::Arc<linux_broker::Broker>>,
+    local_network_ports: Vec<u16>,
+    local_listener_ports: Vec<u16>,
+    local_network_sockets: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,10 +132,236 @@ enum Launcher {
     #[cfg(target_os = "linux")]
     Landlock {
         helper: PathBuf,
+        namespace_launcher: Option<PathBuf>,
     },
 }
 
+#[cfg(test)]
+#[test]
+fn scoped_write_roots_are_immutable_and_missing_roots_fail() {
+    let dir = tempfile::tempdir().expect("directory");
+    let base = Sandbox::new(
+        SandboxPolicy::default(),
+        Some(std::env::current_exe().expect("exe")),
+    )
+    .expect("sandbox");
+    let scoped = base
+        .with_additional_write_roots(vec![dir.path().to_str().expect("utf8").into()])
+        .expect("scope");
+    assert!(base.policy.writable_roots.is_empty());
+    // Only macOS and Linux confine commands; elsewhere the scope is a no-op.
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        assert_eq!(
+            scoped.policy.writable_roots.last().expect("root").as_path(),
+            dir.path().canonicalize().expect("canonical")
+        );
+    } else {
+        assert!(scoped.policy.writable_roots.is_empty());
+    }
+    assert!(
+        base.with_additional_write_roots(vec![
+            dir.path().join("missing").to_str().expect("utf8").into()
+        ])
+        .is_err()
+    );
+    assert!(!dir.path().join("missing").exists());
+}
+
 impl Sandbox {
+    /// Add existing canonical directories to a command's write policy without
+    /// changing the session policy. Metadata protections use the normal roots.
+    pub fn with_additional_write_roots(&self, paths: Vec<String>) -> Result<Self, SandboxError> {
+        let invalid = |reason: String| SandboxError::Unavailable {
+            mode: self.policy.mode.as_str(),
+            reason,
+        };
+        let mut roots = Vec::new();
+        for path in paths {
+            if path.contains('\0') || !std::path::Path::new(&path).is_absolute() {
+                return Err(invalid(
+                    "additional write roots must be absolute without NUL".into(),
+                ));
+            }
+            let real = std::fs::canonicalize(&path)
+                .map_err(|error| invalid(format!("additional write root {path}: {error}")))?;
+            if !real.is_dir() {
+                return Err(invalid(format!(
+                    "additional write root {path} is not a directory"
+                )));
+            }
+            roots.push(AbsPath::new(real).map_err(|error| invalid(error.to_string()))?);
+        }
+        let mut scoped = self.clone();
+        if !roots.is_empty() && self.policy.mode == SandboxMode::ReadOnly {
+            return Err(invalid(
+                "additional write roots require workspace-write".into(),
+            ));
+        }
+        if self.confines()
+            && self.policy.mode == SandboxMode::WorkspaceWrite
+            && cfg!(any(target_os = "macos", target_os = "linux"))
+        {
+            scoped.policy.writable_roots.extend(roots);
+        }
+        Ok(scoped)
+    }
+
+    /// Grant outbound access to exact Unix socket paths for one command without
+    /// granting filesystem writes. Unsupported modes and platforms fail closed.
+    pub fn with_local_network_sockets(&self, paths: Vec<String>) -> Result<Self, SandboxError> {
+        if paths
+            .iter()
+            .any(|path| !std::path::Path::new(path).is_absolute() || path.contains('\0'))
+        {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "Unix socket paths must be absolute and contain no NUL".into(),
+            });
+        }
+        let supported = (cfg!(target_os = "macos")
+            || self.policy.linux_namespace_launcher.is_some())
+            && self.policy.mode == SandboxMode::WorkspaceWrite
+            && self.confines();
+        if !paths.is_empty() && !supported {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "scoped Unix socket access requires workspace-write on macOS or a Linux namespace launcher".into(),
+            });
+        }
+        // Linux enforces exact grants with Landlock ABI 9; fail before spawn when absent.
+        #[cfg(target_os = "linux")]
+        if !paths.is_empty() {
+            linux::probe_unix_socket_grants().map_err(|reason| SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason,
+            })?;
+        }
+        let mut scoped = self.clone();
+        scoped.local_network_sockets = paths;
+        scoped.local_network_sockets.sort();
+        scoped.local_network_sockets.dedup();
+        Ok(scoped)
+    }
+
+    /// Grant direct loopback TCP access to explicitly approved ports for this
+    /// command only. This can reach host services, not merely workspace servers.
+    /// Unsupported confined policies fail closed rather than ignoring a grant.
+    pub fn with_local_network_ports(&self, ports: Vec<u16>) -> Result<Self, SandboxError> {
+        if ports.contains(&0) {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "local network ports must be in 1..=65535".into(),
+            });
+        }
+        if !ports.is_empty()
+            && self.confines()
+            && !((cfg!(target_os = "macos") || self.policy.linux_namespace_launcher.is_some())
+                && self.policy.mode == SandboxMode::WorkspaceWrite)
+        {
+            return Err(SandboxError::Unavailable {
+                mode: self.policy.mode.as_str(),
+                reason: "scoped local TCP client access requires macOS workspace-write".into(),
+            });
+        }
+        let mut scoped = self.clone();
+        scoped.local_network_ports = ports;
+        scoped.local_network_ports.sort_unstable();
+        scoped.local_network_ports.dedup();
+        #[cfg(target_os = "linux")]
+        scoped.refresh_broker()?;
+        Ok(scoped)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn refresh_broker(&mut self) -> Result<(), SandboxError> {
+        if self.policy.linux_namespace_launcher.is_none() || self.network() {
+            return Ok(());
+        }
+        let mut ports = self.local_network_ports.clone();
+        if let Some(proxy) = &self.proxy {
+            ports.push(proxy.port());
+        }
+        ports.sort_unstable();
+        ports.dedup();
+        self.broker = if ports.is_empty() && self.local_listener_ports.is_empty() {
+            None
+        } else {
+            Some(std::sync::Arc::new(
+                linux_broker::Broker::new(ports, self.local_listener_ports.clone(), &self.policy)
+                    .map_err(|error| SandboxError::Unavailable {
+                    mode: self.policy.mode.as_str(),
+                    reason: format!("starting Linux network broker: {error}"),
+                })?,
+            ))
+        };
+        Ok(())
+    }
+
+    /// Expose named namespace development-server ports on host loopback for
+    /// this command only. This does not grant access to host client services.
+    pub fn with_local_listener_ports(&self, ports: Vec<u16>) -> Result<Self, SandboxError> {
+        if ports.contains(&0)
+            || (!ports.is_empty()
+                && (self.policy.mode != SandboxMode::WorkspaceWrite
+                    || !self.policy.allow_local_binding))
+        {
+            return Err(SandboxError::Unavailable { mode: self.policy.mode.as_str(), reason: "listener ports require workspace-write with local binding enabled and nonzero ports".into() });
+        }
+        let mut scoped = self.clone();
+        scoped.local_listener_ports = ports;
+        scoped.local_listener_ports.sort_unstable();
+        scoped.local_listener_ports.dedup();
+        #[cfg(target_os = "linux")]
+        {
+            if !scoped.local_listener_ports.is_empty()
+                && scoped.policy.linux_namespace_launcher.is_none()
+            {
+                return Err(SandboxError::Unavailable {
+                    mode: self.policy.mode.as_str(),
+                    reason: "Linux host-exposed listener ports require namespace confinement"
+                        .into(),
+                });
+            }
+            scoped.refresh_broker()?;
+        }
+        Ok(scoped)
+    }
+
+    /// Create a command-scoped proxy without widening filesystem or network
+    /// confinement. Only macOS workspace-write with network access disabled
+    /// supports dynamic domain grants; other policies and platforms are unchanged.
+    pub fn with_network_authorizer(
+        &self,
+        authorizer: std::sync::Arc<dyn NetworkAuthorizer>,
+        approved_domains: Vec<String>,
+    ) -> Result<Self, SandboxError> {
+        let scoped = self.clone();
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let mut scoped = scoped;
+            if self.policy.mode == SandboxMode::WorkspaceWrite
+                && !self.policy.network_access
+                && (cfg!(target_os = "macos") || self.policy.linux_namespace_launcher.is_some())
+            {
+                scoped.proxy = Some(std::sync::Arc::new(
+                    proxy::Proxy::new_with_authorizer(&self.policy, authorizer, approved_domains)
+                        .map_err(|error| SandboxError::Unavailable {
+                        mode: self.policy.mode.as_str(),
+                        reason: format!("starting the domain-filtering proxy failed: {error}"),
+                    })?,
+                ));
+            }
+            #[cfg(target_os = "linux")]
+            scoped.refresh_broker()?;
+            Ok(scoped)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = (authorizer, approved_domains);
+            Ok(scoped)
+        }
+    }
+
     /// Check that `policy` can be enforced on this machine, and hold it.
     ///
     /// `helper` is the executable that answers [`HELPER_ARG`] — keke's own
@@ -121,14 +369,61 @@ impl Sandbox {
     /// with no sandbox at all this succeeds unenforced; see
     /// [`Sandbox::is_enforced`].
     pub fn new(policy: SandboxPolicy, helper: Option<PathBuf>) -> Result<Self, SandboxError> {
+        policy
+            .check_domains()
+            .map_err(|reason| SandboxError::Unavailable {
+                mode: policy.mode.as_str(),
+                reason,
+            })?;
         if policy.mode == SandboxMode::DangerFullAccess {
             return Ok(Self {
                 policy,
                 launcher: Launcher::Unconfined,
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                proxy: None,
+                #[cfg(target_os = "linux")]
+                broker: None,
+                local_network_ports: Vec::new(),
+                local_listener_ports: Vec::new(),
+                local_network_sockets: Vec::new(),
             });
         }
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let proxy =
+            if policy.mode == SandboxMode::WorkspaceWrite && !policy.allowed_domains.is_empty() {
+                Some(std::sync::Arc::new(proxy::Proxy::new(&policy).map_err(
+                    |error| SandboxError::Unavailable {
+                        mode: policy.mode.as_str(),
+                        reason: format!("starting the domain-filtering proxy failed: {error}"),
+                    },
+                )?))
+            } else {
+                None
+            };
         match platform_launcher(&policy, helper) {
-            Ok(launcher) => Ok(Self { policy, launcher }),
+            Ok(launcher) => {
+                let sandbox = Self {
+                    policy,
+                    launcher,
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    proxy,
+                    #[cfg(target_os = "linux")]
+                    broker: None,
+                    local_network_ports: Vec::new(),
+                    local_listener_ports: Vec::new(),
+                    local_network_sockets: Vec::new(),
+                };
+                #[cfg(target_os = "linux")]
+                {
+                    let mut sandbox = sandbox;
+                    sandbox.refresh_broker()?;
+                    Ok(sandbox)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Ok(sandbox)
+                }
+            }
             Err(reason) => Err(SandboxError::Unavailable {
                 mode: policy.mode.as_str(),
                 reason,
@@ -143,6 +438,13 @@ impl Sandbox {
         Self {
             policy: SandboxPolicy::unconfined(),
             launcher: Launcher::Unconfined,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            proxy: None,
+            #[cfg(target_os = "linux")]
+            broker: None,
+            local_network_ports: Vec::new(),
+            local_listener_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         }
     }
 
@@ -199,11 +501,40 @@ impl Sandbox {
             Launcher::Seatbelt => seatbelt::command(
                 &self.writable_roots(workspace),
                 self.network(),
+                self.proxy.as_ref().map(|proxy| proxy.port()),
+                self.policy.mode == SandboxMode::WorkspaceWrite && self.policy.allow_local_binding,
+                &self.local_network_ports,
+                &self.local_network_sockets,
+                &self.policy.deny_read,
                 program,
                 args,
             ),
             #[cfg(target_os = "linux")]
-            Launcher::Landlock { helper } => {
+            Launcher::Landlock {
+                helper,
+                namespace_launcher,
+            } => {
+                if let Some(launcher) = namespace_launcher {
+                    let mut command = linux_namespace::command(
+                        launcher,
+                        &self.policy,
+                        &self.writable_roots(workspace),
+                        self.network(),
+                        helper,
+                        self.broker.as_deref(),
+                        &self.local_network_sockets,
+                        program,
+                        args,
+                    );
+                    if self.policy.mode == SandboxMode::WorkspaceWrite
+                        && self.policy.redirect_package_caches
+                    {
+                        cache::redirect(&mut command, workspace);
+                    }
+                    command.current_dir(workspace.as_path());
+                    self.proxy_environment(&mut command);
+                    return command;
+                }
                 let mut command = Command::new(helper);
                 command.arg(HELPER_ARG);
                 if self.network() {
@@ -218,8 +549,69 @@ impl Sandbox {
                 command
             }
         };
+        self.proxy_environment(&mut command);
+        if self.policy.mode == SandboxMode::WorkspaceWrite && self.policy.redirect_package_caches {
+            cache::redirect(&mut command, workspace);
+        }
         command.current_dir(workspace.as_path());
         command
+    }
+
+    fn proxy_environment(&self, command: &mut Command) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if let Some(proxy) = &self.proxy {
+            let url = format!("http://127.0.0.1:{}", proxy.port());
+            // Git's SSH transport ignores HTTP_PROXY. Route the default SSH
+            // invocation through the same gate, without bypassing host-key or
+            // agent checks. Explicit shell overrides still face Seatbelt.
+            let ssh = format!(
+                "/usr/bin/ssh -o 'ProxyCommand=/usr/bin/nc -X connect -x 127.0.0.1:{} %h %p'",
+                proxy.port()
+            );
+            if cfg!(target_os = "macos")
+                && std::env::var_os("GIT_SSH_COMMAND").is_none()
+                && std::env::var_os("GIT_SSH").is_none()
+            {
+                command.envs([("GIT_SSH_COMMAND", ssh.as_str())]);
+            }
+            #[cfg(target_os = "linux")]
+            if std::env::var_os("GIT_SSH_COMMAND").is_none()
+                && std::env::var_os("GIT_SSH").is_none()
+                && let Launcher::Landlock { helper, .. } = &self.launcher
+            {
+                let path = helper.to_string_lossy().replace('\'', "'\\''");
+                let ssh = format!(
+                    "/usr/bin/ssh -o \"ProxyCommand='{}' {} --ssh-proxy {} %h %p\"",
+                    path,
+                    HELPER_ARG,
+                    proxy.port()
+                );
+                command.envs([("GIT_SSH_COMMAND", ssh)]);
+            }
+            command.envs(
+                [
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "ALL_PROXY",
+                    "http_proxy",
+                    "https_proxy",
+                    "all_proxy",
+                ]
+                .into_iter()
+                .map(|key| (key, url.as_str())),
+            );
+            // Inherited exclusions must not silently skip the proxy.
+            // Exclude loopback only when the kernel permits selected ports;
+            // all other loopback destinations remain denied by Seatbelt.
+            let exclusions = if self.local_network_ports.is_empty() {
+                ""
+            } else {
+                "localhost,127.0.0.1,::1,[::1]"
+            };
+            command.envs([("NO_PROXY", exclusions), ("no_proxy", exclusions)]);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let _ = command;
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -391,7 +783,17 @@ fn platform_launcher(
 fn platform_launcher(policy: &SandboxPolicy, helper: Option<PathBuf>) -> Result<Launcher, String> {
     let helper = helper.ok_or_else(|| "no launcher executable was configured".to_string())?;
     linux::probe(policy)?;
-    Ok(Launcher::Landlock { helper })
+    let namespace_launcher = policy
+        .linux_namespace_launcher
+        .as_ref()
+        .map(|path| path.as_path().to_path_buf());
+    if let Some(path) = &namespace_launcher {
+        linux_namespace::probe(path)?;
+    }
+    Ok(Launcher::Landlock {
+        helper,
+        namespace_launcher,
+    })
 }
 
 /// No sandbox: the result reports itself unenforced, and the tool pack puts a
@@ -413,7 +815,16 @@ fn platform_launcher(
 pub fn run_helper(args: impl IntoIterator<Item = OsString>) -> std::io::Error {
     #[cfg(target_os = "linux")]
     {
-        linux::run(args.into_iter().collect())
+        let mut args: Vec<_> = args.into_iter().collect();
+        if args.first().is_some_and(|arg| arg == "--relay-supervisor") {
+            args.remove(0);
+            return linux_broker::supervise(args);
+        }
+        if args.first().is_some_and(|arg| arg == "--ssh-proxy") {
+            args.remove(0);
+            return linux_broker::ssh_proxy(args);
+        }
+        linux::run(args)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -552,8 +963,16 @@ mod tests {
                 auto_approve_bash: true,
                 network_access: true,
                 writable_roots: vec![AbsPath::new("/").expect("abs")],
+                ..SandboxPolicy::default()
             },
             launcher: Launcher::Unconfined,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            proxy: None,
+            #[cfg(target_os = "linux")]
+            broker: None,
+            local_network_ports: Vec::new(),
+            local_listener_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         let (_dir, root) = workspace();
         assert!(sandbox.writable_roots(&root).is_empty());
@@ -573,8 +992,16 @@ mod tests {
                     root.clone(),
                     AbsPath::new("/definitely/not/here").expect("abs"),
                 ],
+                ..SandboxPolicy::default()
             },
             launcher: Launcher::Unconfined,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            proxy: None,
+            #[cfg(target_os = "linux")]
+            broker: None,
+            local_network_ports: Vec::new(),
+            local_listener_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         let roots = sandbox.writable_roots(&root);
         assert_eq!(roots[0].path, root.as_path());
@@ -632,6 +1059,13 @@ mod tests {
         let sandbox = Sandbox {
             policy: SandboxPolicy::default(),
             launcher: Launcher::Unconfined,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            proxy: None,
+            #[cfg(target_os = "linux")]
+            broker: None,
+            local_network_ports: Vec::new(),
+            local_listener_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         let roots = sandbox.writable_roots(&root);
         assert!(!roots[0].read_only.contains(&gitdir));
@@ -668,6 +1102,13 @@ mod tests {
         let sandbox = Sandbox {
             policy: SandboxPolicy::default(),
             launcher: Launcher::Unconfined,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            proxy: None,
+            #[cfg(target_os = "linux")]
+            broker: None,
+            local_network_ports: Vec::new(),
+            local_listener_ports: Vec::new(),
+            local_network_sockets: Vec::new(),
         };
         assert!(!sandbox.is_enforced());
         assert!(!sandbox.confines());

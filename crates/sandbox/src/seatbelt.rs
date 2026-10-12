@@ -12,6 +12,8 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::process::Command;
 
+use keke_paths::AbsPath;
+
 use crate::WritableRoot;
 
 /// Absolute, never looked up on `PATH`: a `sandbox-exec` earlier on `PATH`
@@ -21,9 +23,17 @@ pub(crate) const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const BASE_POLICY: &str = include_str!("ported/codex/seatbelt_base_policy.sbpl");
 const NETWORK_POLICY: &str = include_str!("ported/codex/seatbelt_network_policy.sbpl");
 
+// Kept at this internal profile boundary so each independent permission is
+// visible to the caller; none is implicitly enabled by another capability.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn command<I, S>(
     roots: &[WritableRoot],
     network: bool,
+    proxy_port: Option<u16>,
+    allow_local_binding: bool,
+    local_network_ports: &[u16],
+    local_network_sockets: &[String],
+    deny_read: &[AbsPath],
     program: &str,
     args: I,
 ) -> Command
@@ -32,18 +42,80 @@ where
     S: AsRef<OsStr>,
 {
     let protected = protected(roots);
+    let denied = denied_paths(deny_read);
+    let mut policy = profile(roots.len(), protected.len(), network);
+    if allow_local_binding && !network {
+        // A listener needs both bind and inbound rules. No outbound grant
+        // accompanies this server right; localhost clients still need consent.
+        policy.push_str("\n(allow network-bind (local tcp \"localhost:*\"))\n(allow network-inbound (local tcp \"localhost:*\"))\n");
+    }
+    if let Some(port) = proxy_port {
+        let _ = writeln!(
+            policy,
+            "(allow network-outbound (remote tcp \"localhost:{port}\"))"
+        );
+    }
+    for port in local_network_ports {
+        let _ = writeln!(
+            policy,
+            "(allow network-outbound (remote tcp \"localhost:{port}\"))"
+        );
+    }
+    for index in 0..local_network_sockets.len() {
+        let _ = writeln!(
+            policy,
+            "(allow network-outbound (remote unix-socket (literal (param \"UNIX_SOCKET_{index}\"))))"
+        );
+    }
+    append_read_denials(&mut policy, denied.len());
     let mut command = Command::new(SANDBOX_EXEC);
-    command
-        .arg("-p")
-        .arg(profile(roots.len(), protected.len(), network));
+    command.arg("-p").arg(policy);
+    for (index, path) in local_network_sockets.iter().enumerate() {
+        command.arg(define(
+            &format!("UNIX_SOCKET_{index}"),
+            std::path::Path::new(path),
+        ));
+    }
     for (index, root) in roots.iter().enumerate() {
         command.arg(define(&root_param(index), &root.path));
     }
     for (index, path) in protected.iter().enumerate() {
         command.arg(define(&protected_param(index), path));
     }
+    for (index, path) in denied.iter().enumerate() {
+        command.arg(define(&deny_read_param(index), path));
+    }
     command.arg("--").arg(program).args(args);
     command
+}
+
+fn deny_read_param(index: usize) -> String {
+    format!("DENY_READ_{index}")
+}
+
+fn denied_paths(paths: &[AbsPath]) -> Vec<std::path::PathBuf> {
+    let mut denied = Vec::new();
+    for path in paths {
+        // Keep the configured spelling too: a currently absent path or a
+        // symlink replaced later must not lose its restriction.
+        denied.push(path.as_path().to_path_buf());
+        if let Ok(canonical) = path.as_path().canonicalize()
+            && canonical != path.as_path()
+        {
+            denied.push(canonical);
+        }
+    }
+    denied
+}
+
+fn append_read_denials(profile: &mut String, count: usize) {
+    for index in 0..count {
+        let parameter = deny_read_param(index);
+        let _ = writeln!(
+            profile,
+            "(deny file-read* (literal (param \"{parameter}\")) (subpath (param \"{parameter}\")))"
+        );
+    }
 }
 
 /// Every root's protected paths, excluded from *every* root's grant.
@@ -120,7 +192,17 @@ mod tests {
     #[test]
     fn paths_are_parameters_not_profile_text() {
         let roots = [root("/tmp/it's \"quoted\"", &["/tmp/it's \"quoted\"/.git"])];
-        let command = command(&roots, false, "true", std::iter::empty::<&str>());
+        let command = command(
+            &roots,
+            false,
+            None,
+            false,
+            &[],
+            &[],
+            &[],
+            "true",
+            std::iter::empty::<&str>(),
+        );
         let args: Vec<_> = command.get_args().collect();
         let profile = args[1].to_string_lossy();
         assert!(
@@ -155,7 +237,96 @@ mod tests {
     }
 
     #[test]
+    fn local_server_permission_is_not_an_outbound_network_grant() {
+        let command = command(
+            &[],
+            false,
+            None,
+            true,
+            &[],
+            &[],
+            &[],
+            "true",
+            std::iter::empty::<&str>(),
+        );
+        let text = command.get_args().nth(1).unwrap().to_string_lossy();
+        assert!(text.contains("(allow network-bind (local tcp \"localhost:*\"))"));
+        assert!(text.contains("(allow network-inbound (local tcp \"localhost:*\"))"));
+        assert!(!text.contains("network-outbound"));
+        assert!(!text.contains("\"*:*\""));
+    }
+
+    #[test]
+    fn local_client_permission_is_limited_to_the_approved_port() {
+        let command = command(
+            &[],
+            false,
+            None,
+            false,
+            &[3000],
+            &[],
+            &[],
+            "true",
+            [] as [&str; 0],
+        );
+        let text = command.get_args().nth(1).unwrap().to_string_lossy();
+        assert!(text.contains("(remote tcp \"localhost:3000\")"));
+        assert!(!text.contains("localhost:*"));
+        assert!(!text.contains("(allow network-outbound)"));
+    }
+
+    #[test]
     fn no_roots_means_no_write_rule() {
         assert!(!profile(0, 0, false).contains("(allow file-write*\n"));
+    }
+
+    #[test]
+    fn unix_socket_paths_are_parameters_not_filesystem_grants() {
+        let command = command(
+            &[],
+            false,
+            None,
+            false,
+            &[],
+            &["/host/quoted\".sock".into()],
+            &[],
+            "true",
+            [] as [&str; 0],
+        );
+        let args: Vec<_> = command.get_args().collect();
+        let text = args[1].to_string_lossy();
+        assert!(text.contains("(remote unix-socket (literal (param \"UNIX_SOCKET_0\")))"));
+        assert!(!text.contains("quoted"));
+        assert!(!text.contains("(allow file-write*"));
+        assert_eq!(args[2], "-DUNIX_SOCKET_0=/host/quoted\".sock");
+    }
+
+    #[test]
+    fn read_denials_use_parameters_for_literals_and_descendants() {
+        let mut text = profile(0, 0, false);
+        append_read_denials(&mut text, 1);
+        assert!(text.contains(
+            "(deny file-read* (literal (param \"DENY_READ_0\")) (subpath (param \"DENY_READ_0\")))"
+        ));
+        let path = AbsPath::new("/nonexistent/credential \"quoted\"").unwrap();
+        let paths = denied_paths(std::slice::from_ref(&path));
+        assert_eq!(paths, vec![path.as_path().to_path_buf()]);
+        assert_eq!(
+            define(&deny_read_param(0), &paths[0]),
+            "-DDENY_READ_0=/nonexistent/credential \"quoted\""
+        );
+        assert!(!text.contains("quoted"));
+    }
+
+    #[test]
+    fn read_denials_cover_symlink_spelling_and_existing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("credential");
+        std::fs::write(&target, "secret").unwrap();
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let paths = denied_paths(&[AbsPath::new(&link).unwrap()]);
+        assert!(paths.contains(&link));
+        assert!(paths.contains(&target.canonicalize().unwrap()));
     }
 }

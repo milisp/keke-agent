@@ -105,14 +105,14 @@ pub fn builtin_tools_with_image_limits(
         Arc::new(Grep),
         Arc::new(Bash {
             sandbox,
-            background,
+            background: background.clone(),
         }),
     ];
     if read_only {
         return tools;
     }
     if confines {
-        tools.push(Arc::new(BashUnsandboxed::new()));
+        tools.push(Arc::new(BashUnsandboxed::with_background(background)));
     }
     tools.push(Arc::new(WriteFile));
     tools.push(Arc::new(Edit));
@@ -230,6 +230,12 @@ mod tests {
             workspace_root: AbsPath::new(root).expect("absolute"),
             timeout_millis: None,
             cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
+            approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
+            approved_local_network_sockets: Vec::new(),
+            approved_writable_roots: Vec::new(),
         };
         (dir, ctx)
     }
@@ -660,6 +666,11 @@ mod tests {
                 command: "echo out; echo err >&2; exit 3".into(),
                 background: false,
                 timeout_ms: None,
+                allowed_domains: Vec::new(),
+                allowed_local_ports: Vec::new(),
+                exposed_local_ports: Vec::new(),
+                allowed_unix_sockets: Vec::new(),
+                additional_write_roots: Vec::new(),
             },
         )
         .await
@@ -692,6 +703,11 @@ mod tests {
                 command: "sleep 5".into(),
                 background: false,
                 timeout_ms: Some(100),
+                allowed_domains: Vec::new(),
+                allowed_local_ports: Vec::new(),
+                exposed_local_ports: Vec::new(),
+                allowed_unix_sockets: Vec::new(),
+                additional_write_roots: Vec::new(),
             },
         )
         .await
@@ -727,6 +743,11 @@ mod tests {
                 command: "sleep 5".into(),
                 background: false,
                 timeout_ms: Some(30_000),
+                allowed_domains: Vec::new(),
+                allowed_local_ports: Vec::new(),
+                exposed_local_ports: Vec::new(),
+                allowed_unix_sockets: Vec::new(),
+                additional_write_roots: Vec::new(),
             },
         )
         .await
@@ -921,6 +942,11 @@ mod tests {
                 command: "sleep 30".into(),
                 background: true,
                 timeout_ms: None,
+                allowed_domains: Vec::new(),
+                allowed_local_ports: Vec::new(),
+                exposed_local_ports: Vec::new(),
+                allowed_unix_sockets: Vec::new(),
+                additional_write_roots: Vec::new(),
             },
         )
         .await
@@ -936,6 +962,38 @@ mod tests {
     /// A composition with no registry says so rather than quietly running the
     /// command in the foreground, which is a different answer to a different
     /// question.
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg(unix)]
+    async fn reviewed_escape_can_be_tracked_in_the_background() {
+        let (_dir, ctx) = workspace();
+        let tasks = Arc::new(keke_tasks::BackgroundTasks::new(
+            keke_config_types::BackgroundLimits::default(),
+            unconfined_switch(),
+        ));
+        let tool = BashUnsandboxed::with_background(Some(tasks.clone()));
+        assert_eq!(
+            tool.capabilities().approval,
+            keke_tool::ApprovalRequirement::ReviewRequired
+        );
+        let out = tool
+            .run(
+                ctx,
+                crate::escalate::BashUnsandboxedArgs {
+                    command: "sleep 30".into(),
+                    justification: "explicitly reviewed background fixture".into(),
+                    timeout_ms: None,
+                    background: true,
+                },
+            )
+            .await
+            .unwrap();
+        let BashOutput::Started { task_id } = out else {
+            panic!("expected tracked task");
+        };
+        assert!(keke_tasks::TaskSource::owns(tasks.as_ref(), &task_id));
+        keke_tasks::TaskSource::kill(tasks.as_ref(), &task_id);
+    }
+
     #[tokio::test]
     async fn backgrounding_without_a_registry_is_an_error_not_a_silent_wait() {
         let (_dir, ctx) = workspace();
@@ -949,6 +1007,11 @@ mod tests {
                 command: "true".into(),
                 background: true,
                 timeout_ms: None,
+                allowed_domains: Vec::new(),
+                allowed_local_ports: Vec::new(),
+                exposed_local_ports: Vec::new(),
+                allowed_unix_sockets: Vec::new(),
+                additional_write_roots: Vec::new(),
             },
         )
         .await

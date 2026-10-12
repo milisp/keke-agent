@@ -55,6 +55,18 @@ impl TypeMap {
         let map = self.0.read().ok()?;
         map.get(&TypeId::of::<T>()).cloned()?.downcast::<T>().ok()
     }
+
+    fn get_or_insert_with<T: Any + Send + Sync>(&self, create: impl FnOnce() -> T) -> Arc<T> {
+        let mut map = self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.entry(TypeId::of::<T>())
+            .or_insert_with(|| Arc::new(create()))
+            .clone()
+            .downcast::<T>()
+            .unwrap_or_else(|_| unreachable!("type map entries are keyed by their stored TypeId"))
+    }
 }
 
 /// The handle every contributor receives.
@@ -127,6 +139,12 @@ impl ExtensionContext {
     #[must_use]
     pub fn get<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
         self.state.get::<T>()
+    }
+
+    /// Retrieve shared state, atomically initializing it if absent.
+    /// Concurrent callers receive the same value, including across context clones.
+    pub fn get_or_insert_with<T: Any + Send + Sync>(&self, create: impl FnOnce() -> T) -> Arc<T> {
+        self.state.get_or_insert_with(create)
     }
 }
 

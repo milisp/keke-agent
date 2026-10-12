@@ -13,6 +13,7 @@ mod compose;
 mod declared;
 mod first_run;
 mod install;
+mod network_permissions;
 mod plugins;
 mod skills;
 mod startup_trace;
