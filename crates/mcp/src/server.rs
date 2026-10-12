@@ -559,6 +559,9 @@ impl McpServer {
             // end up in an error string the model sees.
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        // The server is often a launcher (`npx`, `uvx`) whose real process is a
+        // descendant; its own group lets the connection stop all of them.
+        keke_sandbox::ProcessTree::lead(command.as_std_mut());
 
         for (key, raw) in env {
             let value = expand_vars(raw);

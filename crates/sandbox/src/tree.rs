@@ -36,6 +36,19 @@ impl ProcessTree {
         }
     }
 
+    /// Make `command` the leader of a process group of its own, which is what
+    /// lets a [`ProcessTree`] reach its descendants. [`crate::Sandbox`] does this
+    /// for every command it builds; a caller spawning without one (a hook, an
+    /// MCP server) calls it before `spawn`. This also detaches the command from
+    /// the terminal's foreground group: a Ctrl-C reaches keke, which decides
+    /// what to cancel, not the command.
+    pub fn lead(command: &mut Command) {
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(command, 0);
+        #[cfg(not(unix))]
+        let _ = command;
+    }
+
     /// SIGTERM to every member, so a server gets the chance to clean up.
     pub fn terminate(&self) {
         self.signal("-TERM");

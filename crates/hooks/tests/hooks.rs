@@ -422,3 +422,51 @@ async fn a_hook_declaring_no_timeout_still_runs_under_the_configured_one() {
         "a hook that never answers must not be able to hold the turn open"
     );
 }
+
+/// A zombie is dead for this purpose: PID 1 in a container may never reap the
+/// orphans a killed group leaves behind.
+fn running(pid: u32) -> bool {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        let state = stat
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.trim().chars().next());
+        return state != Some('Z');
+    }
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Killing only the hook's shell left what the hook had started running behind
+/// a turn that had already given up on it.
+#[tokio::test]
+async fn a_timed_out_hook_leaves_nothing_it_started_running() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    plugin(
+        dir.path(),
+        "leaky",
+        "PreToolUse",
+        "Bash",
+        "sleep 60 & echo $! > child.pid; wait",
+        r#", "timeout": 1"#,
+    );
+    let plugins = plugin_set(dir.path(), &["leaky"]);
+    let registry = registry_after_starting(&plugins, &[call("Bash", "c1")]).await;
+    assert!(registry.first_denial(&call("Bash", "c1")).is_some());
+
+    let child: u32 = std::fs::read_to_string(dir.path().join("leaky/child.pid"))
+        .expect("the hook reported its child")
+        .trim()
+        .parse()
+        .expect("pid");
+    for _ in 0..250 {
+        if !running(child) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the hook's background child outlived the timeout");
+}

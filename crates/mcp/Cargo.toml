@@ -16,6 +16,7 @@ keke-paths = { workspace = true }
 keke-plugin = { workspace = true }
 keke-plugin-api = { workspace = true }
 keke-protocol = { workspace = true }
+keke-sandbox = { workspace = true }
 keke-tool = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }

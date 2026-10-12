@@ -423,7 +423,7 @@ impl Tool for Bash {
         let millis = args.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(ceiling);
         let deadline = Instant::now() + Duration::from_millis(millis);
 
-        let child = Command::from(sandbox.shell(&args.command, &ctx.workspace_root))
+        let mut child = Command::from(sandbox.shell(&args.command, &ctx.workspace_root))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -434,17 +434,32 @@ impl Tool for Bash {
             .map_err(|error| ToolError::custom("spawn_failed", error.to_string()))?;
         // `kill_on_drop` stops only the shell; this stops what it started too,
         // on timeout, cancellation and any other way out of this function.
-        let _tree = keke_sandbox::ProcessTree::of(child.id());
+        let tree = keke_sandbox::ProcessTree::of(child.id());
 
-        let wait = child.wait_with_output();
-        tokio::pin!(wait);
+        // Both pipes are read beside the wait, and the group is killed as soon
+        // as the shell exits: a background child still holding a pipe's write
+        // end would otherwise keep the read open until the whole budget ran out.
+        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        let collect = async {
+            tokio::join!(
+                async {
+                    let status = child.wait().await;
+                    tree.kill();
+                    status
+                },
+                read_all(stdout),
+                read_all(stderr),
+            )
+        };
+        tokio::pin!(collect);
 
-        let output = loop {
+        let (status, stdout, stderr) = loop {
             tokio::select! {
-                finished = &mut wait => {
-                    break finished.map_err(|error| {
+                (status, stdout, stderr) = &mut collect => {
+                    let status = status.map_err(|error| {
                         ToolError::custom("wait_failed", error.to_string())
                     })?;
+                    break (status, stdout, stderr);
                 }
                 () = tokio::time::sleep(POLL_INTERVAL) => {
                     if ctx.is_cancelled() {
@@ -457,12 +472,12 @@ impl Tool for Bash {
             }
         };
 
-        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-        if !output.stderr.is_empty() {
+        let mut combined = String::from_utf8_lossy(&stdout).into_owned();
+        if !stderr.is_empty() {
             if !combined.is_empty() && !combined.ends_with('\n') {
                 combined.push('\n');
             }
-            combined.push_str(&String::from_utf8_lossy(&output.stderr));
+            combined.push_str(&String::from_utf8_lossy(&stderr));
         }
         if let Ok(failures) = refused.lock() {
             for failure in failures.iter() {
@@ -472,11 +487,22 @@ impl Tool for Bash {
         let (text, truncated) = support::cap(combined, "output truncated");
 
         Ok(BashOutput::Finished {
-            exit_code: output.status.code().unwrap_or(-1),
+            exit_code: status.code().unwrap_or(-1),
             output: text,
             truncated,
         })
     }
+}
+
+/// Everything a pipe yields until it closes. A read error ends the pipe like
+/// EOF does: what arrived before it is still the command's output.
+async fn read_all<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>) -> Vec<u8> {
+    use tokio::io::AsyncReadExt as _;
+    let mut buffer = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buffer).await;
+    }
+    buffer
 }
 
 #[cfg(test)]
@@ -748,12 +774,8 @@ mod process_tree_tests {
             .is_ok_and(|status| status.success())
     }
 
-    /// Overrunning the budget used to kill the shell and leave whatever it had
-    /// started — a dev server, say — running after the call reported failure.
-    #[tokio::test]
-    async fn a_timed_out_command_leaves_nothing_it_started_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = Bash {
+    fn unconfined() -> Bash {
+        Bash {
             sandbox: Arc::new(
                 Sandbox::new(
                     keke_config_types::SandboxPolicy {
@@ -765,14 +787,10 @@ mod process_tree_tests {
                 .unwrap(),
             ),
             background: None,
-        };
-        let args: BashArgs = serde_json::from_value(serde_json::json!({
-            "command": "sleep 60 & echo $! > child.pid; wait",
-        }))
-        .unwrap();
-        let error = tool.run(context(&dir, Some(700)), args).await.unwrap_err();
-        assert!(matches!(error, ToolError::Timeout { .. }), "{error}");
+        }
+    }
 
+    async fn child_pid_is_gone(dir: &tempfile::TempDir) -> bool {
         let child: u32 = std::fs::read_to_string(dir.path().join("child.pid"))
             .unwrap()
             .trim()
@@ -780,10 +798,54 @@ mod process_tree_tests {
             .unwrap();
         for _ in 0..250 {
             if !running(child) {
-                return;
+                return true;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("the background child outlived the timed-out call");
+        false
+    }
+
+    /// Overrunning the budget used to kill the shell and leave whatever it had
+    /// started — a dev server, say — running after the call reported failure.
+    #[tokio::test]
+    async fn a_timed_out_command_leaves_nothing_it_started_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let args: BashArgs = serde_json::from_value(serde_json::json!({
+            "command": "sleep 60 & echo $! > child.pid; wait",
+        }))
+        .unwrap();
+        let error = unconfined()
+            .run(context(&dir, Some(700)), args)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Timeout { .. }), "{error}");
+        assert!(child_pid_is_gone(&dir).await);
+    }
+
+    /// A child left in the background held the output pipe open, so the call
+    /// waited out its whole budget and then failed with a timeout even though
+    /// the shell had exited successfully.
+    #[tokio::test]
+    async fn a_background_child_does_not_hold_a_finished_command_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let args: BashArgs = serde_json::from_value(serde_json::json!({
+            "command": "sleep 60 & echo $! > child.pid; echo started",
+        }))
+        .unwrap();
+        let started = Instant::now();
+        let output = unconfined()
+            .run(context(&dir, Some(20_000)), args)
+            .await
+            .unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let BashOutput::Finished {
+            exit_code, output, ..
+        } = output
+        else {
+            panic!("a foreground call finishes");
+        };
+        assert_eq!((exit_code, output.trim()), (0, "started"));
+        assert!(child_pid_is_gone(&dir).await);
     }
 }
