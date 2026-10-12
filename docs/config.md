@@ -402,7 +402,7 @@ defaults follow codex's.
 
 | Mode | Reads | Writes | Network |
 |---|---|---|---|
-| `workspace_write` (default) | anywhere | the workspace, the temporary directory, `/tmp`, and `writable_roots` | off unless `network_access = true` |
+| `workspace_write` (default) | anywhere | the workspace, the temporary directory, `/tmp`, and `writable_roots` | off unless `network_access = true`; per-command domain and port approvals need macOS, or Linux with the namespace backend (see below) |
 | `read_only` | anywhere | nowhere | off |
 | `danger_full_access` | anywhere | anywhere | on |
 

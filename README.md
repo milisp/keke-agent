@@ -82,12 +82,14 @@ all other settings are documented in [`docs/config.md`](docs/config.md).
 
 - **Sandboxing & approvals** — shell commands run under an OS sandbox
   (Seatbelt on macOS, Landlock + seccomp on Linux): by default they may write
-  only inside the workspace, cannot touch `.git`, and cannot reach the
-  network; stepping outside is reviewed each time (by the guardian in Auto mode,
-  otherwise by you). On Windows, which has no
-  sandbox, every command asks you instead. A repository's own config can
-  tighten that but never loosen it. CI fails rather than skips if the runner
-  cannot enforce the sandbox. See
+  only inside the workspace and have no direct network access; on macOS, and
+  on Linux with the opt-in bubblewrap backend, domains and ports can be
+  approved per command. Git hooks and config are read-only
+  (enforced on macOS). Stepping outside is reviewed each time — by the guardian
+  in Auto mode, otherwise by you; `approval_policy = "never"` skips that
+  review. On Windows, which has no sandbox, every command asks you instead. A
+  repository's own config can tighten that but never loosen it. CI fails
+  rather than skips if the runner cannot enforce the sandbox. See
   [`docs/config.md`](docs/config.md#sandbox).
 - **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
   execute on `git clone` alone; a person must approve them, keyed to their
