@@ -131,7 +131,8 @@ fn namespace_backend_protects_metadata_and_masks_denied_reads() {
     let server = std::thread::spawn(move || {
         let (mut stream, _) = allowed.accept().unwrap();
         let mut request = [0; 1024];
-        stream.read(&mut request).unwrap();
+        let read = stream.read(&mut request).unwrap();
+        assert!(read > 0, "client closed before sending a request");
         stream
             .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 7\r\n\r\nreached")
             .unwrap();

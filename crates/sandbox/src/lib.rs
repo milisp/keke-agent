@@ -149,10 +149,15 @@ fn scoped_write_roots_are_immutable_and_missing_roots_fail() {
         .with_additional_write_roots(vec![dir.path().to_str().expect("utf8").into()])
         .expect("scope");
     assert!(base.policy.writable_roots.is_empty());
-    assert_eq!(
-        scoped.policy.writable_roots.last().expect("root").as_path(),
-        dir.path().canonicalize().expect("canonical")
-    );
+    // Only macOS and Linux confine commands; elsewhere the scope is a no-op.
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        assert_eq!(
+            scoped.policy.writable_roots.last().expect("root").as_path(),
+            dir.path().canonicalize().expect("canonical")
+        );
+    } else {
+        assert!(scoped.policy.writable_roots.is_empty());
+    }
     assert!(
         base.with_additional_write_roots(vec![
             dir.path().join("missing").to_str().expect("utf8").into()
