@@ -2,19 +2,20 @@
 
 [中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
-**keke** is a local coding agent: a ~7 MB native binary, no Node or Python
-runtime, with the agent surface — not just a chat box that runs a shell.
+**keke** is a local coding agent in a ~7 MB native binary — no Node or Python
+runtime. Sign in with the ChatGPT or Grok subscription you already pay for, or
+bring any API key, all from one tool. The TUI, `keke exec`, and desktop apps
+(over ACP) drive the same session.
 
 Subagents, MCP, skills, Claude-compatible plugins, hooks, plan mode,
-per-turn checkpoints, OS sandboxing, ACP (so a desktop app can drive the same
-session as the TUI), and multi-provider routing. Memory and repository plugins
-stay off until you turn them on.
+per-turn checkpoints, and OS sandboxing are built in. Memory and repository
+plugins stay off until you turn them on.
 
 [![asciicast](https://asciinema.org/a/1266474.svg)](https://asciinema.org/a/1266474)
 
 ## Why keke?
 
-- **A full agent, not a thin CLI.** Interactive TUI and `keke exec` for scripts
+- **One session, every surface.** Interactive TUI and `keke exec` for scripts
   and CI, both on one session protocol. Concurrent subagents (bounded, and a
   child cannot spawn another), background shell tasks, and `/loop` for a prompt
   that comes back later. Plan mode can research and write a plan, not the repo.
@@ -23,15 +24,15 @@ stay off until you turn them on.
   any API key. Codex, Grok, Claude, OpenAI-compatible endpoints, Ollama, and
   vLLM — Chat Completions, Responses, or Anthropic Messages. Several accounts
   for one provider, picked by the directory you are in. A compatible endpoint
-  is a few lines of `config.toml`; it does not require a new build, and
-  `keke-core` has no vendor-specific code.
+  is a few lines of `config.toml`; it does not require a new build. The engine
+  crates cannot depend on any vendor plugin — CI fails the build if they do
+  ([`scripts/check-layering.py`](scripts/check-layering.py)).
 
-- **Capable, but not on by default.** Skills can be disabled. Persistent memory
+- **Off by default.** Skills can be disabled. Persistent memory
   is off until you set a directory. Hooks and MCP servers that ship with a
-  repository do not run on `git clone`; a person approves their exact command
-  lines, and nothing they add can undo a denial.
+  repository don't run on `git clone` (see [Safety](#safety)).
 
-- **Undo without touching your git history.** Each turn snapshots the working
+- **Checkpoints outside your repo.** Each turn snapshots the working
   tree in a store outside your repository, so reverting the agent's edits is
   not a stash and not a commit.
 
@@ -85,11 +86,13 @@ all other settings are documented in [`docs/config.md`](docs/config.md).
   network; stepping outside is reviewed each time (by the guardian in Auto mode,
   otherwise by you). On Windows, which has no
   sandbox, every command asks you instead. A repository's own config can
-  tighten that but never loosen it. See
+  tighten that but never loosen it. CI fails rather than skips if the runner
+  cannot enforce the sandbox. See
   [`docs/config.md`](docs/config.md#sandbox).
 - **Plugin trust** — repository-provided plugins (hooks, MCP servers) never
   execute on `git clone` alone; a person must approve them, keyed to their
-  exact contents, not their path. There's no flag to turn that gate off.
+  exact contents, not their path, and nothing they add can undo a denial.
+  There's no flag to turn that gate off.
 
 ## License
 
