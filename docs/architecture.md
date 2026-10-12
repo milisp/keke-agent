@@ -174,8 +174,9 @@ permanent consent, through a user-home store composed by the CLI. Auto never
 consumes those human grants. A scoped proxy caches exact-domain grants.
 Explicit denials precede every grant; missing reviewers fail closed. Explicit credential read
 denials use Seatbelt rules, separate from network policy. The Linux launcher
-currently rejects domain egress and read exclusions because its existing kernel
-rules cannot enforce them. No command-based network exemptions are used.
+rejects domain egress and read exclusions unless the user configures the opt-in
+namespace backend, whose private network namespace and broker enforce them where
+its existing kernel rules cannot. No command-based network exemptions are used.
 
 Local development servers are a separate right, not domain egress. macOS
 workspace-write allows localhost TCP binding/inbound by default, controlled by
@@ -186,10 +187,15 @@ and granted only to that command's sandbox. These grants are never session or
 permanent grants and Auto must review them too (Never authorizes without asking): a loopback port may belong to a
 host service, not this workspace. Seatbelt permits direct TCP only to the named
 localhost ports; proxy exclusions route loopback traffic directly but cannot
-open other ports. Linux and read-only reject this capability rather than silently
-ignoring it. Port consent does not authenticate which process owns that port.
+open other ports. Read-only, and Linux without the namespace backend, reject this
+capability rather than silently ignoring it; with it, the broker relays only the
+approved ports into the private namespace. A server inside that namespace is not on
+the host's loopback, so Bash declares `exposed_local_ports` to publish chosen ports
+for one command, under the same per-command approval. Port consent does not
+authenticate which process owns that port.
 The same command-scoped approval covers exact Unix socket paths on macOS via
-`allowed_unix_sockets`; these expose potentially privileged host services, so
+`allowed_unix_sockets`, and on Linux's namespace backend via Landlock ABI 9, failing
+closed on older kernels; these expose potentially privileged host services, so
 neither a path under the workspace nor a standing Bash grant exempts them.
 Cache-only environment redirects point npm/Bun/pip/uv/XDG caches to a per-workspace
 temporary location. They do not relocate Cargo/Rust toolchains, credentials or
@@ -906,8 +912,11 @@ service with `container system start` first. The script downloads the Rust
 image and dependencies, mounts only a read-only snapshot of non-ignored source
 files (not `.git` or the host home), and builds on the container's native
 filesystem. Container failure or missing Landlock is a test failure, not a skip.
-This validates the Linux implementation; it does not imply that macOS-only
-domain proxies, local TCP grants or Unix socket grants are supported on Linux.
+This validates the Linux implementation, including the namespace backend, its
+broker, the dev-server port exposure and process-group cleanup. Unix socket
+grants need Landlock ABI 9, which the VM's kernel may lack; there the test sees
+the fail-closed error rather than a working grant. CI runs the namespace tests
+in the `sandbox` workflow's `linux-namespace` job.
 
 Two rules the suite must keep:
 

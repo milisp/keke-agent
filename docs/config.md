@@ -452,10 +452,10 @@ including clients that do not use the domain proxy. Each call requires approval
 or permanently. Grants apply only to the command and its descendants, including
 background commands until they exit. A grant can reach any host service owning
 that port, not just a workspace dev server, so do not approve sensitive local
-services casually. Port 0, read-only, and confined non-macOS platforms are rejected.
-Projects may disable
-binding but cannot restore it when the user disabled it. Read-only remains closed;
-the Linux no-network launcher does not yet implement this capability.
+services casually. Port 0 and read-only are rejected. On Linux the grant needs the
+namespace backend described below; without it Linux rejects the capability rather
+than ignoring it. Projects may disable
+binding but cannot restore it when the user disabled it. Read-only remains closed.
 The child receives upper- and lowercase HTTP/HTTPS/ALL proxy variables and empty
 NO_PROXY variables, except command-approved local access sets loopback exclusions;
 Seatbelt still denies every other local port. Clients that ignore these settings remain blocked rather
@@ -489,7 +489,10 @@ macOS workspace-write grants outbound connection access only to reviewed paths;
 other sockets remain blocked. Resolve shell variables before declaring paths.
 The consent is per command, never stored. Docker access can control containers
 and host mounts; SSH agent access can request signatures, so neither is a harmless
-cache permission. Linux/read-only reject scoped socket grants.
+cache permission. Read-only rejects scoped socket grants. On Linux they need the
+namespace backend and a kernel whose Landlock supports ABI 9 (`ResolveUnix`); on an
+older kernel the call fails before the command starts rather than allowing every
+socket, and abstract Unix sockets are scoped away from the command.
 
 `redirect_package_caches = true` redirects only npm, Bun, pip, uv and XDG cache
 environment variables to a stable per-workspace temporary location. The tools
@@ -523,10 +526,35 @@ configuration cannot select it. Namespace creation is actually probed and
 failure is fatal. This backend masks `deny_read` paths and overlays protected
 metadata read-only, retaining Landlock/seccomp. It currently masks `/proc`
 entirely, so workflows requiring procfs are not supported by this first stage.
-Network broker and scoped TCP/Unix socket support are not yet implemented.
+With this backend the command runs in a private network namespace whose only
+loopback is its own. A broker outside the namespace relays what the command may
+reach: the domain proxy, and the ports approved through `allowed_local_ports`,
+which are forwarded to the host's loopback. A command that was not granted a
+destination cannot connect to it, and a host service is reachable only on a port
+approved with that command.
+
+Because that loopback is private, a dev server bound to `127.0.0.1` inside the
+sandbox is not visible to a host browser. Bash declares `exposed_local_ports:
+[3000]` to publish named ports on the host's loopback for that command only. It
+requires `workspace-write` with `allow_local_binding` enabled, rejects port 0,
+and is approved with the command like `allowed_local_ports` (never remembered).
+It exposes the server to host processes; it gives the command no access to host
+services. Without the namespace backend Linux rejects it.
 
 Without that backend, Linux refuses domain networking or read denials rather than claiming
 restrictions its launcher cannot enforce.
+
+**Stopping a command stops its processes.** Every command leads its own process
+group, and keke signals the group rather than only the shell. A timeout, a
+cancelled turn, `kill_task`, clearing the task list and keke exiting all
+reach a dev server the shell started. Foreground commands are sent SIGKILL;
+background tasks get SIGTERM first and SIGKILL after `background.kill_grace_millis`,
+so a server can remove its socket. A process that detaches into a new session or
+group has left the group and is out of reach of this; on the Linux namespace
+backend the namespace ends with the launcher, which takes such a process with it.
+A command that finishes while leaving a background child behind has the child
+stopped too, which is why a server meant to outlive the call needs
+`background: true` rather than `&`.
 
 Proxy resource budgets are configurable in the same section:
 `proxy_max_connections = 32`, `proxy_header_timeout_ms = 10000`,

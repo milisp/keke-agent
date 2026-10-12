@@ -250,3 +250,79 @@ async fn a_source_only_answers_for_the_ids_it_claims() {
     tasks.kill(&id);
     settle(&tasks, &id).await;
 }
+
+/// A zombie is dead for this purpose: PID 1 in a container may never reap the
+/// orphans a killed group leaves behind.
+#[cfg(unix)]
+fn running(pid: u32) -> bool {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        let state = stat
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.trim().chars().next());
+        return state != Some('Z');
+    }
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Starts a command whose shell backgrounds a long sleep, and returns that
+/// sleep's pid once it exists.
+#[cfg(unix)]
+async fn spawn_with_background_child(
+    tasks: &Arc<BackgroundTasks>,
+    root: &AbsPath,
+) -> (String, u32) {
+    let id = tasks
+        .spawn("sleep 60 & echo $! > child.pid; wait".to_string(), root)
+        .expect("spawn");
+    let file = root.as_path().join("child.pid");
+    for _ in 0..200 {
+        if let Some(pid) = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+        {
+            assert!(running(pid));
+            return (id, pid);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the command never reported its child");
+}
+
+#[cfg(unix)]
+async fn gone(pid: u32) -> bool {
+    for _ in 0..250 {
+        if !running(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+/// A dev server is the shell's grandchild; stopping only the shell left it
+/// holding its port.
+#[cfg(unix)]
+#[tokio::test]
+async fn killing_a_command_stops_the_processes_it_started() {
+    let (tasks, _dir, root) = host(BackgroundLimits::default());
+    let (id, child) = spawn_with_background_child(&tasks, &root).await;
+    assert!(tasks.kill(&id));
+    settle(&tasks, &id).await;
+
+    assert!(gone(child).await);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn clearing_stops_the_processes_a_command_started() {
+    let (tasks, _dir, root) = host(BackgroundLimits::default());
+    let (_id, child) = spawn_with_background_child(&tasks, &root).await;
+    tasks.clear();
+
+    assert!(gone(child).await);
+}
