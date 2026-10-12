@@ -432,6 +432,9 @@ impl Tool for Bash {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| ToolError::custom("spawn_failed", error.to_string()))?;
+        // `kill_on_drop` stops only the shell; this stops what it started too,
+        // on timeout, cancellation and any other way out of this function.
+        let _tree = keke_sandbox::ProcessTree::of(child.id());
 
         let wait = child.wait_with_output();
         tokio::pin!(wait);
@@ -705,5 +708,82 @@ mod network_tests {
             .await
             .unwrap()
         );
+    }
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod process_tree_tests {
+    use super::*;
+
+    fn context(dir: &tempfile::TempDir, timeout_millis: Option<u64>) -> ToolCallContext {
+        ToolCallContext {
+            call_id: keke_protocol::ToolCallId::new("tree"),
+            workspace_root: keke_paths::AbsPath::new(dir.path()).unwrap(),
+            timeout_millis,
+            cancelled: Arc::new(|| false),
+            permission_reviewer: None,
+            approved_network_domains: Vec::new(),
+            approved_local_network_ports: Vec::new(),
+            approved_local_listener_ports: Vec::new(),
+            approved_local_network_sockets: Vec::new(),
+            approved_writable_roots: Vec::new(),
+        }
+    }
+
+    /// A zombie is dead for this purpose: PID 1 in a container may never reap
+    /// the orphans a killed group leaves behind.
+    fn running(pid: u32) -> bool {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            let state = stat
+                .rsplit(')')
+                .next()
+                .and_then(|rest| rest.trim().chars().next());
+            return state != Some('Z');
+        }
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Overrunning the budget used to kill the shell and leave whatever it had
+    /// started — a dev server, say — running after the call reported failure.
+    #[tokio::test]
+    async fn a_timed_out_command_leaves_nothing_it_started_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = Bash {
+            sandbox: Arc::new(
+                Sandbox::new(
+                    keke_config_types::SandboxPolicy {
+                        mode: SandboxMode::DangerFullAccess,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap(),
+            ),
+            background: None,
+        };
+        let args: BashArgs = serde_json::from_value(serde_json::json!({
+            "command": "sleep 60 & echo $! > child.pid; wait",
+        }))
+        .unwrap();
+        let error = tool.run(context(&dir, Some(700)), args).await.unwrap_err();
+        assert!(matches!(error, ToolError::Timeout { .. }), "{error}");
+
+        let child: u32 = std::fs::read_to_string(dir.path().join("child.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        for _ in 0..250 {
+            if !running(child) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the background child outlived the timed-out call");
     }
 }

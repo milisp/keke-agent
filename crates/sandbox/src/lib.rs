@@ -47,6 +47,9 @@ mod linux_namespace;
 mod proxy;
 #[cfg(target_os = "macos")]
 mod seatbelt;
+mod tree;
+
+pub use tree::ProcessTree;
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -165,6 +168,16 @@ fn scoped_write_roots_are_immutable_and_missing_roots_fail() {
         .is_err()
     );
     assert!(!dir.path().join("missing").exists());
+}
+
+/// Every command leads its own process group, so [`ProcessTree`] can reach what
+/// its shell started. This also detaches it from the terminal's foreground
+/// group: a Ctrl-C reaches keke, which decides what to cancel, not the command.
+fn lead_own_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(command, 0);
+    #[cfg(not(unix))]
+    let _ = command;
 }
 
 impl Sandbox {
@@ -533,6 +546,7 @@ impl Sandbox {
                     }
                     command.current_dir(workspace.as_path());
                     self.proxy_environment(&mut command);
+                    lead_own_process_group(&mut command);
                     return command;
                 }
                 let mut command = Command::new(helper);
@@ -554,6 +568,7 @@ impl Sandbox {
             cache::redirect(&mut command, workspace);
         }
         command.current_dir(workspace.as_path());
+        lead_own_process_group(&mut command);
         command
     }
 

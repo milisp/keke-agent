@@ -204,6 +204,10 @@ impl BackgroundTasks {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| BackgroundError::Spawn(error.to_string()))?;
+        // The shell is not the whole task: a dev server is its grandchild, and
+        // `kill_on_drop` reaches only the shell. The tree also dies with this
+        // task if the runtime shuts down before a kill is ever requested.
+        let tree = keke_sandbox::ProcessTree::of(child.id());
 
         let id = format!("{KIND}_{}", self.next.fetch_add(1, Ordering::SeqCst));
         let (kill, killed) = tokio::sync::oneshot::channel();
@@ -245,6 +249,7 @@ impl BackgroundTasks {
             // proxy's destructor joins its workers, including on cancellation.
             let _sandbox = sandbox;
             let _lifetime = lifetime;
+            let tree = tree;
             let state = tokio::select! {
                 status = child.wait() => match status {
                     Ok(status) => TaskState::Exited(status.code()),
@@ -254,7 +259,7 @@ impl BackgroundTasks {
                     }
                 },
                 _ = killed => {
-                    terminate(&mut child, grace).await;
+                    terminate(&mut child, &tree, grace).await;
                     TaskState::Killed
                 }
             };
@@ -321,32 +326,27 @@ impl BackgroundTasks {
     }
 }
 
-/// SIGTERM, then SIGKILL once the grace period is up.
+/// SIGTERM, then SIGKILL once the grace period is up, to the whole process
+/// group rather than to the shell alone.
 ///
 /// The grace is what separates a stop from a kill: a dev server given a moment
 /// removes its socket, and one that is not leaves it for the next run to trip
-/// over.
-///
-/// The signal goes through `kill(1)` rather than `libc::kill`, because the
-/// workspace denies `unsafe`. One extra process on a path taken once per task
-/// is a better trade than an unsafe block and a new dependency.
-async fn terminate(child: &mut tokio::process::Child, grace: std::time::Duration) {
-    if cfg!(unix)
-        && !grace.is_zero()
-        && let Some(pid) = child.id()
-        && let Ok(mut signal) = Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    {
-        let _ = signal.wait().await;
+/// over. The shell exiting does not end the grace early, because the server it
+/// started may still be shutting down.
+async fn terminate(
+    child: &mut tokio::process::Child,
+    tree: &keke_sandbox::ProcessTree,
+    grace: std::time::Duration,
+) {
+    if !grace.is_zero() {
+        tree.terminate();
         if tokio::time::timeout(grace, child.wait()).await.is_ok() {
+            // Anything that ignored SIGTERM is still in the group.
+            tree.kill();
             return;
         }
     }
+    tree.kill();
     let _ = child.start_kill();
     let _ = child.wait().await;
 }
