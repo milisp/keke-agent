@@ -40,6 +40,8 @@ use agent_client_protocol::schema::v2::McpStdioCapabilities;
 use agent_client_protocol::schema::v2::MessageId;
 use agent_client_protocol::schema::v2::NewSessionRequest;
 use agent_client_protocol::schema::v2::NewSessionResponse;
+use agent_client_protocol::schema::v2::Notice;
+use agent_client_protocol::schema::v2::NoticeSeverity;
 use agent_client_protocol::schema::v2::PermissionOption;
 use agent_client_protocol::schema::v2::PermissionOptionKind;
 use agent_client_protocol::schema::v2::PromptCapabilities;
@@ -502,6 +504,14 @@ fn prompt_message(blocks: &[ContentBlock]) -> Result<keke_protocol::Message, Str
     })
 }
 
+fn notice_severity(severity: keke_core::NoticeSeverity) -> NoticeSeverity {
+    match severity {
+        keke_core::NoticeSeverity::Info => NoticeSeverity::Info,
+        keke_core::NoticeSeverity::Warning => NoticeSeverity::Warning,
+        keke_core::NoticeSeverity::Error => NoticeSeverity::Error,
+    }
+}
+
 /// Forward one conversation's updates to the client for as long as it lives.
 async fn pump(
     id: SessionId,
@@ -558,6 +568,21 @@ async fn pump(
                         compactions.settle(),
                         CompactionStatus::Completed,
                     )),
+                )?;
+            }
+            // Baseline in v2: no capability to check, and a client that cannot
+            // draw one is allowed to ignore it.
+            Update::Notice {
+                severity,
+                title,
+                description,
+            } => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::Notice(
+                        Notice::new(notice_severity(severity), title).description(description),
+                    ),
                 )?;
             }
             // A mode the agent entered on its own — or the confirmation of one

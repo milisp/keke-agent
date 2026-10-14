@@ -28,6 +28,14 @@ use keke_workspace::Workspace;
 use crate::CoreError;
 use crate::RolloutRecorder;
 
+/// How a [`TurnUpdate::Notice`] should be weighed by whoever draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 /// What the engine tells a surface while a turn runs.
 ///
 /// Distinct from [`SessionEvent`]: session events are the durable record, these
@@ -95,6 +103,18 @@ pub enum TurnUpdate {
         turn: TurnId,
         removed_messages: usize,
         retained_messages: usize,
+    },
+    /// Something a person should know that is not part of the conversation:
+    /// the engine is retrying, say, or has given up on an optional feature.
+    ///
+    /// Live only, and never fed to the model: a notice that reached a request
+    /// would be model-visible input the log could not reconstruct. A surface
+    /// may drop it without losing anything the session depends on.
+    Notice {
+        turn: TurnId,
+        severity: NoticeSeverity,
+        title: String,
+        description: Option<String>,
     },
     TurnEnded {
         turn: TurnId,

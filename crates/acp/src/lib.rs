@@ -22,6 +22,7 @@ pub use conversation::SubagentView;
 pub use conversation::TaskView;
 pub use conversation::Update;
 pub use conversation::{TaskPreview, TaskPreviews};
+pub use keke_core::NoticeSeverity;
 pub use local::ApprovalRequests;
 pub use local::Approvals;
 pub use local::LocalConversation;

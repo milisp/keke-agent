@@ -309,6 +309,9 @@ struct Sessions {
     /// Whether the client said, at `initialize`, that it understands
     /// ID-addressed compaction updates. Only v1 asks: v2 made them baseline.
     client_compacts: std::sync::atomic::AtomicBool,
+    /// Likewise for `notice` updates. v1 clients that do not advertise it may
+    /// not know the variant, so they are not sent one.
+    client_notices: std::sync::atomic::AtomicBool,
 }
 
 impl Sessions {
@@ -319,6 +322,16 @@ impl Sessions {
     fn set_client_compacts(&self, supported: bool) {
         self.client_compacts
             .store(supported, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn set_client_notices(&self, supported: bool) {
+        self.client_notices
+            .store(supported, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn client_notices(&self) -> bool {
+        self.client_notices
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn client_compacts(&self) -> bool {

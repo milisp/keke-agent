@@ -844,6 +844,22 @@ impl App {
                     "context compacted: {removed_messages} earlier messages summarized, {retained_messages} kept"
                 )));
             }
+            Update::Notice {
+                severity,
+                title,
+                description,
+            } => {
+                let text = match description {
+                    Some(detail) => format!("{title}: {detail}"),
+                    None => title,
+                };
+                self.transcript.push(match severity {
+                    keke_acp::NoticeSeverity::Error => Cell::Error(text),
+                    keke_acp::NoticeSeverity::Info | keke_acp::NoticeSeverity::Warning => {
+                        Cell::Notice(text)
+                    }
+                });
+            }
             Update::TokensUsed(usage) => {
                 if usage.cached_input_tokens > 0 {
                     self.last_cache_hit_tokens = Some(usage.cached_input_tokens);

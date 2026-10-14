@@ -500,6 +500,97 @@ async fn the_endpoint_on_the_wire_answers_whichever_version_was_asked_for() {
     );
 }
 
+/// A provider that pushes back is retried after a pause, and the pause is the
+/// part a person would otherwise read as a hang: the editor must be told.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retried_provider_call_reaches_the_editor_as_a_notice() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let server = MockInferenceServer::start().await;
+    server.script(
+        Endpoint::ChatCompletions,
+        Reply::status(429).with_header("retry-after", "1"),
+    );
+    server.script(Endpoint::ChatCompletions, Reply::text("worth the wait"));
+
+    let agent = AcpAgent::new(
+        AcpAgentConfig::new(env!("CARGO_BIN_EXE_keke"))
+            .args(["agent", "stdio"])
+            .env("KEKE_HOME", home.path().display().to_string())
+            .env("KEKE_CREDENTIAL_STORE", "file")
+            .env("KEKE_IMPORT", "off")
+            .env("KEKE_PROVIDER", "grok")
+            .env("KEKE_MODEL", "grok-4.6")
+            .env("XAI_BASE_URL", server.base_url())
+            .env("XAI_API_KEY", "test-key"),
+    );
+
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let notices = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    agent_client_protocol::Client
+        .v2()
+        .on_receive_notification(
+            {
+                let seen = Arc::clone(&seen);
+                let notices = Arc::clone(&notices);
+                async move |notification: UpdateSessionNotification, _cx| {
+                    match notification.update {
+                        SessionUpdate::AgentMessageChunk(chunk) => {
+                            if let ContentBlock::Text(text) = chunk.content {
+                                seen.lock().expect("lock").text.push_str(&text.text);
+                            }
+                        }
+                        SessionUpdate::Notice(notice) => {
+                            notices.lock().expect("lock").push(notice.title);
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(agent, {
+            let cwd = workspace.path().to_path_buf();
+            |connection: V2ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        Implementation::new("test-editor", "0.0.0"),
+                    ))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
+                    .block_task()
+                    .await?
+                    .session_id;
+                connection
+                    .send_request(PromptRequest::new(
+                        session,
+                        vec![ContentBlock::Text(TextContent::new("hello"))],
+                    ))
+                    .block_task()
+                    .await?;
+                Ok(())
+            }
+        })
+        .await
+        .expect("the ACP session runs to completion");
+
+    assert!(
+        seen.lock().expect("lock").text.contains("worth the wait"),
+        "the retry must still end in the answer"
+    );
+    let notices = notices.lock().expect("lock");
+    assert_eq!(
+        notices.len(),
+        1,
+        "one pause, one notice, said before the wait: {notices:?}"
+    );
+}
+
 /// Send one raw request to `keke agent stdio` and read the one raw response.
 fn initialize_over_a_pipe(request: &[u8]) -> serde_json::Value {
     let home = tempfile::tempdir().expect("tempdir");

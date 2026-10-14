@@ -68,6 +68,7 @@ pub use rollout::RolloutError;
 pub use rollout::RolloutRecorder;
 pub use rollout::read_log;
 pub use rollout::read_log_from;
+pub use session::NoticeSeverity;
 pub use session::RewindPoint;
 pub use session::Rewound;
 pub use session::Session;

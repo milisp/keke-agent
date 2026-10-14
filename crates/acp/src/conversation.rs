@@ -91,6 +91,14 @@ pub enum Update {
         removed_messages: usize,
         retained_messages: usize,
     },
+    /// Something worth a person's attention that is not part of the
+    /// conversation, such as the engine retrying a failed provider call.
+    /// Live only: a surface may drop it without losing session state.
+    Notice {
+        severity: keke_core::NoticeSeverity,
+        title: String,
+        description: Option<String>,
+    },
     /// Every subagent currently worth showing, oldest first. A whole snapshot
     /// rather than per-agent deltas: the list is short, and a surface that
     /// missed one delta would draw the wrong child status.

@@ -35,6 +35,8 @@ use agent_client_protocol::schema::v1::McpCapabilities;
 use agent_client_protocol::schema::v1::McpServer;
 use agent_client_protocol::schema::v1::NewSessionRequest;
 use agent_client_protocol::schema::v1::NewSessionResponse;
+use agent_client_protocol::schema::v1::Notice;
+use agent_client_protocol::schema::v1::NoticeSeverity;
 use agent_client_protocol::schema::v1::PermissionOption;
 use agent_client_protocol::schema::v1::PermissionOptionKind;
 use agent_client_protocol::schema::v1::PromptCapabilities;
@@ -135,12 +137,9 @@ pub(super) fn agent(
                 let factory = Arc::clone(&factory);
                 let sessions = Arc::clone(&sessions);
                 async move |request: InitializeRequest, responder, _cx| {
-                    sessions.set_client_compacts(
-                        request
-                            .client_capabilities
-                            .session
-                            .is_some_and(|session| session.compaction.is_some()),
-                    );
+                    let session = request.client_capabilities.session.as_ref();
+                    sessions.set_client_compacts(session.is_some_and(|s| s.compaction.is_some()));
+                    sessions.set_client_notices(session.is_some_and(|s| s.notices.is_some()));
                     responder.respond(
                         InitializeResponse::new(request.protocol_version)
                             .agent_capabilities(
@@ -359,6 +358,7 @@ fn start(
         opened.updates,
         outcome_tx,
         sessions.client_compacts(),
+        sessions.client_notices(),
         cx.clone(),
     ))?;
     // Sent even when empty is skipped: a client that never hears about
@@ -484,6 +484,14 @@ fn prompt_message(blocks: &[ContentBlock]) -> Result<keke_protocol::Message, Str
     })
 }
 
+fn notice_severity(severity: keke_core::NoticeSeverity) -> NoticeSeverity {
+    match severity {
+        keke_core::NoticeSeverity::Info => NoticeSeverity::Info,
+        keke_core::NoticeSeverity::Warning => NoticeSeverity::Warning,
+        keke_core::NoticeSeverity::Error => NoticeSeverity::Error,
+    }
+}
+
 /// Forward one conversation's updates to the client for as long as it lives.
 async fn pump(
     id: SessionId,
@@ -491,6 +499,7 @@ async fn pump(
     mut updates: UnboundedReceiver<Update>,
     outcomes: UnboundedSender<StopReason>,
     client_compacts: bool,
+    client_notices: bool,
     cx: ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(), agent_client_protocol::Error> {
     let mut compactions = super::CompactionIds::default();
@@ -560,6 +569,23 @@ async fn pump(
                         "[context compacted: {removed_messages} earlier messages summarized, {retained_messages} kept]\n"
                     ))),
                 )?;
+            }
+            // Dropped for a client that did not ask: a notice is
+            // fire-and-forget by definition, so nothing is lost by silence.
+            Update::Notice {
+                severity,
+                title,
+                description,
+            } => {
+                if client_notices {
+                    notify(
+                        &cx,
+                        &id,
+                        SessionUpdate::Notice(
+                            Notice::new(notice_severity(severity), title).description(description),
+                        ),
+                    )?;
+                }
             }
             // A mode the agent entered on its own — or the confirmation of one
             // a client asked for. `session/update` carries the whole option set
