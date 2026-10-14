@@ -517,16 +517,19 @@ fn initialize_over_a_pipe(request: &[u8]) -> serde_json::Value {
         .spawn()
         .expect("keke agent stdio starts");
 
+    use std::io::BufRead;
     use std::io::Write;
-    keke.stdin
-        .take()
-        .expect("stdin")
-        .write_all(request)
-        .expect("the request is written");
-
-    let output = keke.wait_with_output().expect("keke exits with the pipe");
-    let line = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(line.lines().next().unwrap_or_default()).expect("one JSON response")
+    // Held open until the answer is in: a client keeps its pipe up while it
+    // waits, and closing it first races the reply against the shutdown.
+    let mut stdin = keke.stdin.take().expect("stdin");
+    stdin.write_all(request).expect("the request is written");
+    let mut line = String::new();
+    std::io::BufReader::new(keke.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("a response line");
+    drop(stdin);
+    keke.wait().expect("keke exits with the pipe");
+    serde_json::from_str(&line).expect("one JSON response")
 }
 
 /// The v1 path, end to end with a v1 client: the stop reason comes back on the

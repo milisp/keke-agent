@@ -271,16 +271,63 @@ impl Entry {
     }
 }
 
+/// The ids a session's compactions travel under.
+///
+/// A compaction is announced, then settled, and both halves must name the same
+/// id for the client to patch one entity rather than draw two. A manual
+/// `/compact` settles without ever announcing, so settling mints an id when
+/// none is open.
 #[derive(Default)]
-struct Sessions(Mutex<HashMap<String, Arc<Entry>>>);
+struct CompactionIds {
+    issued: u64,
+    open: Option<String>,
+}
+
+impl CompactionIds {
+    fn begin(&mut self) -> String {
+        let id = self.mint();
+        self.open = Some(id.clone());
+        id
+    }
+
+    fn settle(&mut self) -> String {
+        match self.open.take() {
+            Some(id) => id,
+            None => self.mint(),
+        }
+    }
+
+    fn mint(&mut self) -> String {
+        self.issued += 1;
+        format!("compaction-{}", self.issued)
+    }
+}
+
+#[derive(Default)]
+struct Sessions {
+    entries: Mutex<HashMap<String, Arc<Entry>>>,
+    /// Whether the client said, at `initialize`, that it understands
+    /// ID-addressed compaction updates. Only v1 asks: v2 made them baseline.
+    client_compacts: std::sync::atomic::AtomicBool,
+}
 
 impl Sessions {
     fn get(&self, id: &str) -> Option<Arc<Entry>> {
-        self.0.lock().ok()?.get(id).cloned()
+        self.entries.lock().ok()?.get(id).cloned()
+    }
+
+    fn set_client_compacts(&self, supported: bool) {
+        self.client_compacts
+            .store(supported, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn client_compacts(&self) -> bool {
+        self.client_compacts
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn insert(&self, id: &str, entry: Arc<Entry>) {
-        if let Ok(mut sessions) = self.0.lock() {
+        if let Ok(mut sessions) = self.entries.lock() {
             sessions.insert(id.to_string(), entry);
         }
     }
@@ -563,6 +610,21 @@ fn note_mode(entry: &Entry, mode: SessionMode) -> Vec<Choice> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_compaction_settles_under_the_id_it_began_with() {
+        let mut ids = CompactionIds::default();
+        let began = ids.begin();
+        assert_eq!(ids.settle(), began);
+        assert_ne!(ids.begin(), began, "the next compaction is a new entity");
+    }
+
+    #[test]
+    fn a_compaction_that_never_began_still_settles_under_an_id_of_its_own() {
+        let mut ids = CompactionIds::default();
+        let first = ids.settle();
+        assert_ne!(ids.settle(), first);
+    }
 
     #[test]
     fn an_unrecognised_option_is_a_denial() {

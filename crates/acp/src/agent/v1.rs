@@ -19,6 +19,8 @@ use agent_client_protocol::schema::v1::AuthenticateResponse;
 use agent_client_protocol::schema::v1::AvailableCommand;
 use agent_client_protocol::schema::v1::AvailableCommandsUpdate;
 use agent_client_protocol::schema::v1::CancelNotification;
+use agent_client_protocol::schema::v1::CompactionStatus;
+use agent_client_protocol::schema::v1::CompactionUpdate;
 use agent_client_protocol::schema::v1::ConfigOptionUpdate;
 use agent_client_protocol::schema::v1::ContentBlock;
 use agent_client_protocol::schema::v1::ContentChunk;
@@ -131,7 +133,14 @@ pub(super) fn agent(
         .on_receive_request(
             {
                 let factory = Arc::clone(&factory);
+                let sessions = Arc::clone(&sessions);
                 async move |request: InitializeRequest, responder, _cx| {
+                    sessions.set_client_compacts(
+                        request
+                            .client_capabilities
+                            .session
+                            .is_some_and(|session| session.compaction.is_some()),
+                    );
                     responder.respond(
                         InitializeResponse::new(request.protocol_version)
                             .agent_capabilities(
@@ -349,6 +358,7 @@ fn start(
         Arc::clone(&entry),
         opened.updates,
         outcome_tx,
+        sessions.client_compacts(),
         cx.clone(),
     ))?;
     // Sent even when empty is skipped: a client that never hears about
@@ -480,14 +490,49 @@ async fn pump(
     entry: Arc<Entry>,
     mut updates: UnboundedReceiver<Update>,
     outcomes: UnboundedSender<StopReason>,
+    client_compacts: bool,
     cx: ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(), agent_client_protocol::Error> {
+    let mut compactions = super::CompactionIds::default();
     while let Some(update) = updates.recv().await {
         match update {
             Update::TurnStarted => {}
             // ACP has no place for token accounting today, and inventing a
             // message for it would be keke's dialect rather than the protocol.
             Update::TokensUsed(_) => {}
+            // A client that advertised `session.compaction` gets the lifecycle
+            // as one entity it can patch; one that did not gets the same
+            // facts as prose, because silence would read as a hang.
+            Update::CompactionStarted if client_compacts => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::CompactionUpdate(CompactionUpdate::new(
+                        compactions.begin(),
+                        CompactionStatus::InProgress,
+                    )),
+                )?;
+            }
+            Update::CompactionFailed if client_compacts => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::CompactionUpdate(
+                        CompactionUpdate::new(compactions.settle(), CompactionStatus::Failed)
+                            .error("continuing with full history".to_string()),
+                    ),
+                )?;
+            }
+            Update::Compacted { .. } if client_compacts => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::CompactionUpdate(CompactionUpdate::new(
+                        compactions.settle(),
+                        CompactionStatus::Completed,
+                    )),
+                )?;
+            }
             Update::CompactionStarted => {
                 notify(
                     &cx,

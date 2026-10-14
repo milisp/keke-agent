@@ -20,6 +20,8 @@ use agent_client_protocol::schema::v2::AuthMethodAgent;
 use agent_client_protocol::schema::v2::AvailableCommand;
 use agent_client_protocol::schema::v2::AvailableCommandsUpdate;
 use agent_client_protocol::schema::v2::CancelSessionNotification;
+use agent_client_protocol::schema::v2::CompactionStatus;
+use agent_client_protocol::schema::v2::CompactionUpdate;
 use agent_client_protocol::schema::v2::ConfigOptionUpdate;
 use agent_client_protocol::schema::v2::ContentBlock;
 use agent_client_protocol::schema::v2::ContentChunk;
@@ -512,6 +514,7 @@ async fn pump(
     // answer can be recognised as one message. A counter is enough: the ids
     // only have to be distinct within the session.
     let mut turn = 0_u64;
+    let mut compactions = super::CompactionIds::default();
     while let Some(update) = updates.recv().await {
         match update {
             Update::TurnStarted => {
@@ -525,13 +528,15 @@ async fn pump(
             // ACP has no place for token accounting today, and inventing a
             // message for it would be keke's dialect rather than the protocol.
             Update::TokensUsed(_) => {}
+            // Compaction is baseline in v2, so it always travels as one entity
+            // the client patches by id rather than as prose.
             Update::CompactionStarted => {
                 notify(
                     &cx,
                     &id,
-                    SessionUpdate::AgentThoughtChunk(chunk(
-                        "[compacting context…]\n",
-                        message_id(turn, "compaction"),
+                    SessionUpdate::CompactionUpdate(CompactionUpdate::new(
+                        compactions.begin(),
+                        CompactionStatus::InProgress,
                     )),
                 )?;
             }
@@ -539,24 +544,19 @@ async fn pump(
                 notify(
                     &cx,
                     &id,
-                    SessionUpdate::AgentThoughtChunk(chunk(
-                        "[context compaction failed; continuing with full history]\n",
-                        message_id(turn, "compaction"),
-                    )),
+                    SessionUpdate::CompactionUpdate(
+                        CompactionUpdate::new(compactions.settle(), CompactionStatus::Failed)
+                            .error("continuing with full history".to_string()),
+                    ),
                 )?;
             }
-            Update::Compacted {
-                removed_messages,
-                retained_messages,
-            } => {
+            Update::Compacted { .. } => {
                 notify(
                     &cx,
                     &id,
-                    SessionUpdate::AgentThoughtChunk(chunk(
-                        format!(
-                            "[context compacted: {removed_messages} earlier messages summarized, {retained_messages} kept]\n"
-                        ),
-                        message_id(turn, "compaction"),
+                    SessionUpdate::CompactionUpdate(CompactionUpdate::new(
+                        compactions.settle(),
+                        CompactionStatus::Completed,
                     )),
                 )?;
             }
