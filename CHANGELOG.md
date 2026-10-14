@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.43] - 2026-10-14
+
 ### Added
 - Validated `view_image` tool output across all three inference formats.
 - Terminal image attachments from dropped or pasted paths, with asynchronous
@@ -13,10 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Image-bearing prompts through both ACP protocol versions.
 - Terminal notifications (OSC 9 or bell) when a tool needs approval or a turn
   finishes while the terminal is unfocused; `[notifications]` in `config.toml`.
+- Compaction shown live, replayed on session load, and a `/compact` command.
+- Provider retries surfaced as session notices over ACP.
 
 ### Changed
 - Session logs record conversation changes incrementally instead of repeating
   full history on each turn, while preserving legacy snapshot replay.
+- Compaction is reported as ID-addressed ACP updates.
+- Upgraded `agent-client-protocol` to 3.3.
+
+### Fixed
+- Race in the ACP stdio test.
 
 ## [0.1.42] - 2026-10-11
 
