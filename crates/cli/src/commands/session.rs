@@ -336,6 +336,7 @@ pub(super) async fn tui(
             updates,
         },
         keke_tui::SessionDefaults {
+            notifications: config.notifications,
             image_limits: config.images,
             image_root: config.home.workspace_root.as_path().to_path_buf(),
             approval: config.approval_policy,

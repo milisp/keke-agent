@@ -17,6 +17,7 @@ mod input;
 mod keys;
 mod login;
 pub mod mcp;
+mod notify;
 pub mod skills;
 pub use skills::{SkillStatus, Skills, SkillsManage};
 mod picker;
@@ -34,8 +35,10 @@ use std::process::Command;
 use std::sync::Arc;
 
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
@@ -157,6 +160,8 @@ pub struct SessionDefaults {
     /// `$KEKE_HOME`, so `/model` and `/effort` persist past this
     /// process.
     pub config_home: keke_paths::AbsPath,
+    /// How to get a person's attention when they are looking elsewhere.
+    pub notifications: keke_config_types::NotificationConfig,
 }
 
 /// The MCP servers this session has, and how to authorize one.
@@ -268,7 +273,8 @@ pub async fn run(
     let mut terminal = enter()?;
     // Restore the terminal even on error: leaving a person in raw mode with no
     // echo is worse than whatever went wrong.
-    let outcome = event_loop(&mut terminal, app, updates, local, notice_stream).await;
+    let notifier = notify::Notifier::new(defaults.notifications);
+    let outcome = event_loop(&mut terminal, app, updates, local, notice_stream, notifier).await;
     leave(&mut terminal)?;
     outcome
 }
@@ -306,7 +312,12 @@ fn set_mouse_capture(stdout: &mut io::Stdout, capture: bool) -> io::Result<()> {
 fn enter() -> anyhow::Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
     // keke answers the drag itself, so capturing the mouse costs the reader
     // nothing: see `crate::selection`.
     set_mouse_capture(&mut stdout, true)?;
@@ -327,6 +338,7 @@ fn leave(terminal: &mut Tui) -> anyhow::Result<()> {
         backend,
         DisableMouseCapture,
         DisableBracketedPaste,
+        DisableFocusChange,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -347,7 +359,12 @@ fn edit_in_terminal(
     let status = Command::new("vim").arg(path).status();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
     set_mouse_capture(&mut stdout, mouse_capture)?;
     stdout.write_all(ALTERNATE_SCROLL_ON.as_bytes())?;
     stdout.flush()?;
@@ -373,6 +390,7 @@ async fn event_loop(
     mut updates: UnboundedReceiver<Update>,
     mut local: UnboundedReceiver<Update>,
     mut notices: UnboundedReceiver<Notice>,
+    mut notifier: notify::Notifier,
 ) -> anyhow::Result<()> {
     let mut input = EventStream::new();
     let mut capturing = app.mouse_capture();
@@ -427,6 +445,8 @@ async fn event_loop(
                 Some(Ok(Event::Key(key))) => app.handle_key(key),
                 Some(Ok(Event::Mouse(mouse))) => app.handle_mouse(mouse),
                 Some(Ok(Event::Paste(text))) => app.handle_paste(&text),
+                Some(Ok(Event::FocusGained)) => notifier.set_focused(true),
+                Some(Ok(Event::FocusLost)) => notifier.set_focused(false),
                 Some(Ok(_)) => {}
                 // The terminal went away; there is nothing left to draw on.
                 Some(Err(error)) => return Err(error.into()),
@@ -438,6 +458,9 @@ async fn event_loop(
         // terminal's, and the terminal is the event loop's.
         if let Some(text) = app.take_pending_copy() {
             clipboard::copy(&text);
+        }
+        if let Some(message) = app.take_pending_notification() {
+            notifier.notify(&message);
         }
         if let Some(path) = app.take_pending_edit() {
             edit_in_terminal(terminal, capturing, &path)?;

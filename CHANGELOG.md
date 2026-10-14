@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Terminal image attachments from dropped or pasted paths, with asynchronous
   preparation, configurable budgets, and image-preserving rewind and replay.
 - Image-bearing prompts through both ACP protocol versions.
+- Terminal notifications (OSC 9 or bell) when a tool needs approval or a turn
+  finishes while the terminal is unfocused; `[notifications]` in `config.toml`.
 
 ### Changed
 - Session logs record conversation changes incrementally instead of repeating
