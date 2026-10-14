@@ -38,6 +38,9 @@ use keke_config_types::MaxOutputTokens;
 use keke_config_types::MemoryConfig;
 use keke_config_types::ModelCatalogTtl;
 use keke_config_types::ModelSelection;
+use keke_config_types::NotificationCondition;
+use keke_config_types::NotificationConfig;
+use keke_config_types::NotificationMethod;
 use keke_config_types::PluginTimeouts;
 use keke_config_types::ProviderDeclaration;
 use keke_config_types::ReasoningEffort;
@@ -96,6 +99,8 @@ pub struct Config {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub compaction: CompactionConfig,
     pub checkpoints: CheckpointConfig,
+    /// How the terminal interface gets a person's attention.
+    pub notifications: NotificationConfig,
     /// Budgets for plugin-supplied programs.
     pub plugins: PluginTimeouts,
     /// Bounds on the subagents a session may run at once.
@@ -146,6 +151,7 @@ pub struct ConfigFile {
     pub reasoning_effort: Option<String>,
     pub compaction: Option<CompactionFile>,
     pub checkpoints: Option<CheckpointFile>,
+    pub notifications: Option<NotificationsFile>,
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
     pub background: Option<BackgroundFile>,
@@ -187,6 +193,16 @@ pub struct CheckpointFile {
     pub keep_days: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tree_mb: Option<u32>,
+}
+
+/// The notification section, separated so a layer can override one field.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct NotificationsFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<NotificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<NotificationCondition>,
 }
 
 /// The compaction section, separated so a layer can override one field of it.
@@ -452,6 +468,13 @@ impl Config {
                 base.keep_days = checkpoints.keep_days.or(base.keep_days);
                 base.max_tree_mb = checkpoints.max_tree_mb.or(base.max_tree_mb);
             }
+            if let Some(notifications) = layer.file.notifications {
+                let base = merged
+                    .notifications
+                    .get_or_insert_with(NotificationsFile::default);
+                base.method = notifications.method.or(base.method);
+                base.condition = notifications.condition.or(base.condition);
+            }
             if let Some(plugins) = layer.file.plugins {
                 let base = merged.plugins.get_or_insert_with(PluginsFile::default);
                 base.hook_timeout_millis = plugins.hook_timeout_millis.or(base.hook_timeout_millis);
@@ -528,6 +551,12 @@ impl Config {
             context_window: compaction_file
                 .context_window
                 .unwrap_or(CompactionConfig::default().context_window),
+        };
+
+        let notification_file = merged.notifications.unwrap_or_default();
+        let notifications = NotificationConfig {
+            method: notification_file.method.unwrap_or_default(),
+            condition: notification_file.condition.unwrap_or_default(),
         };
 
         let checkpoint_file = merged.checkpoints.unwrap_or_default();
@@ -806,6 +835,7 @@ impl Config {
             reasoning_effort,
             compaction,
             checkpoints,
+            notifications,
             plugins,
             subagents,
             background,
@@ -1075,6 +1105,39 @@ mod tests {
 
         assert_eq!(config.compaction.trigger_percent, 60);
         assert_eq!(config.compaction.keep_recent_messages, 8);
+    }
+
+    #[test]
+    fn notifications_default_to_a_banner_or_bell_only_while_unfocused() {
+        let config = Config::from_layers(home(), &[]).expect("defaults");
+        assert_eq!(config.notifications.method, NotificationMethod::Auto);
+        assert_eq!(
+            config.notifications.condition,
+            NotificationCondition::Unfocused
+        );
+    }
+
+    #[test]
+    fn a_layer_can_turn_notifications_off_without_touching_the_condition() {
+        let layers = vec![
+            layer("user", "[notifications]\ncondition = \"always\"\n"),
+            layer("project", "[notifications]\nmethod = \"off\"\n"),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.notifications.method, NotificationMethod::Off);
+        assert_eq!(
+            config.notifications.condition,
+            NotificationCondition::Always
+        );
+    }
+
+    #[test]
+    fn a_misspelled_notification_method_is_refused_rather_than_ignored() {
+        let parsed = ConfigLayer::parse(
+            LayerSource::Inline("user".to_string()),
+            "[notifications]\nmethod = \"beep\"\n",
+        );
+        assert!(parsed.is_err());
     }
 
     #[test]

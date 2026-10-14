@@ -260,6 +260,10 @@ pub struct App {
     /// Text waiting to go to the clipboard. Held rather than written here so
     /// the state tests never touch a terminal.
     pending_copy: Option<String>,
+    /// Words for a notification the event loop should consider sending. Held
+    /// for the same reason as `pending_copy`: whether to send depends on
+    /// terminal focus, which only the loop knows, and sending touches stdout.
+    pending_notification: Option<String>,
     /// A plan file waiting to be opened in the person's editor. Held rather
     /// than spawned here for the same reason as `pending_copy`: only the
     /// event loop owns the terminal's raw mode, so only it can suspend it.
@@ -365,6 +369,7 @@ impl App {
                 subagent_recording: subagents::Recording::default(),
                 flash: None,
                 pending_copy: None,
+                pending_notification: None,
                 pending_edit: None,
                 selection: crate::selection::Selection::default(),
                 should_quit: false,
@@ -856,6 +861,7 @@ impl App {
             }
             Update::PermissionRequested { id, call, reason } => {
                 self.turn = Turn::AwaitingPermission;
+                self.pending_notification = Some(format!("Approval requested: {}", call.name));
                 // A plan is not a tool prompt with a plan attached: it is the
                 // plan, so it goes into the scrollback as one.
                 if call.name == plan::EXIT_PLAN_MODE {
@@ -865,6 +871,11 @@ impl App {
                 }
             }
             Update::TurnEnded(reason) => {
+                // Not for a turn the person stopped themselves: they were
+                // there for it.
+                if !matches!(reason, StopReason::Cancelled) {
+                    self.pending_notification = Some("Turn complete".to_string());
+                }
                 self.end_turn();
                 self.transcript.seal();
                 if let StopReason::Refusal { message } = reason {

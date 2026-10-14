@@ -1064,6 +1064,49 @@ impl Default for CheckpointConfig {
     }
 }
 
+/// How the terminal interface gets a person's attention when keke needs them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationMethod {
+    /// A desktop notification where the terminal is known to show one, the
+    /// bell everywhere else.
+    #[default]
+    Auto,
+    /// An OSC 9 desktop notification, whether or not keke recognises the
+    /// terminal as one that shows it.
+    Osc9,
+    /// The terminal bell, which every terminal at least ignores.
+    Bel,
+    /// Never interrupt.
+    Off,
+}
+
+/// When a notification is worth sending.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationCondition {
+    /// Only while the terminal does not have focus: a person looking at the
+    /// screen has been told already by the screen.
+    #[default]
+    Unfocused,
+    /// Regardless of focus, for someone who watches a different pane or
+    /// monitor of the same terminal window.
+    Always,
+}
+
+/// When and how the terminal interface interrupts a person who is looking
+/// elsewhere, to say a tool needs approval or a turn has finished.
+///
+/// A validated field rather than a constant in the interface because it is a
+/// taste that varies by desk: a bell is welcome in one terminal and a nuisance
+/// in the next, and whether a notification should fire while the window is in
+/// front is not something keke can know.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationConfig {
+    pub method: NotificationMethod,
+    pub condition: NotificationCondition,
+}
+
 /// How long a fetched model catalog stays usable without asking the vendor
 /// again.
 ///

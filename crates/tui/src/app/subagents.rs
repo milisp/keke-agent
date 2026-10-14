@@ -336,4 +336,9 @@ impl App {
     pub fn take_pending_copy(&mut self) -> Option<String> {
         self.pending_copy.take()
     }
+
+    /// Taken by the event loop, which decides whether the person needs telling.
+    pub fn take_pending_notification(&mut self) -> Option<String> {
+        self.pending_notification.take()
+    }
 }

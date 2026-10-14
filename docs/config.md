@@ -357,6 +357,19 @@ enabled = true
 keep_days = 14
 max_tree_mb = 2048
 
+# Getting your attention when the terminal is not in front of you: a tool is
+# waiting for approval, or a turn has finished (not one you stopped yourself).
+#   method    "auto" (default) | "osc9" | "bel" | "off"
+#             auto sends an OSC 9 desktop notification in terminals known to show
+#             one (Ghostty, iTerm2, kitty, WezTerm, Warp) and the bell elsewhere.
+#             Inside tmux, OSC 9 needs `set -g allow-passthrough on`.
+#   condition "unfocused" (default) | "always"
+#             unfocused needs a terminal that reports focus changes; one that
+#             does not is treated as focused, so it never notifies.
+[notifications]
+method = "auto"
+condition = "unfocused"
+
 # Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
 model_catalog_ttl_seconds = 21600  # 6 hours default
 

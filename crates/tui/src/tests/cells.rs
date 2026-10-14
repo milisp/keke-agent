@@ -1116,3 +1116,35 @@ fn ctrl_left_and_right_jump_words_in_input_box() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
     assert_eq!(app.input.cursor(), (0, 17));
 }
+
+#[test]
+fn a_finished_turn_asks_the_loop_to_tell_the_person() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::TurnStarted);
+    app.apply(Update::TurnEnded(StopReason::EndTurn));
+    assert!(app.take_pending_notification().is_some());
+    assert!(
+        app.take_pending_notification().is_none(),
+        "one turn, one notification"
+    );
+}
+
+#[test]
+fn a_turn_the_person_stopped_does_not_notify_them_of_it() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::TurnStarted);
+    app.apply(Update::TurnEnded(StopReason::Cancelled));
+    assert!(app.take_pending_notification().is_none());
+}
+
+#[tokio::test]
+async fn a_tool_waiting_for_approval_asks_the_loop_to_tell_the_person() {
+    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::PermissionRequested {
+        id: PermissionId("p1".to_string()),
+        call: call("c1", "bash"),
+        reason: "runs a command".to_string(),
+    });
+    let message = app.take_pending_notification().expect("a notification");
+    assert!(message.contains("bash"), "{message}");
+}
