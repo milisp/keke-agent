@@ -47,6 +47,17 @@ fn apply_memory_dir(config: &mut Config, flag: Option<&std::path::Path>) -> Resu
     Ok(())
 }
 
+/// Add `--require-approval` / `KEKE_REQUIRE_APPROVAL` to the configured rules.
+/// Blank entries from the env var (`KEKE_REQUIRE_APPROVAL=` or a trailing
+/// comma) are not rules; anything else goes through the same check as the file.
+fn apply_approval_rules(config: &mut Config, flags: Vec<String>) -> Result<()> {
+    let mut rules = std::mem::take(&mut config.require_approval);
+    rules.extend(flags.into_iter().filter(|rule| !rule.trim().is_empty()));
+    config.require_approval =
+        keke_config::check_approval_rules(rules).map_err(|message| anyhow::anyhow!(message))?;
+    Ok(())
+}
+
 pub(crate) async fn run(cli: Cli) -> Result<()> {
     let cwd = match &cli.cwd {
         Some(path) => path.clone(),
@@ -88,6 +99,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         config.instructions = Some(instructions);
     }
     apply_memory_dir(&mut config, cli.memory_dir.as_deref())?;
+    apply_approval_rules(&mut config, cli.require_approval)?;
 
     // Only the interactive surface can answer an approval request, so only it
     // installs the bridge; everything else runs with the engine's default.
@@ -436,6 +448,7 @@ async fn session_builder(
             checkpoints: config.checkpoints,
             instructions: config.instructions.clone(),
             approval,
+            required_approvals: config.require_approval.clone(),
         })
         .provider(provider)
         .extensions(composed.extensions.clone())
@@ -555,6 +568,18 @@ mod tests {
             &[layer],
         )
         .expect("merges")
+    }
+
+    #[test]
+    fn approval_rule_flags_add_to_configuration() {
+        let mut config = memory_config(None);
+        config.require_approval = vec!["*stripe*".to_string()];
+        apply_approval_rules(
+            &mut config,
+            vec!["*:send_*".into(), " ".into(), "*STRIPE*".into()],
+        )
+        .expect("applies");
+        assert_eq!(config.require_approval, vec!["*stripe*", "*:send_*"]);
     }
 
     #[test]

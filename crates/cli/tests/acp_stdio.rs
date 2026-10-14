@@ -215,6 +215,114 @@ async fn an_editor_prompts_keke_and_answers_its_permission_request() {
     );
 }
 
+/// A `require_approval` rule reaches a person even under `never`: the request
+/// is marked as person-required, offers no standing answer, and initialize
+/// confirms the rule support a client may insist on before starting.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approval_rule_asks_the_editor_even_under_never() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let workspace = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "approval_policy = \"never\"\n",
+    )
+    .expect("configure never");
+    let server = MockInferenceServer::start().await;
+    server.script(
+        Endpoint::ChatCompletions,
+        Reply::tool_call("bash", serde_json::json!({ "command": "echo hello" })),
+    );
+    server.script(Endpoint::ChatCompletions, Reply::text("it was declined"));
+
+    let agent = AcpAgent::new(
+        AcpAgentConfig::new(env!("CARGO_BIN_EXE_keke"))
+            .args(["agent", "stdio"])
+            .env("KEKE_HOME", home.path().display().to_string())
+            .env("KEKE_CREDENTIAL_STORE", "file")
+            .env("KEKE_IMPORT", "off")
+            .env("KEKE_PROVIDER", "grok")
+            .env("KEKE_MODEL", "grok-4.6")
+            .env("KEKE_REQUIRE_APPROVAL", "BASH")
+            .env("XAI_BASE_URL", server.base_url())
+            .env("XAI_API_KEY", "test-key"),
+    );
+
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let confirmed = Arc::new(Mutex::new(None));
+    agent_client_protocol::Client
+        .v2()
+        .on_receive_request(
+            {
+                let asked = Arc::clone(&asked);
+                async move |request: RequestPermissionRequest, responder, _cx| {
+                    let options: Vec<String> = request
+                        .options
+                        .iter()
+                        .map(|option| option.option_id.0.to_string())
+                        .collect();
+                    let marked = request
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("keke.dev/person-required"))
+                        .cloned();
+                    asked.lock().expect("lock").push((options, marked));
+                    responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            "deny".to_string(),
+                        )),
+                    ))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(agent, {
+            let cwd = workspace.path().to_path_buf();
+            let confirmed = Arc::clone(&confirmed);
+            |connection: V2ConnectionTo<Agent>| async move {
+                let init = connection
+                    .send_request(InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        Implementation::new("test-editor", "0.0.0"),
+                    ))
+                    .block_task()
+                    .await?;
+                *confirmed.lock().expect("lock") = init
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("keke.dev/require-approval"))
+                    .cloned();
+                let session = connection
+                    .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
+                    .block_task()
+                    .await?
+                    .session_id;
+                connection
+                    .send_request(PromptRequest::new(
+                        session,
+                        vec![ContentBlock::Text(TextContent::new("say hello"))],
+                    ))
+                    .block_task()
+                    .await?;
+                Ok(())
+            }
+        })
+        .await
+        .expect("the ACP session runs to completion");
+
+    assert_eq!(
+        *confirmed.lock().expect("lock"),
+        Some(serde_json::Value::Bool(true))
+    );
+    assert_eq!(
+        *asked.lock().expect("lock"),
+        vec![(
+            vec!["allow".to_string(), "deny".to_string()],
+            Some(serde_json::Value::Bool(true))
+        )],
+        "never still asks once, marked, with no standing answer"
+    );
+}
+
 /// A second run of the binary must be able to find the first run's session and
 /// pick it up: this is the whole of what `session/list` and `session/resume`
 /// are for, and neither is provable inside one process.

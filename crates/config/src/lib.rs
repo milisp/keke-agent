@@ -84,6 +84,11 @@ pub struct Config {
     /// asked, and plan mode still refuses edits either way — only the exit
     /// stops being a question.
     pub require_plan_approval: bool,
+    /// Tool-name patterns whose calls always need a person's answer, under
+    /// every approval policy including `auto` and `never`. A standing "allow
+    /// always" never answers for them. Accumulates across layers, so a project
+    /// can add a rule but cannot remove one the person set.
+    pub require_approval: Vec<String>,
     /// How the commands a model runs are confined.
     pub sandbox: SandboxPolicy,
     /// A persona for the agent: who it is and how it should behave, joined
@@ -141,6 +146,8 @@ pub struct ConfigFile {
     pub model: Option<String>,
     pub approval_policy: Option<ApprovalPolicy>,
     pub require_plan_approval: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub require_approval: Vec<String>,
     pub sandbox_mode: Option<SandboxMode>,
     pub sandbox_workspace_write: Option<SandboxWorkspaceWriteFile>,
     pub instructions: Option<String>,
@@ -366,6 +373,9 @@ impl Config {
                 .file
                 .require_plan_approval
                 .or(merged.require_plan_approval);
+            merged
+                .require_approval
+                .extend(layer.file.require_approval.iter().cloned());
             if matches!(layer.source, LayerSource::Project(_)) {
                 check_project_sandbox(&layer.file, &merged, &layer.source)?;
             }
@@ -610,6 +620,15 @@ impl Config {
             });
         }
 
+        let require_approval = check_approval_rules(std::mem::take(&mut merged.require_approval))
+            .map_err(|message| ConfigError::Invalid {
+            path: sources
+                .last()
+                .map(LayerSource::describe)
+                .unwrap_or_else(|| "<defaults>".to_string()),
+            message,
+        })?;
+
         let skills = SkillSelection::new(merged.skills.take().unwrap_or_default().disabled)
             .map_err(|message| ConfigError::Invalid {
                 path: sources
@@ -805,6 +824,7 @@ impl Config {
             model,
             approval_policy: merged.approval_policy.unwrap_or_default(),
             require_plan_approval: merged.require_plan_approval.unwrap_or(false),
+            require_approval,
             sandbox: {
                 let section = merged.sandbox_workspace_write.unwrap_or_default();
                 let policy = SandboxPolicy {
@@ -866,6 +886,23 @@ impl Config {
 /// never widen it. The refusal is an error rather than a quiet clamp: a
 /// maintainer who wrote the looser value meant something by it, and the
 /// person cloning should learn what was asked and where to grant it.
+/// Normalize `require_approval`: trimmed, de-duplicated, never empty. An empty
+/// entry is refused rather than dropped, because a rule that silently matches
+/// nothing is a guard the person believes is there and is not.
+pub fn check_approval_rules(rules: Vec<String>) -> Result<Vec<String>, String> {
+    let mut checked: Vec<String> = Vec::new();
+    for rule in rules {
+        let rule = rule.trim();
+        if rule.is_empty() {
+            return Err("require_approval entries must not be empty".to_string());
+        }
+        if !checked.iter().any(|seen| seen.eq_ignore_ascii_case(rule)) {
+            checked.push(rule.to_string());
+        }
+    }
+    Ok(checked)
+}
+
 fn check_project_sandbox(
     project: &ConfigFile,
     beneath: &ConfigFile,
@@ -1862,6 +1899,28 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn approval_rules_accumulate_and_projects_may_add_them() {
+        let layers = vec![
+            layer("user", "require_approval = [\"*stripe*\", \"*:send_*\"]\n"),
+            layer(
+                "project",
+                "require_approval = [\"*delete*\", \"*STRIPE*\"]\n",
+            ),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(
+            config.require_approval,
+            vec!["*stripe*", "*:send_*", "*delete*"]
+        );
+    }
+
+    #[test]
+    fn an_empty_approval_rule_is_refused() {
+        let layers = vec![layer("user", "require_approval = [\" \"]\n")];
+        assert!(Config::from_layers(home(), &layers).is_err());
     }
 
     #[test]

@@ -52,6 +52,9 @@ pub struct PermissionCell {
     pub summary: String,
     pub reason: String,
     pub network_domain: Option<String>,
+    /// Only a person may answer, and only for this call, so there is no
+    /// "always allow" to offer.
+    pub once_only: bool,
 }
 
 /// A plan the agent asked to leave plan mode with.
@@ -326,7 +329,13 @@ impl Transcript {
         true
     }
 
-    pub fn request_permission(&mut self, id: PermissionId, call: &ToolCall, reason: String) {
+    pub fn request_permission(
+        &mut self,
+        id: PermissionId,
+        call: &ToolCall,
+        reason: String,
+        once_only: bool,
+    ) {
         self.sealed = true;
         self.open_permission = Some(PermissionCell {
             id,
@@ -338,6 +347,7 @@ impl Transcript {
                 .get("requested_network_domain")
                 .and_then(|d| d.as_str())
                 .map(str::to_owned),
+            once_only,
         });
     }
 

@@ -161,6 +161,13 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     let mut approval_note = None;
     let mut capabilities = tool.capabilities();
     capabilities.approval = tool.call_approval(workspace_root, &call.arguments);
+    // A `require_approval` rule outranks the tool's own answer and the policy:
+    // the person named this tool as one nobody else decides for, so neither
+    // an automatic reviewer nor `never` may stand in for them.
+    let rule = memory.required_rule(&call.name).map(str::to_string);
+    if rule.is_some() {
+        capabilities.approval = ApprovalRequirement::Always;
+    }
     let domains = tool.network_domains(&call.arguments);
     let ports = tool.local_network_ports(&call.arguments);
     let listener_ports = tool.local_listener_ports(&call.arguments);
@@ -210,7 +217,12 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
     if let Some(reason) = approval_reason(policy, &capabilities)
         && !standing
     {
+        let reason = match &rule {
+            Some(rule) => format!("matches the approval rule `{rule}`; needs a person's answer"),
+            None => reason,
+        };
         let request = ApprovalRequest {
+            person_required: capabilities.approval == ApprovalRequirement::Always,
             call: call.clone(),
             reason: if !needs_network_review
                 && ports.is_empty()
@@ -460,6 +472,7 @@ impl keke_tool::PermissionReviewer for RuntimePermissionReviewer {
                         self.call.name, self.call.arguments
                     ),
                     evidence: None,
+                    person_required: false,
                 };
                 match review(
                     &self.registry,

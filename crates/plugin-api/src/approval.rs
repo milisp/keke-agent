@@ -13,6 +13,11 @@ pub struct ApprovalRequest {
     /// sandbox escape, the last sandboxed `bash` call and what it returned. A
     /// reviewer weighing the model's justification needs the failure itself.
     pub evidence: Option<String>,
+    /// Only a person may answer, and only for this call: the tool always asks,
+    /// or a `require_approval` rule matched. A surface should not offer a
+    /// standing "allow always" for it, and a client answering on someone's
+    /// behalf (an unattended run) must not answer it at all.
+    pub person_required: bool,
 }
 
 /// The answer to an [`ApprovalRequest`].

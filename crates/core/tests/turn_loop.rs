@@ -407,6 +407,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         checkpoints: CheckpointConfig::default(),
         instructions: None,
         approval,
+        required_approvals: Vec::new(),
     }
 }
 
@@ -1520,6 +1521,16 @@ async fn run_with_requirement(
     automatic: bool,
     requirement: ApprovalRequirement,
 ) -> (Vec<SessionEvent>, Vec<String>) {
+    run_with_rules(decision, policy, automatic, requirement, Vec::new()).await
+}
+
+async fn run_with_rules(
+    decision: Option<ApprovalDecision>,
+    policy: ApprovalPolicy,
+    automatic: bool,
+    requirement: ApprovalRequirement,
+    rules: Vec<String>,
+) -> (Vec<SessionEvent>, Vec<String>) {
     let harness = harness();
     let (provider, _seen) = ScriptedProvider::new(dangerous_calls());
 
@@ -1537,8 +1548,10 @@ async fn run_with_requirement(
         None => Arc::new(Mutex::new(Vec::new())),
     };
 
+    let mut config = session_config_with(&harness.home, policy);
+    config.required_approvals = rules;
     let mut session = SessionBuilder::new()
-        .config(session_config_with(&harness.home, policy))
+        .config(config)
         .provider(provider)
         .extensions(extensions.build())
         .build()
@@ -1553,6 +1566,62 @@ async fn run_with_requirement(
     let events = events.into_iter().map(|entry| entry.event).collect();
     let asked = asked.lock().expect("lock").clone();
     (events, asked)
+}
+
+/// A `require_approval` rule is a person's decision under every policy: `never`
+/// still asks, a standing "allow always" does not answer the next call, and an
+/// automatic reviewer is not a person.
+#[tokio::test]
+async fn an_approval_rule_asks_a_person_under_every_policy() {
+    for policy in [
+        ApprovalPolicy::Never,
+        ApprovalPolicy::OnRequest,
+        ApprovalPolicy::Auto,
+    ] {
+        let (events, asked) = run_with_rules(
+            Some(ApprovalDecision::AllowAlways),
+            policy,
+            false,
+            ApprovalRequirement::ByPolicy,
+            vec!["DANGER*".to_string()],
+        )
+        .await;
+        assert_eq!(
+            asked,
+            vec!["dangerous".to_string(), "dangerous".to_string()],
+            "{policy:?}: every call is asked about"
+        );
+        assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
+    }
+    let (events, asked) = run_with_rules(
+        Some(ApprovalDecision::Allow { note: None }),
+        ApprovalPolicy::Auto,
+        true,
+        ApprovalRequirement::ByPolicy,
+        vec!["dangerous".to_string()],
+    )
+    .await;
+    assert!(
+        asked.is_empty(),
+        "the automatic reviewer must not answer: {asked:?}"
+    );
+    assert_eq!(
+        statuses(&events),
+        vec![ToolStatus::Denied, ToolStatus::Denied]
+    );
+    let (events, asked) = run_with_rules(
+        Some(ApprovalDecision::Allow { note: None }),
+        ApprovalPolicy::Never,
+        false,
+        ApprovalRequirement::ByPolicy,
+        vec!["other*".to_string()],
+    )
+    .await;
+    assert!(
+        asked.is_empty(),
+        "a rule that does not match changes nothing"
+    );
+    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
 }
 
 fn statuses(events: &[SessionEvent]) -> Vec<ToolStatus> {

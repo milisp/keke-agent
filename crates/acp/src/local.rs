@@ -55,6 +55,7 @@ struct Pending {
     id: PermissionId,
     call: ToolCall,
     reason: String,
+    person_required: bool,
 }
 
 /// The stream of requests the bridge raises. Handed straight to [`local`].
@@ -152,6 +153,7 @@ impl ApprovalReviewContributor for Approvals {
                     id: id.clone(),
                     call: request.call.clone(),
                     reason: request.reason.clone(),
+                    person_required: request.person_required,
                 })
                 .ok()?;
 
@@ -603,9 +605,17 @@ async fn publish(
                 None => break,
             },
             request = requests.recv() => match request {
-                Some(Pending { id, call, reason }) => {
-                    Update::PermissionRequested { id, call, reason }
-                }
+                Some(Pending {
+                    id,
+                    call,
+                    reason,
+                    person_required,
+                }) => Update::PermissionRequested {
+                    id,
+                    call,
+                    reason,
+                    person_required,
+                },
                 None => continue,
             },
             rows = subagents.recv() => match rows {
@@ -938,6 +948,7 @@ mod tests {
             },
             reason: "runs a command".to_string(),
             evidence: None,
+            person_required: false,
         }
     }
 

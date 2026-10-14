@@ -686,6 +686,7 @@ async fn pump(
                 id: permission,
                 call,
                 reason,
+                person_required,
             } => {
                 // Asked and answered on this task rather than the dispatch
                 // loop, which is what makes waiting for the reply safe.
@@ -695,7 +696,11 @@ async fn pump(
                     format!("{}: {reason}", shown.title),
                     {
                         let mut options = permission_options();
-                        if call
+                        if person_required {
+                            // A standing answer would decide later calls for
+                            // the person, which is what the rule forbids.
+                            options.retain(|o| o.kind != PermissionOptionKind::AllowAlways);
+                        } else if call
                             .arguments
                             .get("requested_network_domain")
                             .and_then(|d| d.as_str())
@@ -716,6 +721,10 @@ async fn pump(
                         .kind(tool_kind(shown.kind))
                         .raw_input(call.arguments.clone()),
                 ));
+                let request = match super::permission_meta(person_required) {
+                    Some(meta) => request.meta(meta),
+                    None => request,
+                };
                 let answer = match cx.send_request(request).block_task().await {
                     Ok(response) => chosen(&response.outcome),
                     // The client went away or refused; denying is the only safe

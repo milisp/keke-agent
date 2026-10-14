@@ -532,6 +532,15 @@ requiring isolation must request the startup option and verify this exact
 active value before authentication or opening a session; a version number or
 successful process launch is insufficient evidence.
 
+The same `_meta` carries `"keke.dev/require-approval": true`: `require_approval`
+rules are enforced in `dispatch`, before review, by raising a matching call to
+`ApprovalRequirement::Always`, which no policy, automatic reviewer or standing
+grant answers. The resulting `session/request_permission` carries
+`_meta["keke.dev/person-required"] = true` and no allow-always option, so a
+client answering unattended can tell it must not decide. Rules live in the
+session's `ApprovalMemory`, fixed at construction; subagents are built from the
+parent's recipe and inherit them.
+
 The single composition root selects MCP sources before registration and
 process startup. Authentication discovery uses the same policy. Plugin
 resolution still runs the repository trust gate, and trusted non-MCP plugin
