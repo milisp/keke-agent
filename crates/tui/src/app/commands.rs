@@ -31,6 +31,23 @@ impl App {
                 self.scroll.follow();
             }
             SlashAction::Builtin(Builtin::New) => self.start_new_session(),
+            SlashAction::Builtin(Builtin::Compact) => {
+                let conversation = Arc::clone(&self.conversation);
+                let local = self.local.clone();
+                tokio::spawn(async move {
+                    match conversation.compact().await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let _ = local.send(Update::Failed(
+                                "nothing to compact: the conversation is too short".to_string(),
+                            ));
+                        }
+                        Err(error) => {
+                            let _ = local.send(Update::Failed(error.to_string()));
+                        }
+                    }
+                });
+            }
             SlashAction::Builtin(Builtin::Quit) => self.should_quit = true,
             SlashAction::Builtin(Builtin::Copy) => self.copy_last_reply(),
             SlashAction::Builtin(Builtin::Export) => self.export_command(arguments),

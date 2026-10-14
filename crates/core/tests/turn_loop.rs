@@ -1431,6 +1431,50 @@ async fn a_history_past_its_budget_is_summarized_before_the_next_turn() {
     assert_eq!(resumed.history, session.history());
 }
 
+/// A person asking to compact is not asking the history to cross a threshold:
+/// it must work on a conversation the automatic trigger would leave alone.
+#[tokio::test]
+async fn a_requested_compaction_summarizes_a_history_under_budget() {
+    let harness = harness();
+    let (provider, seen) = ScriptedProvider::new(vec![
+        text_reply("first"),
+        text_reply("second"),
+        text_reply("NOTES: two short turns."),
+    ]);
+    let mut config = session_config(&harness.home);
+    config.compaction = CompactionConfig {
+        trigger_percent: 80,
+        keep_recent_messages: 1,
+        context_window: 1_000_000,
+    };
+    let mut session = SessionBuilder::new()
+        .config(config)
+        .provider(provider)
+        .build()
+        .await
+        .expect("builds");
+
+    assert!(
+        !session.compact_now().await.expect("compacts"),
+        "an empty history has nothing to summarize"
+    );
+    session.run_turn(Message::user("one")).await.expect("one");
+    session.run_turn(Message::user("two")).await.expect("two");
+    assert!(session.compact_now().await.expect("compacts"));
+
+    assert_eq!(seen.lock().expect("lock").len(), 3);
+    let texts: Vec<String> = session.history().iter().map(Message::text).collect();
+    assert!(
+        texts.iter().any(|text| text.contains("two short turns")),
+        "{texts:?}"
+    );
+    let log = read_log(session.log_path()).expect("reads");
+    assert!(
+        log.iter()
+            .any(|entry| matches!(entry.event, SessionEvent::Compacted { .. }))
+    );
+}
+
 // ------------------------------------------------------------------- approval
 
 /// Two calls to the same tool, so a standing permission has something to cover.

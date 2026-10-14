@@ -825,6 +825,25 @@ impl App {
                     )));
                 }
             }
+            Update::CompactionStarted => {
+                self.begin_turn();
+                self.thinking = true;
+            }
+            Update::CompactionFailed => {
+                self.begin_turn();
+                self.transcript.push(Cell::Notice(
+                    "context compaction failed; continuing with full history".to_string(),
+                ));
+            }
+            Update::Compacted {
+                removed_messages,
+                retained_messages,
+            } => {
+                self.begin_turn();
+                self.transcript.push(Cell::Notice(format!(
+                    "context compacted: {removed_messages} earlier messages summarized, {retained_messages} kept"
+                )));
+            }
             Update::TokensUsed(usage) => {
                 if usage.cached_input_tokens > 0 {
                     self.last_cache_hit_tokens = Some(usage.cached_input_tokens);

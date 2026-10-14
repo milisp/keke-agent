@@ -74,6 +74,28 @@ pub enum TurnUpdate {
         turn: TurnId,
         usage: Usage,
     },
+    /// Summarizing began. The summary is a model call, so without this a turn
+    /// that compacts looks hung for as long as that call takes.
+    CompactionStarted {
+        turn: TurnId,
+    },
+    /// Summarizing produced nothing usable and the turn proceeds uncompacted.
+    /// Live because the log only records success: a person whose next request
+    /// is then rejected for length should be able to see why.
+    CompactionFailed {
+        turn: TurnId,
+    },
+    /// History was compacted before the turn's first model call; see
+    /// [`keke_protocol::SessionEvent::Compacted`].
+    ///
+    /// Live as well as logged: the summary swaps out messages a person was
+    /// looking at, and a surface that said nothing would show a model that
+    /// suddenly remembers less.
+    Compacted {
+        turn: TurnId,
+        removed_messages: usize,
+        retained_messages: usize,
+    },
     TurnEnded {
         turn: TurnId,
         stop_reason: StopReason,
