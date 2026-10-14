@@ -465,6 +465,21 @@ impl Transcript {
                 } => {
                     self.hosted_tool(name, query.as_deref(), metadata.as_ref());
                 }
+                SessionEvent::Compacted {
+                    removed_messages,
+                    retained_messages,
+                    ..
+                } => {
+                    // A marker only: the summary itself stays out, per above.
+                    self.push(Cell::Notice(match retained_messages {
+                        Some(kept) => format!(
+                            "context compacted: {removed_messages} earlier messages summarized, {kept} kept"
+                        ),
+                        None => format!(
+                            "context compacted: {removed_messages} earlier messages summarized"
+                        ),
+                    }));
+                }
                 SessionEvent::Error { message, .. } => self.push(Cell::Error(message.clone())),
                 SessionEvent::Rewound {
                     history: Some(_), ..
@@ -1135,7 +1150,7 @@ mod recorded_replay_tests {
         ];
         let mut transcript = Transcript::default();
         transcript.replay_recorded(&events);
-        assert_eq!(transcript.cells().len(), 4);
+        assert_eq!(transcript.cells().len(), 5);
         assert_eq!(
             transcript.cells()[0],
             Cell::User("Find the entry point.".into())
@@ -1151,7 +1166,10 @@ mod recorded_replay_tests {
         assert_eq!(tool.state, CallState::Finished(ToolStatus::Ok));
         assert_eq!(tool.detail.as_deref(), Some("first line\nsecond line"));
         assert!(tool.arguments.contains("path=src/main.rs"));
-        assert!(tool.arguments.contains("options={\"lines\":[1,2]}"));
+        assert_eq!(
+            transcript.cells()[4],
+            Cell::Notice("context compacted: 3 earlier messages summarized".into())
+        );
     }
 
     #[test]

@@ -214,6 +214,10 @@ enum Command {
         message: Message,
         done: oneshot::Sender<Result<(), String>>,
     },
+    /// Summarize the older history now.
+    Compact {
+        done: oneshot::Sender<Result<bool, String>>,
+    },
     /// Replace the running session with a fresh one built from `recipe`.
     NewSession {
         done: oneshot::Sender<Result<Switches, String>>,
@@ -424,6 +428,13 @@ async fn local_in(
                         .map_err(|error| error.to_string());
                     let _ = done.send(outcome);
                 }
+                Command::Compact { done } => {
+                    let outcome = session
+                        .compact_now()
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = done.send(outcome);
+                }
                 Command::RewindPoints { done } => {
                     let points = session
                         .rewind_points()
@@ -630,6 +641,16 @@ fn translate(turn: TurnUpdate) -> Update {
             metadata,
         },
         TurnUpdate::StepUsage { usage, .. } => Update::TokensUsed(usage),
+        TurnUpdate::CompactionStarted { .. } => Update::CompactionStarted,
+        TurnUpdate::CompactionFailed { .. } => Update::CompactionFailed,
+        TurnUpdate::Compacted {
+            removed_messages,
+            retained_messages,
+            ..
+        } => Update::Compacted {
+            removed_messages,
+            retained_messages,
+        },
         TurnUpdate::TurnEnded { stop_reason, .. } => Update::TurnEnded(stop_reason),
     }
 }
@@ -794,6 +815,19 @@ impl Conversation for LocalConversation {
             let (done, answer) = oneshot::channel();
             self.commands
                 .send(Command::Rewind { nth, scope, done })
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
+            answer
+                .await
+                .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?
+                .map_err(ConversationError::Agent)
+        })
+    }
+
+    fn compact(&self) -> ConversationFuture<'_, Result<bool, ConversationError>> {
+        Box::pin(async move {
+            let (done, answer) = oneshot::channel();
+            self.commands
+                .send(Command::Compact { done })
                 .map_err(|_| ConversationError::Disconnected("the session ended".to_string()))?;
             answer
                 .await

@@ -511,6 +511,41 @@ async fn pump(
             // ACP has no place for token accounting today, and inventing a
             // message for it would be keke's dialect rather than the protocol.
             Update::TokensUsed(_) => {}
+            Update::CompactionStarted => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::AgentThoughtChunk(chunk(
+                        "[compacting context…]\n",
+                        message_id(turn, "compaction"),
+                    )),
+                )?;
+            }
+            Update::CompactionFailed => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::AgentThoughtChunk(chunk(
+                        "[context compaction failed; continuing with full history]\n",
+                        message_id(turn, "compaction"),
+                    )),
+                )?;
+            }
+            Update::Compacted {
+                removed_messages,
+                retained_messages,
+            } => {
+                notify(
+                    &cx,
+                    &id,
+                    SessionUpdate::AgentThoughtChunk(chunk(
+                        format!(
+                            "[context compacted: {removed_messages} earlier messages summarized, {retained_messages} kept]\n"
+                        ),
+                        message_id(turn, "compaction"),
+                    )),
+                )?;
+            }
             // A mode the agent entered on its own — or the confirmation of one
             // a client asked for. `session/update` carries the whole option set
             // back, so the client's picker follows without asking, and

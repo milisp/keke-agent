@@ -377,12 +377,32 @@ impl Session {
         if !crate::compact::should_compact(&self.history, &self.config.compaction) {
             return Ok(());
         }
+        self.compact_history(turn).await.map(|_| ())
+    }
+
+    /// Compact now, between turns, at a person's request.
+    ///
+    /// Returns whether a summary was attempted: `false` means the history was
+    /// too short to be worth one. The outcome of an attempt, success or
+    /// failure, is announced as an update. Under its own turn id, since the
+    /// log's `Compacted` names one and no turn is running.
+    pub async fn compact_now(&mut self) -> Result<bool, CoreError> {
+        let attempted =
+            crate::compact::split_for_compaction(&self.history, &self.config.compaction).is_some();
+        if attempted {
+            self.compact_history(TurnId::new()).await?;
+        }
+        Ok(attempted)
+    }
+
+    async fn compact_history(&mut self, turn: TurnId) -> Result<bool, CoreError> {
         let Some((older, recent)) =
             crate::compact::split_for_compaction(&self.history, &self.config.compaction)
         else {
-            return Ok(());
+            return Ok(false);
         };
 
+        self.emit(TurnUpdate::CompactionStarted { turn });
         let removed = older.len();
         let mut messages = older.to_vec();
         messages.push(Message::user(crate::compact::SUMMARY_INSTRUCTION));
@@ -412,7 +432,8 @@ impl Session {
             Ok(text) if !text.trim().is_empty() => text,
             Ok(_) | Err(_) => {
                 tracing::warn!("compaction produced no summary; continuing uncompacted");
-                return Ok(());
+                self.emit(TurnUpdate::CompactionFailed { turn });
+                return Ok(false);
             }
         };
 
@@ -426,7 +447,12 @@ impl Session {
         })
         .await?;
         self.history = std::iter::once(summary).chain(recent).collect();
-        Ok(())
+        self.emit(TurnUpdate::Compacted {
+            turn,
+            removed_messages: removed,
+            retained_messages,
+        });
+        Ok(true)
     }
 
     /// Run one model call for keke's own purposes and return just its text.

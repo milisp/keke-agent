@@ -79,6 +79,18 @@ pub enum Update {
     /// decide to stop it.
     TokensUsed(Usage),
     TurnEnded(StopReason),
+    /// Summarizing began; [`Update::Compacted`] or [`Update::CompactionFailed`]
+    /// follows. Lets a surface show progress during the summarizing call.
+    CompactionStarted,
+    /// Summarizing produced nothing; the turn goes on with history intact.
+    CompactionFailed,
+    /// Older history was replaced by a summary before the turn's first model
+    /// call. Surfaces tell the person, since the model now remembers the
+    /// elided messages only through that summary.
+    Compacted {
+        removed_messages: usize,
+        retained_messages: usize,
+    },
     /// Every subagent currently worth showing, oldest first. A whole snapshot
     /// rather than per-agent deltas: the list is short, and a surface that
     /// missed one delta would draw the wrong child status.
@@ -420,6 +432,15 @@ pub trait Conversation: Send + Sync {
     /// Naming a model the provider does not serve is the provider's to refuse,
     /// not this seam's to guess at.
     fn set_model(&self, model: String);
+
+    /// Summarize the older history now instead of waiting for the automatic
+    /// trigger. Progress arrives as [`Update::CompactionStarted`] and
+    /// [`Update::Compacted`] like any other compaction.
+    ///
+    /// `false` means history was too short to be worth summarizing and nothing
+    /// was attempted. A summary that was attempted and failed still answers
+    /// `true`; it has its own update.
+    fn compact(&self) -> ConversationFuture<'_, Result<bool, ConversationError>>;
 
     /// Retire this conversation's history and start over, as if the process
     /// had just been launched again: empty history, usage back to zero, the
@@ -850,6 +871,16 @@ impl Conversation for ScriptedConversation {
         if let Ok(mut seen) = self.models.lock() {
             seen.push(model);
         }
+    }
+
+    fn compact(&self) -> ConversationFuture<'_, Result<bool, ConversationError>> {
+        Box::pin(async move {
+            let _ = self.updates.send(Update::Compacted {
+                removed_messages: 0,
+                retained_messages: 0,
+            });
+            Ok(true)
+        })
     }
 
     fn new_session(&self) -> ConversationFuture<'_, Result<(), ConversationError>> {

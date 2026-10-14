@@ -62,6 +62,9 @@ pub enum Builtin {
     /// Retires the conversation the agent is holding and starts a fresh one:
     /// history and usage go to zero, not just what is drawn on screen.
     New,
+    /// Summarizes the older history now, without waiting for the automatic
+    /// trigger.
+    Compact,
     Quit,
     /// Cycles the reasoning effort, or sets the level named as an argument.
     Effort,
@@ -231,6 +234,11 @@ fn builtins() -> Vec<SlashCommand> {
             Builtin::New,
             "new",
             "start a new session — history, usage, and the transcript all reset",
+        ),
+        (
+            Builtin::Compact,
+            "compact",
+            "summarize the older history now to free up context",
         ),
         (
             Builtin::Effort,
