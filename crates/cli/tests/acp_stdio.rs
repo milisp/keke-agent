@@ -14,6 +14,7 @@ use agent_client_protocol::AcpAgent;
 use agent_client_protocol::AcpAgentConfig;
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectionTo;
+use agent_client_protocol::V2ConnectionTo;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v2::AbsolutePath;
 use agent_client_protocol::schema::v2::ContentBlock;
@@ -154,7 +155,7 @@ async fn an_editor_prompts_keke_and_answers_its_permission_request() {
         )
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 connection
                     .send_request(InitializeRequest::new(
                         ProtocolVersion::V2,
@@ -245,7 +246,7 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
         .v2()
         .connect_with(agent(), {
             let cwd = cwd.clone();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let session = connection
                     .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
@@ -295,7 +296,7 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
         .connect_with(agent(), {
             let cwd = cwd.clone();
             let started = started.clone();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let listed = connection
                     .send_request(ListSessionsRequest::new())
@@ -343,7 +344,9 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
 }
 
 /// The handshake both runs need, kept in one place.
-async fn initialize(connection: &ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error> {
+async fn initialize(
+    connection: &V2ConnectionTo<Agent>,
+) -> Result<(), agent_client_protocol::Error> {
     connection
         .send_request(InitializeRequest::new(
             ProtocolVersion::V2,
@@ -395,7 +398,7 @@ async fn an_editor_switches_the_model_and_the_next_request_uses_it() {
         .v2()
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let session = connection
                     .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
@@ -652,7 +655,7 @@ async fn a_session_with_two_mcp_servers_of_one_name_is_refused_naming_it() {
         .v2()
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let servers = vec![
                     McpServer::Http(McpServerHttp::new("dup", "http://127.0.0.1:1/a")),

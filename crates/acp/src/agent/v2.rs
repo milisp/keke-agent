@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use agent_client_protocol::Agent;
-use agent_client_protocol::ConnectionTo;
+use agent_client_protocol::Responder;
+use agent_client_protocol::V2ConnectionTo;
 use agent_client_protocol::schema::v2::AbsolutePath;
 use agent_client_protocol::schema::v2::AgentCapabilities;
 use agent_client_protocol::schema::v2::AgentMessage;
@@ -190,7 +191,9 @@ pub(super) fn agent(
             {
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
-                async move |request: NewSessionRequest, responder, cx: ConnectionTo<_>| {
+                async move |request: NewSessionRequest,
+                            responder: Responder<NewSessionResponse>,
+                            cx: V2ConnectionTo<_>| {
                     let cwd = request.cwd.clone().into_inner();
                     let opened = factory
                         .open(
@@ -208,7 +211,7 @@ pub(super) fn agent(
         .on_receive_request(
             {
                 let sessions = Arc::clone(&sessions);
-                async move |request: PromptRequest, responder, cx: ConnectionTo<_>| {
+                async move |request: PromptRequest, responder, cx: V2ConnectionTo<_>| {
                     let Some(entry) = sessions.get(request.session_id.0.as_ref()) else {
                         return responder.respond_with_error(unknown_session(&request.session_id));
                     };
@@ -216,6 +219,17 @@ pub(super) fn agent(
                         Ok(message) => message,
                         Err(error) => return responder.respond_with_internal_error(error),
                     };
+                    // v2 names the user's message in the response, and the
+                    // client matches it to a `user_message` update it must
+                    // have been sent during the live session.
+                    let user_id = next_user_message_id();
+                    notify(
+                        &cx,
+                        &request.session_id,
+                        SessionUpdate::UserMessage(
+                            UserMessage::new(user_id.clone()).content(request.prompt.clone()),
+                        ),
+                    )?;
                     // A turn runs for as long as the model does; holding the
                     // dispatch loop for it would stop `session/cancel` from
                     // ever arriving, which is to say it would remove the only
@@ -233,7 +247,7 @@ pub(super) fn agent(
                                 return responder.respond_with_internal_error(error.to_string());
                             }
                         }
-                        responder.respond(PromptResponse::new())
+                        responder.respond(PromptResponse::new(user_id))
                     })?;
                     Ok(())
                 }
@@ -262,7 +276,7 @@ pub(super) fn agent(
             {
                 let sessions = Arc::clone(&sessions);
                 let factory = Arc::clone(&factory);
-                async move |request: ResumeSessionRequest, responder, cx: ConnectionTo<_>| {
+                async move |request: ResumeSessionRequest, responder, cx: V2ConnectionTo<_>| {
                     let cwd = request.cwd.clone().into_inner();
                     let opened = match factory
                         .resume(
@@ -334,7 +348,7 @@ fn start(
     sessions: &Sessions,
     opened: Opened,
     cwd: std::path::PathBuf,
-    cx: &ConnectionTo<agent_client_protocol::Client>,
+    cx: &V2ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), agent_client_protocol::Error> {
     // The id is the one the session is logged under, not one invented here:
     // what a client resumes must be what `session/list` showed it.
@@ -417,7 +431,7 @@ fn category_for(id: &str) -> SessionConfigOptionCategory {
 /// messages is in the log, but a transcript that reruns it would look like work
 /// happening now.
 fn replay(
-    cx: &ConnectionTo<agent_client_protocol::Client>,
+    cx: &V2ConnectionTo<agent_client_protocol::Client>,
     id: &SessionId,
     history: &[keke_protocol::Message],
 ) -> Result<(), agent_client_protocol::Error> {
@@ -492,7 +506,7 @@ async fn pump(
     entry: Arc<Entry>,
     mut updates: UnboundedReceiver<Update>,
     outcomes: UnboundedSender<StopReason>,
-    cx: ConnectionTo<agent_client_protocol::Client>,
+    cx: V2ConnectionTo<agent_client_protocol::Client>,
 ) -> Result<(), agent_client_protocol::Error> {
     // v2 hangs streamed content off a message id, so the chunks of one turn's
     // answer can be recognised as one message. A counter is enough: the ids
@@ -732,7 +746,7 @@ async fn pump(
 /// v2 dropped the stop reason from the `session/prompt` response, so this is
 /// the only place a client learns whether the turn ended or was stopped.
 fn idle(
-    cx: &ConnectionTo<agent_client_protocol::Client>,
+    cx: &V2ConnectionTo<agent_client_protocol::Client>,
     id: &SessionId,
     reason: AcpStopReason,
 ) -> Result<(), agent_client_protocol::Error> {
@@ -745,13 +759,23 @@ fn idle(
     )
 }
 
+/// The id a prompt's user message is echoed and acknowledged under. Unique per
+/// process, which is more than the per-session uniqueness the wire asks for.
+fn next_user_message_id() -> MessageId {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    MessageId::new(format!(
+        "user-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 /// The id the chunks of one message are streamed under.
 fn message_id(turn: u64, kind: &str) -> MessageId {
     MessageId::new(format!("{turn}-{kind}"))
 }
 
 fn notify(
-    cx: &ConnectionTo<agent_client_protocol::Client>,
+    cx: &V2ConnectionTo<agent_client_protocol::Client>,
     id: &SessionId,
     update: SessionUpdate,
 ) -> Result<(), agent_client_protocol::Error> {
