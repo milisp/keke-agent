@@ -428,7 +428,7 @@ impl Session {
             service_tier: self.tier.get(),
         };
 
-        let summary = match self.collect_text(request).await {
+        let summary = match self.collect_text(turn, request).await {
             Ok(text) if !text.trim().is_empty() => text,
             Ok(_) | Err(_) => {
                 tracing::warn!("compaction produced no summary; continuing uncompacted");
@@ -456,8 +456,8 @@ impl Session {
     }
 
     /// Run one model call for keke's own purposes and return just its text.
-    async fn collect_text(&self, request: ModelRequest) -> Result<String, CoreError> {
-        let mut stream = self.stream_with_reauth(request).await?;
+    async fn collect_text(&self, turn: TurnId, request: ModelRequest) -> Result<String, CoreError> {
+        let mut stream = self.stream_with_reauth(turn, request).await?;
         let mut text = String::new();
         while let Some(chunk) = stream.next().await {
             if let StreamChunk::TextDelta(delta) = chunk? {
@@ -492,7 +492,7 @@ impl Session {
         let mut retries = 0;
         let mut retry_delay = INITIAL_STREAM_RETRY_DELAY;
         'request: loop {
-            let mut stream = self.stream_with_reauth(request.clone()).await?;
+            let mut stream = self.stream_with_reauth(turn, request.clone()).await?;
             let mut assembler = MessageAssembler::default();
             let mut emitted = false;
 
@@ -525,6 +525,7 @@ impl Session {
                             error = %error,
                             "retrying provider stream before response output"
                         );
+                        self.emit_retry_notice(turn, retries, delay, &error);
                         tokio::time::sleep(delay).await;
                         retry_delay = retry_delay.saturating_mul(2).min(MAX_STREAM_RETRY_DELAY);
                         continue 'request;
@@ -603,6 +604,20 @@ impl Session {
         }
     }
 
+    /// Tell the surface why the turn is about to pause. The backoff can run to
+    /// seconds, and a turn that stops moving with no explanation reads as hung.
+    fn emit_retry_notice(&self, turn: TurnId, attempt: u8, delay: Duration, error: &ProviderError) {
+        self.emit(TurnUpdate::Notice {
+            turn,
+            severity: crate::NoticeSeverity::Warning,
+            title: "Provider request failed; retrying".to_string(),
+            description: Some(format!(
+                "Retry {attempt} of {MAX_INITIAL_STREAM_RETRIES} in {:.1}s: {error}",
+                delay.as_secs_f32()
+            )),
+        });
+    }
+
     /// Call the provider, refreshing credentials or retrying a transient
     /// initial failure before any response has reached the surface.
     ///
@@ -612,6 +627,7 @@ impl Session {
     /// `retry-after` delay takes precedence over the local backoff.
     async fn stream_with_reauth(
         &self,
+        turn: TurnId,
         request: ModelRequest,
     ) -> Result<keke_provider_api::StreamEvent, CoreError> {
         let mut retry_delay = INITIAL_STREAM_RETRY_DELAY;
@@ -649,6 +665,7 @@ impl Session {
                         error = %error,
                         "retrying initial provider request"
                     );
+                    self.emit_retry_notice(turn, retries, delay, &error);
                     tokio::time::sleep(delay).await;
                     retry_delay = retry_delay.saturating_mul(2).min(MAX_STREAM_RETRY_DELAY);
                 }

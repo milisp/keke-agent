@@ -14,6 +14,7 @@ use agent_client_protocol::AcpAgent;
 use agent_client_protocol::AcpAgentConfig;
 use agent_client_protocol::Agent;
 use agent_client_protocol::ConnectionTo;
+use agent_client_protocol::V2ConnectionTo;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v2::AbsolutePath;
 use agent_client_protocol::schema::v2::ContentBlock;
@@ -154,7 +155,7 @@ async fn an_editor_prompts_keke_and_answers_its_permission_request() {
         )
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 connection
                     .send_request(InitializeRequest::new(
                         ProtocolVersion::V2,
@@ -245,7 +246,7 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
         .v2()
         .connect_with(agent(), {
             let cwd = cwd.clone();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let session = connection
                     .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
@@ -295,7 +296,7 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
         .connect_with(agent(), {
             let cwd = cwd.clone();
             let started = started.clone();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let listed = connection
                     .send_request(ListSessionsRequest::new())
@@ -343,7 +344,9 @@ async fn a_later_run_lists_and_resumes_the_conversation() {
 }
 
 /// The handshake both runs need, kept in one place.
-async fn initialize(connection: &ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error> {
+async fn initialize(
+    connection: &V2ConnectionTo<Agent>,
+) -> Result<(), agent_client_protocol::Error> {
     connection
         .send_request(InitializeRequest::new(
             ProtocolVersion::V2,
@@ -395,7 +398,7 @@ async fn an_editor_switches_the_model_and_the_next_request_uses_it() {
         .v2()
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let session = connection
                     .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
@@ -497,6 +500,97 @@ async fn the_endpoint_on_the_wire_answers_whichever_version_was_asked_for() {
     );
 }
 
+/// A provider that pushes back is retried after a pause, and the pause is the
+/// part a person would otherwise read as a hang: the editor must be told.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retried_provider_call_reaches_the_editor_as_a_notice() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let server = MockInferenceServer::start().await;
+    server.script(
+        Endpoint::ChatCompletions,
+        Reply::status(429).with_header("retry-after", "1"),
+    );
+    server.script(Endpoint::ChatCompletions, Reply::text("worth the wait"));
+
+    let agent = AcpAgent::new(
+        AcpAgentConfig::new(env!("CARGO_BIN_EXE_keke"))
+            .args(["agent", "stdio"])
+            .env("KEKE_HOME", home.path().display().to_string())
+            .env("KEKE_CREDENTIAL_STORE", "file")
+            .env("KEKE_IMPORT", "off")
+            .env("KEKE_PROVIDER", "grok")
+            .env("KEKE_MODEL", "grok-4.6")
+            .env("XAI_BASE_URL", server.base_url())
+            .env("XAI_API_KEY", "test-key"),
+    );
+
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let notices = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    agent_client_protocol::Client
+        .v2()
+        .on_receive_notification(
+            {
+                let seen = Arc::clone(&seen);
+                let notices = Arc::clone(&notices);
+                async move |notification: UpdateSessionNotification, _cx| {
+                    match notification.update {
+                        SessionUpdate::AgentMessageChunk(chunk) => {
+                            if let ContentBlock::Text(text) = chunk.content {
+                                seen.lock().expect("lock").text.push_str(&text.text);
+                            }
+                        }
+                        SessionUpdate::Notice(notice) => {
+                            notices.lock().expect("lock").push(notice.title);
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(agent, {
+            let cwd = workspace.path().to_path_buf();
+            |connection: V2ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        Implementation::new("test-editor", "0.0.0"),
+                    ))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(AbsolutePath::new(cwd)))
+                    .block_task()
+                    .await?
+                    .session_id;
+                connection
+                    .send_request(PromptRequest::new(
+                        session,
+                        vec![ContentBlock::Text(TextContent::new("hello"))],
+                    ))
+                    .block_task()
+                    .await?;
+                Ok(())
+            }
+        })
+        .await
+        .expect("the ACP session runs to completion");
+
+    assert!(
+        seen.lock().expect("lock").text.contains("worth the wait"),
+        "the retry must still end in the answer"
+    );
+    let notices = notices.lock().expect("lock");
+    assert_eq!(
+        notices.len(),
+        1,
+        "one pause, one notice, said before the wait: {notices:?}"
+    );
+}
+
 /// Send one raw request to `keke agent stdio` and read the one raw response.
 fn initialize_over_a_pipe(request: &[u8]) -> serde_json::Value {
     let home = tempfile::tempdir().expect("tempdir");
@@ -514,16 +608,19 @@ fn initialize_over_a_pipe(request: &[u8]) -> serde_json::Value {
         .spawn()
         .expect("keke agent stdio starts");
 
+    use std::io::BufRead;
     use std::io::Write;
-    keke.stdin
-        .take()
-        .expect("stdin")
-        .write_all(request)
-        .expect("the request is written");
-
-    let output = keke.wait_with_output().expect("keke exits with the pipe");
-    let line = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(line.lines().next().unwrap_or_default()).expect("one JSON response")
+    // Held open until the answer is in: a client keeps its pipe up while it
+    // waits, and closing it first races the reply against the shutdown.
+    let mut stdin = keke.stdin.take().expect("stdin");
+    stdin.write_all(request).expect("the request is written");
+    let mut line = String::new();
+    std::io::BufReader::new(keke.stdout.take().expect("stdout"))
+        .read_line(&mut line)
+        .expect("a response line");
+    drop(stdin);
+    keke.wait().expect("keke exits with the pipe");
+    serde_json::from_str(&line).expect("one JSON response")
 }
 
 /// The v1 path, end to end with a v1 client: the stop reason comes back on the
@@ -652,7 +749,7 @@ async fn a_session_with_two_mcp_servers_of_one_name_is_refused_naming_it() {
         .v2()
         .connect_with(agent, {
             let cwd = workspace.path().to_path_buf();
-            |connection: ConnectionTo<Agent>| async move {
+            |connection: V2ConnectionTo<Agent>| async move {
                 initialize(&connection).await?;
                 let servers = vec![
                     McpServer::Http(McpServerHttp::new("dup", "http://127.0.0.1:1/a")),

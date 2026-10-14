@@ -651,6 +651,16 @@ fn translate(turn: TurnUpdate) -> Update {
             removed_messages,
             retained_messages,
         },
+        TurnUpdate::Notice {
+            severity,
+            title,
+            description,
+            ..
+        } => Update::Notice {
+            severity,
+            title,
+            description,
+        },
         TurnUpdate::TurnEnded { stop_reason, .. } => Update::TurnEnded(stop_reason),
     }
 }
