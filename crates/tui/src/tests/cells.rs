@@ -175,6 +175,7 @@ async fn a_permission_prompt_takes_the_letter_keys() {
     let (mut app, scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::PermissionRequested {
         id: PermissionId("p1".to_string()),
+        person_required: false,
         call: call("c1", "bash"),
         reason: "runs a command".to_string(),
     });
@@ -195,11 +196,37 @@ async fn a_permission_prompt_takes_the_letter_keys() {
     assert!(app.open_permission_id().is_none());
 }
 
+/// A call only a person may answer, once, offers no "always allow": the key
+/// does nothing rather than quietly allowing a single call.
+#[tokio::test]
+async fn a_person_required_prompt_has_no_always_answer() {
+    let (mut app, scripted, _updates, _local) = app_with(Vec::new());
+    app.apply(Update::PermissionRequested {
+        id: PermissionId("p1".to_string()),
+        person_required: true,
+        call: call("c1", "bash"),
+        reason: "matches the approval rule `bash`".to_string(),
+    });
+    app.handle_key(key(KeyCode::Char('a')));
+    assert!(scripted.answers().is_empty());
+    assert_eq!(app.turn(), Turn::AwaitingPermission);
+    app.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        scripted.answers(),
+        vec![(
+            PermissionId("p1".to_string()),
+            PermissionAnswer::Allow,
+            None
+        )]
+    );
+}
+
 #[test]
 fn answering_a_prompt_clears_it_rather_than_leaving_it_in_the_scrollback() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::PermissionRequested {
         id: PermissionId("p1".to_string()),
+        person_required: false,
         call: call("c1", "bash"),
         reason: "runs a command".to_string(),
     });
@@ -1142,6 +1169,7 @@ async fn a_tool_waiting_for_approval_asks_the_loop_to_tell_the_person() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::PermissionRequested {
         id: PermissionId("p1".to_string()),
+        person_required: false,
         call: call("c1", "bash"),
         reason: "runs a command".to_string(),
     });

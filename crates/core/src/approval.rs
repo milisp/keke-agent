@@ -74,9 +74,33 @@ pub fn approval_reason(policy: ApprovalPolicy, capabilities: &ToolCapabilities) 
 #[derive(Debug, Default)]
 pub struct ApprovalMemory {
     always: Mutex<BTreeSet<String>>,
+    /// Tool-name patterns whose calls a person must answer every time. Fixed
+    /// for the session: a rule that could be dropped mid-conversation would be
+    /// a guard the model could talk its way past.
+    required: Vec<String>,
 }
 
 impl ApprovalMemory {
+    /// A memory that also enforces `require_approval` patterns.
+    #[must_use]
+    pub fn requiring(required: Vec<String>) -> Self {
+        Self {
+            always: Mutex::default(),
+            required,
+        }
+    }
+
+    /// The first rule `tool` matches, if any. Matching is case-insensitive and
+    /// `*` stands for any run of characters, `:` included, so `*stripe*`
+    /// covers every tool of a server named stripe whatever plugin carries it.
+    #[must_use]
+    pub fn required_rule(&self, tool: &str) -> Option<&str> {
+        self.required
+            .iter()
+            .find(|rule| glob_matches(rule, tool))
+            .map(String::as_str)
+    }
+
     #[must_use]
     pub fn is_always_allowed(&self, tool: &str) -> bool {
         self.always
@@ -91,9 +115,64 @@ impl ApprovalMemory {
     }
 }
 
+/// `*`-only glob, case-insensitive, matched against the whole name.
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        // No `*` at all: the whole name has to be the pattern.
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
 #[cfg(test)]
 mod tests {
     use super::ApprovalSwitch;
+
+    #[test]
+    fn approval_rules_match_whole_names_with_stars() {
+        let memory = super::ApprovalMemory::requiring(vec![
+            "*stripe*".into(),
+            "*:send_email".into(),
+            "bash_unsandboxed".into(),
+        ]);
+        assert_eq!(
+            memory.required_rule("client:Stripe:create_payment"),
+            Some("*stripe*")
+        );
+        assert_eq!(
+            memory.required_rule("client:gmail:send_email"),
+            Some("*:send_email")
+        );
+        assert_eq!(memory.required_rule("client:gmail:send_email_draft"), None);
+        assert_eq!(
+            memory.required_rule("bash_unsandboxed"),
+            Some("bash_unsandboxed")
+        );
+        assert_eq!(memory.required_rule("bash"), None);
+        assert!(
+            super::ApprovalMemory::default()
+                .required_rule("anything")
+                .is_none()
+        );
+        assert!(super::glob_matches("a*b*c", "aXbYc"));
+        assert!(!super::glob_matches("a*b*c", "aXcYb"));
+        assert!(super::glob_matches("*", ""));
+        assert!(!super::glob_matches("ab*ba", "aba"));
+    }
 
     /// The switch is what the turn loop reads, so a change has to be visible
     /// through a shared handle rather than only to whoever set it.

@@ -57,6 +57,19 @@ pub(crate) struct Cli {
     #[arg(long, global = true, env = "KEKE_MEMORY_DIR", value_name = "PATH")]
     pub memory_dir: Option<PathBuf>,
 
+    /// Tool-name patterns (`*` wildcards, case-insensitive) whose calls always
+    /// need a person's answer, under every approval policy. Added to the
+    /// configured `require_approval` rules, never replacing them. Repeat the
+    /// flag, or pass several comma-separated in `KEKE_REQUIRE_APPROVAL`.
+    #[arg(
+        long = "require-approval",
+        global = true,
+        env = "KEKE_REQUIRE_APPROVAL",
+        value_name = "PATTERN",
+        value_delimiter = ','
+    )]
+    pub require_approval: Vec<String>,
+
     /// Start in plan mode: research and propose, editing nothing but the plan
     /// file, until the plan is approved. A startup flag rather than a
     /// configuration field because plan mode is about the task in front of you,

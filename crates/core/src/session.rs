@@ -177,6 +177,9 @@ pub struct SessionConfig {
     pub instructions: Option<String>,
     /// When a tool call must be approved before it runs.
     pub approval: ApprovalPolicy,
+    /// Tool-name patterns a person must answer for under every policy; see
+    /// [`crate::ApprovalMemory::requiring`].
+    pub required_approvals: Vec<String>,
     /// Whether the working tree is snapshotted per turn, so a rewind can put
     /// the files back too.
     pub checkpoints: keke_config_types::CheckpointConfig,
@@ -903,6 +906,7 @@ impl SessionBuilder {
         };
 
         let approval = config.approval;
+        let required_approvals = config.required_approvals.clone();
         let effort = config.reasoning_effort;
         let tier = config.service_tier;
         let model = Arc::new(crate::ModelSwitch::new(config.model.model.as_str()));
@@ -936,7 +940,7 @@ impl SessionBuilder {
             recorder,
             updates: self.updates,
             cancelled,
-            approvals: Arc::new(crate::ApprovalMemory::default()),
+            approvals: Arc::new(crate::ApprovalMemory::requiring(required_approvals)),
             approval: Arc::new(crate::ApprovalSwitch::new(approval)),
             effort: Arc::new(crate::EffortSwitch::new(effort)),
             tier: Arc::new(crate::ServiceTierSwitch::new(tier)),

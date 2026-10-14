@@ -204,6 +204,7 @@ fn recipe(
             checkpoints: keke_config_types::CheckpointConfig::default(),
             instructions: None,
             approval,
+            required_approvals: Vec::new(),
         })
         .provider(provider)
         .extensions(extensions)
@@ -340,7 +341,10 @@ async fn a_call_needing_approval_reaches_the_surface_and_the_answer_reaches_the_
 
     let mut seen = Vec::new();
     while let Some(update) = started.updates.recv().await {
-        if let Update::PermissionRequested { id, call, reason } = &update {
+        if let Update::PermissionRequested {
+            id, call, reason, ..
+        } = &update
+        {
             assert_eq!(call.name, "risky");
             assert!(!reason.is_empty(), "a prompt must say why");
             started

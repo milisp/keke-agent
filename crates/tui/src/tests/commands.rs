@@ -398,6 +398,7 @@ async fn an_empty_plan_still_opens_a_reviewable_surface() {
     let (mut app, scripted, _updates, _local) = app_with(Vec::new());
     app.apply(Update::PermissionRequested {
         id: PermissionId("plan-1".to_string()),
+        person_required: false,
         call: ToolCall {
             id: ToolCallId::new("t1"),
             name: "exit_plan_mode".to_string(),

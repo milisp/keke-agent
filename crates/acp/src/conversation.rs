@@ -73,6 +73,9 @@ pub enum Update {
         id: PermissionId,
         call: ToolCall,
         reason: String,
+        /// Only a person may answer, once: see
+        /// [`keke_plugin_api::ApprovalRequest::person_required`].
+        person_required: bool,
     },
     /// One model step's token accounting. A surface shows what the turn is
     /// costing while it is still running, which is while a person can still
@@ -1074,6 +1077,7 @@ mod tests {
         let (conversation, _updates) =
             ScriptedConversation::new(vec![vec![Update::PermissionRequested {
                 id: PermissionId("p1".to_string()),
+                person_required: false,
                 call: call(),
                 reason: "reads outside the workspace".to_string(),
             }]]);

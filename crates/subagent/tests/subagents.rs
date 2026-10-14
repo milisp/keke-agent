@@ -191,6 +191,7 @@ fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
         checkpoints: keke_config_types::CheckpointConfig::default(),
         instructions: None,
         approval: ApprovalPolicy::Never,
+        required_approvals: Vec::new(),
     }
 }
 

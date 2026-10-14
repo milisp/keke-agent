@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `require_approval` tool-name rules (`*` wildcards), plus
+  `--require-approval` and `KEKE_REQUIRE_APPROVAL`: matching calls always need
+  a person's answer, under every policy including `auto` and `never`, and a
+  standing "allow always" never answers for them.
+- ACP marks such requests with `_meta["keke.dev/person-required"]`, omits the
+  allow-always option, and `initialize` reports
+  `_meta["keke.dev/require-approval"]`.
+
+### Changed
+- The terminal hides "always allow" on prompts only a person may answer once.
+
 ## [0.1.43] - 2026-10-14
 
 ### Added

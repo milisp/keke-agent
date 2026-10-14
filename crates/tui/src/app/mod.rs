@@ -875,7 +875,12 @@ impl App {
                 self.usage.add(usage);
                 self.context_input = usage.input_tokens;
             }
-            Update::PermissionRequested { id, call, reason } => {
+            Update::PermissionRequested {
+                id,
+                call,
+                reason,
+                person_required,
+            } => {
                 self.turn = Turn::AwaitingPermission;
                 self.pending_notification = Some(format!("Approval requested: {}", call.name));
                 // A plan is not a tool prompt with a plan attached: it is the
@@ -883,7 +888,8 @@ impl App {
                 if call.name == plan::EXIT_PLAN_MODE {
                     self.open_plan_review(id, &call);
                 } else {
-                    self.transcript.request_permission(id, &call, reason);
+                    self.transcript
+                        .request_permission(id, &call, reason, person_required);
                 }
             }
             Update::TurnEnded(reason) => {
@@ -1124,6 +1130,14 @@ impl App {
     }
 
     /// Answer the prompt currently blocking the turn.
+    /// Whether the open prompt may only be answered for this call.
+    pub fn permission_is_once_only(&self) -> bool {
+        self.transcript
+            .open_permission()
+            .as_ref()
+            .is_some_and(|prompt| prompt.once_only)
+    }
+
     pub fn answer_permission(&mut self, answer: PermissionAnswer) {
         self.answer_permission_with_note(answer, None);
     }

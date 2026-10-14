@@ -55,7 +55,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(prompt.summary.clone(), Style::new().fg(Color::Gray)),
         ]),
         Line::styled(prompt.reason.clone(), Style::new().fg(Color::Gray)),
-        hints(prompt.network_domain.is_some()),
+        hints(prompt.network_domain.is_some(), prompt.once_only),
     ];
 
     frame.render_widget(
@@ -64,7 +64,7 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn hints(network: bool) -> Line<'static> {
+fn hints(network: bool, once_only: bool) -> Line<'static> {
     let mut spans = Vec::new();
     for (key, label) in [
         ("y", "allow"),
@@ -78,6 +78,9 @@ fn hints(network: bool) -> Line<'static> {
         ),
         ("n", "deny"),
     ] {
+        if once_only && key == "a" {
+            continue;
+        }
         spans.push(Span::styled(
             format!("  {key} "),
             Style::new()

@@ -458,6 +458,7 @@ mod tests {
             if mode == "approval" {
                 app.apply(Update::PermissionRequested {
                     id: PermissionId("permission".to_string()),
+                    person_required: false,
                     call: ToolCall {
                         id: ToolCallId::new("call"),
                         name: "bash".to_string(),

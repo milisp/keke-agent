@@ -120,6 +120,7 @@ pub(super) fn shift(code: KeyCode) -> KeyEvent {
 pub(super) fn exit_plan_mode(plan: &str) -> Update {
     Update::PermissionRequested {
         id: PermissionId("plan-1".to_string()),
+        person_required: false,
         call: ToolCall {
             id: ToolCallId::new("t1"),
             name: "exit_plan_mode".to_string(),

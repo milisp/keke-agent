@@ -139,10 +139,33 @@ fn mcp_policy_meta(factory: &dyn SessionFactory) -> serde_json::Map<String, serd
     } else {
         "merge"
     };
-    serde_json::Map::from_iter([(
-        "keke.dev/mcp-policy".to_string(),
-        serde_json::Value::String(policy.to_string()),
-    )])
+    serde_json::Map::from_iter([
+        (
+            "keke.dev/mcp-policy".to_string(),
+            serde_json::Value::String(policy.to_string()),
+        ),
+        // Confirms that `require_approval` rules are enforced and that
+        // permission requests only a person may answer are marked with
+        // [`PERSON_REQUIRED`], so a client can refuse to start without it.
+        (
+            "keke.dev/require-approval".to_string(),
+            serde_json::Value::Bool(true),
+        ),
+    ])
+}
+
+/// `_meta` key set to `true` on a `session/request_permission` that only a
+/// person may answer, and only for this call. Namespaced keke extension, not a
+/// standard ACP field.
+pub(crate) const PERSON_REQUIRED: &str = "keke.dev/person-required";
+
+/// The `_meta` for a permission request, if it carries anything.
+pub(crate) fn permission_meta(
+    person_required: bool,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    person_required.then(|| {
+        serde_json::Map::from_iter([(PERSON_REQUIRED.to_string(), serde_json::Value::Bool(true))])
+    })
 }
 
 /// Serve the ACP protocol on stdin and stdout until the client disconnects.

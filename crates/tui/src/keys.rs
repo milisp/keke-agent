@@ -572,7 +572,9 @@ impl App {
     fn handle_permission_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') => self.answer_permission(PermissionAnswer::Allow),
-            KeyCode::Char('a') => self.answer_permission(PermissionAnswer::AllowAlways),
+            KeyCode::Char('a') if !self.permission_is_once_only() => {
+                self.answer_permission(PermissionAnswer::AllowAlways);
+            }
             KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Esc => {
                 self.answer_permission(PermissionAnswer::Deny);
             }

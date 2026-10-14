@@ -334,6 +334,7 @@ mod tests {
             },
             reason: "runs a command outside the sandbox".to_string(),
             evidence: None,
+            person_required: false,
         }
     }
 

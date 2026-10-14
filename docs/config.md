@@ -629,6 +629,40 @@ Repository config cannot change `on_request` to `accept_edits`, `auto`,
 `on_failure`, or `never`;
 that choice belongs in the user's config.
 
+### Calls Only a Person May Approve
+
+`require_approval` names tools whose every call needs a person's answer, under
+every approval policy:
+
+```toml
+require_approval = ["*stripe*", "acp:gmail:send_*", "*purchase*"]
+```
+
+- **Patterns.** Matched against the full tool id, case-insensitively; `*`
+  stands for any run of characters, `:` included. MCP tools are
+  `<plugin>:<server>:<tool>`, and servers sent by an ACP client are
+  `acp:<server>:<tool>`.
+- **Every policy.** `never` still asks. `auto` does not let the guardian
+  answer: an automatic reviewer is not a person. Where nobody can be asked (a
+  non-interactive run, a client that refuses), the call is denied with a reason.
+- **Once.** A standing "allow always" never answers for a matching call, and
+  surfaces do not offer one: the terminal hides `a`, and ACP requests omit the
+  allow-always option.
+- **Layers.** Rules accumulate. A project may add rules but cannot remove the
+  person's. `--require-approval PATTERN` (repeatable) and
+  `KEKE_REQUIRE_APPROVAL` (comma-separated) add to the configured rules, for a
+  program that launches keke for a particular agent. An empty entry in a file is
+  a configuration error.
+- **Over ACP.** A request only a person may answer carries
+  `_meta["keke.dev/person-required"] = true`, and `initialize` reports
+  `_meta["keke.dev/require-approval"] = true`. Both are keke extensions, not
+  standard ACP fields. A client that answers on someone's behalf (an unattended
+  run, say) must pass such a request to a person or refuse it.
+
+Rules match names, not effects. They cannot recognize a payment made through a
+generic tool such as a shell command or a browser click; pair them with the
+sandbox, network rules and the provider's own account scopes.
+
 **Workspace metadata stays read-only.** Inside a writable root, `.agents` and
 `.keke` cannot be written by a sandboxed command, and neither can the parts of
 the workspace's `.git` that Git executes or obeys: `hooks`, `config`,
