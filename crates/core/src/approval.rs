@@ -138,6 +138,37 @@ fn glob_matches(pattern: &str, name: &str) -> bool {
     rest.len() >= last.len() && rest.ends_with(last)
 }
 
+/// [`approval_reason`], told which tool is asking.
+///
+/// An MCP tool is classified as running a command because keke cannot know
+/// what an arbitrary server does, but "runs a command" reads as a shell to the
+/// person deciding. Naming the server is both accurate and actionable.
+#[must_use]
+pub fn approval_reason_for(
+    name: &str,
+    policy: ApprovalPolicy,
+    capabilities: &ToolCapabilities,
+) -> Option<String> {
+    let reason = approval_reason(policy, capabilities)?;
+    match mcp_server(name) {
+        Some(server)
+            if capabilities.kind == ToolKind::Execute
+                && capabilities.approval == ApprovalRequirement::ByPolicy =>
+        {
+            Some(format!("calls the `{server}` MCP server"))
+        }
+        _ => Some(reason),
+    }
+}
+
+/// The server in an MCP tool id, which keke-mcp namespaces `plugin:server:tool`.
+/// Built-in tools have no colon.
+fn mcp_server(name: &str) -> Option<&str> {
+    let mut parts = name.splitn(3, ':');
+    let (_plugin, server, tool) = (parts.next()?, parts.next()?, parts.next()?);
+    (!server.is_empty() && !tool.is_empty()).then_some(server)
+}
+
 #[cfg(test)]
 mod tests {
     use super::ApprovalSwitch;
@@ -193,6 +224,28 @@ mod tests {
             concurrency_safe: kind.is_read_only(),
             timeout_millis: None,
         }
+    }
+
+    #[test]
+    fn an_mcp_tool_is_described_by_its_server() {
+        let execute = capabilities(ToolKind::Execute);
+        assert_eq!(
+            approval_reason_for(
+                "acp:shop:create_payment",
+                ApprovalPolicy::OnRequest,
+                &execute
+            )
+            .as_deref(),
+            Some("calls the `shop` MCP server")
+        );
+        assert_eq!(
+            approval_reason_for("bash", ApprovalPolicy::OnRequest, &execute).as_deref(),
+            Some("runs a command")
+        );
+        assert!(
+            approval_reason_for("acp:shop:create_payment", ApprovalPolicy::Never, &execute)
+                .is_none()
+        );
     }
 
     #[test]

@@ -159,13 +159,25 @@ fn mcp_policy_meta(factory: &dyn SessionFactory) -> serde_json::Map<String, serd
 /// standard ACP field.
 pub(crate) const PERSON_REQUIRED: &str = "keke.dev/person-required";
 
-/// The `_meta` for a permission request, if it carries anything.
+/// `_meta` key naming the tool a `session/request_permission` is about, as
+/// keke identifies it (`bash`, `acp:shop:create_payment`). ACP's `kind` is too
+/// coarse to key a standing answer on: every MCP tool is `other`. Namespaced
+/// keke extension, not a standard ACP field.
+pub(crate) const TOOL: &str = "keke.dev/tool";
+
+/// The `_meta` for a permission request.
 pub(crate) fn permission_meta(
+    tool: &str,
     person_required: bool,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
-    person_required.then(|| {
-        serde_json::Map::from_iter([(PERSON_REQUIRED.to_string(), serde_json::Value::Bool(true))])
-    })
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut meta = serde_json::Map::from_iter([(
+        TOOL.to_string(),
+        serde_json::Value::String(tool.to_string()),
+    )]);
+    if person_required {
+        meta.insert(PERSON_REQUIRED.to_string(), serde_json::Value::Bool(true));
+    }
+    meta
 }
 
 /// Serve the ACP protocol on stdin and stdout until the client disconnects.

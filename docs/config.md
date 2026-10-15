@@ -658,6 +658,9 @@ require_approval = ["*stripe*", "acp:gmail:send_*", "*purchase*"]
   `_meta["keke.dev/require-approval"] = true`. Both are keke extensions, not
   standard ACP fields. A client that answers on someone's behalf (an unattended
   run, say) must pass such a request to a person or refuse it.
+  Every permission request also names its tool in `_meta["keke.dev/tool"]`
+  (`bash`, `acp:shop:create_payment`): ACP's `kind` is `other` for every MCP
+  tool, too coarse for a client to remember an answer by.
 
 Rules match names, not effects. They cannot recognize a payment made through a
 generic tool such as a shell command or a browser click; pair them with the

@@ -721,10 +721,8 @@ async fn pump(
                         .kind(tool_kind(shown.kind))
                         .raw_input(call.arguments.clone()),
                 ));
-                let request = match super::permission_meta(person_required) {
-                    Some(meta) => request.meta(meta),
-                    None => request,
-                };
+                let request =
+                    request.meta(super::permission_meta(call.name.as_str(), person_required));
                 let answer = match cx.send_request(request).block_task().await {
                     Ok(response) => chosen(&response.outcome),
                     // The client went away or refused; denying is the only safe

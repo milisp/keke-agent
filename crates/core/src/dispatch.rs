@@ -31,7 +31,7 @@ use keke_tool::ToolCallContext;
 use keke_tool::ToolError;
 
 use crate::approval::ApprovalMemory;
-use crate::approval::approval_reason;
+use crate::approval::approval_reason_for;
 
 /// Human network grants shared by every call in a session. The mutex also
 /// serializes network review so concurrent calls cannot ask for the same grant.
@@ -214,7 +214,7 @@ pub async fn dispatch(call: &ToolCall, ctx: Dispatch<'_>) -> Dispatched {
         capabilities.approval,
         ApprovalRequirement::ByPolicy | ApprovalRequirement::Confined
     ) && memory.is_always_allowed(&call.name);
-    if let Some(reason) = approval_reason(policy, &capabilities)
+    if let Some(reason) = approval_reason_for(call.name.as_str(), policy, &capabilities)
         && !standing
     {
         let reason = match &rule {
