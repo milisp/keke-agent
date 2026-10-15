@@ -537,7 +537,9 @@ rules are enforced in `dispatch`, before review, by raising a matching call to
 `ApprovalRequirement::Always`, which no policy, automatic reviewer or standing
 grant answers. The resulting `session/request_permission` carries
 `_meta["keke.dev/person-required"] = true` and no allow-always option, so a
-client answering unattended can tell it must not decide. Rules live in the
+client answering unattended can tell it must not decide. Every permission request
+also carries `_meta["keke.dev/tool"]`, the tool id, so a client keys a standing
+answer on the tool rather than on ACP's coarse `kind`. Rules live in the
 session's `ApprovalMemory`, fixed at construction; subagents are built from the
 parent's recipe and inherit them.
 

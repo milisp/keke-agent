@@ -260,12 +260,16 @@ async fn an_approval_rule_asks_the_editor_even_under_never() {
                         .iter()
                         .map(|option| option.option_id.0.to_string())
                         .collect();
-                    let marked = request
-                        .meta
-                        .as_ref()
-                        .and_then(|meta| meta.get("keke.dev/person-required"))
-                        .cloned();
-                    asked.lock().expect("lock").push((options, marked));
+                    let meta = |key: &str| {
+                        request
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.get(key))
+                            .cloned()
+                    };
+                    let marked = meta("keke.dev/person-required");
+                    let tool = meta("keke.dev/tool");
+                    asked.lock().expect("lock").push((options, marked, tool));
                     responder.respond(RequestPermissionResponse::new(
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
                             "deny".to_string(),
@@ -317,9 +321,10 @@ async fn an_approval_rule_asks_the_editor_even_under_never() {
         *asked.lock().expect("lock"),
         vec![(
             vec!["allow".to_string(), "deny".to_string()],
-            Some(serde_json::Value::Bool(true))
+            Some(serde_json::Value::Bool(true)),
+            Some(serde_json::Value::String("bash".to_string())),
         )],
-        "never still asks once, marked, with no standing answer"
+        "never still asks once, marked and naming the tool, with no standing answer"
     );
 }
 

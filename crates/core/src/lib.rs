@@ -29,6 +29,7 @@ mod turn;
 pub use approval::ApprovalMemory;
 pub use approval::ApprovalSwitch;
 pub use approval::approval_reason;
+pub use approval::approval_reason_for;
 pub use compact::estimate_history;
 pub use compact::estimate_tokens;
 pub use compact::should_compact;

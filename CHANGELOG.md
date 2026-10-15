@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- ACP permission requests name their tool in `_meta["keke.dev/tool"]`, so a
+  client can remember an answer per tool instead of per ACP `kind` (every MCP
+  tool is `other`).
+
+### Changed
+- Approval prompts for MCP tools say "calls the `<server>` MCP server" instead
+  of "runs a command".
+
 ## [0.1.44] - 2026-10-14
 
 ### Added
