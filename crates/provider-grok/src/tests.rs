@@ -168,6 +168,10 @@ async fn cache_affinity_follows_the_session_on_both_wires() {
             assert!(body.get("x_grok_session_id").is_none());
             if wire_api == WireApi::Responses {
                 assert_eq!(body["prompt_cache_key"], id.to_string());
+                // Nothing is stored at xAI: reasoning has to come back to be kept.
+                assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+            } else {
+                assert!(body.get("include").is_none());
             }
         }
         assert!(!requests[3].headers.contains_key("x-grok-session-id"));

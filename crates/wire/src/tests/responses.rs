@@ -436,3 +436,119 @@ async fn a_tool_call_to_a_renamed_tool_comes_back_under_its_id() {
     assert_mcp_names_sanitized(&body);
     assert!(!body.to_string().contains(MCP_ID), "{body}");
 }
+
+#[tokio::test]
+async fn a_new_message_item_starts_a_new_paragraph() {
+    let server = serve(sse(&[
+        json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"First."}).to_string(),
+        json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"Second."}).to_string(),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":"Looking."}).to_string(),
+        json!({"type":"response.output_text.delta","output_index":1,"delta":" Still."}).to_string(),
+        json!({"type":"response.output_text.delta","output_index":3,"delta":"Done."}).to_string(),
+        completed(),
+    ]))
+    .await;
+    let (client, _auth) = client_over(&server);
+
+    let chunks = collect_ok(&client, API).await;
+    let joined = |pick: fn(&StreamChunk) -> Option<&str>| -> String {
+        chunks.iter().filter_map(pick).collect()
+    };
+
+    assert_eq!(
+        joined(|c| match c {
+            StreamChunk::TextDelta(t) => Some(t),
+            _ => None,
+        }),
+        "Looking. Still.\n\nDone."
+    );
+    assert_eq!(
+        joined(|c| match c {
+            StreamChunk::ThinkingDelta(t) => Some(t),
+            _ => None,
+        }),
+        "First.\n\nSecond."
+    );
+}
+
+#[tokio::test]
+async fn reasoning_items_come_back_as_reasoning_never_as_speech() {
+    let reasoning = json!({
+        "type": "reasoning",
+        "id": "rs_1",
+        "summary": [{"type": "summary_text", "text": "check the file"}],
+        "encrypted_content": "opaque",
+        "status": "completed",
+    });
+    let server = serve(sse(&[
+        json!({"type":"response.output_item.done","output_index":0,"item":reasoning}).to_string(),
+        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"rs_2","summary":[]}}).to_string(),
+        json!({"type":"response.output_text.delta","output_index":2,"delta":"Here."}).to_string(),
+        completed(),
+    ]))
+    .await;
+    let (client, _auth) = client_over(&server);
+    let chunks = collect_ok(&client, API).await;
+
+    // Only an item with its encrypted content can be handed back.
+    let signature = chunks
+        .iter()
+        .find_map(|c| match c {
+            StreamChunk::ThinkingSignature(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("reasoning kept");
+    let kept: serde_json::Value = serde_json::from_str(&signature).expect("json");
+    assert_eq!(
+        kept["responses_reasoning"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(kept["responses_reasoning"][0]["id"], json!("rs_1"));
+    assert!(kept["responses_reasoning"][0].get("status").is_none());
+
+    let body = crate::responses_body(
+        &ModelRequest {
+            messages: vec![
+                Message::user("look"),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentBlock::Thinking {
+                            text: "check the file".to_string(),
+                            signature: Some(signature),
+                        },
+                        ContentBlock::text("Here."),
+                    ],
+                },
+                // Reasoning with nothing to hand back, or another vendor's
+                // signature, is left out rather than read back as speech.
+                Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentBlock::thinking("unsigned"),
+                        ContentBlock::Thinking {
+                            text: "anthropic".to_string(),
+                            signature: Some("c2lnbmF0dXJl".to_string()),
+                        },
+                        ContentBlock::text("Again."),
+                    ],
+                },
+            ],
+            ..request()
+        },
+        true,
+        false,
+    );
+    let input = body["input"].as_array().expect("input items");
+    assert_eq!(input.len(), 4);
+    assert_eq!(input[1]["type"], json!("reasoning"));
+    assert_eq!(input[1]["encrypted_content"], json!("opaque"));
+    assert_eq!(
+        input[2]["content"],
+        json!([{"type":"output_text","text":"Here."}])
+    );
+    assert_eq!(
+        input[3]["content"],
+        json!([{"type":"output_text","text":"Again."}])
+    );
+}

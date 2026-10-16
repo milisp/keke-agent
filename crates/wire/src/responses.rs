@@ -116,6 +116,7 @@ fn input_items(request: &ModelRequest) -> Vec<Value> {
 fn push_message(out: &mut Vec<Value>, message: &Message) {
     let start = out.len();
     let assistant = matches!(message.role, Role::Assistant);
+    let mut reasoning = Vec::new();
     let role = match message.role {
         Role::Assistant => "assistant",
         Role::System => "system",
@@ -126,11 +127,25 @@ fn push_message(out: &mut Vec<Value>, message: &Message) {
     let mut content = Vec::new();
     for block in &message.content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
+            ContentBlock::Text { text } => {
                 content.push(json!({
                     "type": if assistant { "output_text" } else { "input_text" },
                     "text": text,
                 }));
+            }
+            // Reasoning goes back as the vendor's own reasoning items, or not at
+            // all. Sent as `output_text` it would read to the model as something
+            // it said aloud, and a model shown its reasoning as speech starts
+            // reasoning in its replies.
+            ContentBlock::Thinking { signature, .. } => {
+                if assistant {
+                    reasoning.extend(
+                        signature
+                            .as_deref()
+                            .map(reasoning_items)
+                            .unwrap_or_default(),
+                    );
+                }
             }
             ContentBlock::Image(image) => content.push(json!({
                 "type": "input_image",
@@ -160,6 +175,28 @@ fn push_message(out: &mut Vec<Value>, message: &Message) {
             json!({ "type": "message", "role": role, "content": content }),
         );
     }
+    // Reasoning came first in the reply, so it goes back first.
+    for (offset, item) in reasoning.into_iter().enumerate() {
+        out.insert(start + offset, item);
+    }
+}
+
+/// The key under which this wire keeps the reasoning items a reply carried, in
+/// a thinking block's signature. Another vendor's signature never parses as
+/// this, so a conversation that changed providers drops that reasoning rather
+/// than sending this vendor bytes it did not mint.
+const REASONING_ITEMS: &str = "responses_reasoning";
+
+fn reasoning_items(signature: &str) -> Vec<Value> {
+    serde_json::from_str::<Value>(signature)
+        .ok()
+        .and_then(|value| {
+            value
+                .get(REASONING_ITEMS)
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default()
 }
 
 fn data_uri(image: &ImageBlock) -> String {
@@ -202,6 +239,8 @@ struct ResponseEvent {
     delta: Option<String>,
     #[serde(default)]
     output_index: Option<usize>,
+    #[serde(default)]
+    summary_index: Option<usize>,
     #[serde(default)]
     item: Option<OutputItem>,
     #[serde(default)]
@@ -338,6 +377,12 @@ pub(crate) struct Decoder {
     calls: BTreeMap<usize, OpenCall>,
     saw_tool_call: bool,
     refused: Option<String>,
+    /// Where the last text and reasoning deltas came from, so a new message
+    /// item or summary part starts a new paragraph instead of running on.
+    last_text: Option<usize>,
+    last_thinking: Option<(usize, usize)>,
+    /// Reasoning items as the vendor sent them, to be handed back next turn.
+    reasoning: Vec<Value>,
 }
 
 impl WireDecoder for Decoder {
@@ -355,9 +400,28 @@ impl WireDecoder for Decoder {
         };
         match event.kind.as_str() {
             "response.output_text.delta" => {
+                let at = event.output_index;
+                let starts_part = at.is_some() && self.last_text.is_some() && at != self.last_text;
+                if starts_part {
+                    out.push(StreamChunk::TextDelta("\n\n".to_string()));
+                }
+                if at.is_some() {
+                    self.last_text = at;
+                }
                 self.push_text(event.delta, out, StreamChunk::TextDelta)
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                let at = event
+                    .output_index
+                    .map(|index| (index, event.summary_index.unwrap_or_default()));
+                let starts_part =
+                    at.is_some() && self.last_thinking.is_some() && at != self.last_thinking;
+                if starts_part {
+                    out.push(StreamChunk::ThinkingDelta("\n\n".to_string()));
+                }
+                if at.is_some() {
+                    self.last_thinking = at;
+                }
                 self.push_text(event.delta, out, StreamChunk::ThinkingDelta);
             }
             "response.refusal.delta" => {
@@ -369,11 +433,10 @@ impl WireDecoder for Decoder {
             "response.function_call_arguments.delta" => self.on_arguments_delta(&event, out),
             "response.function_call_arguments.done" => self.close_call(event.output_index, out),
             "response.output_item.done" => {
-                if event
-                    .item
-                    .as_ref()
-                    .is_some_and(|item| item.kind == "web_search_call")
-                {
+                let kind = event.item.as_ref().map(|item| item.kind.as_str());
+                if kind == Some("reasoning") {
+                    self.keep_reasoning(data);
+                } else if kind == Some("web_search_call") {
                     self.on_web_search_call(&event, out);
                 } else {
                     self.close_call(event.output_index, out);
@@ -403,6 +466,29 @@ impl Decoder {
         if let Some(text) = delta.filter(|text| !text.is_empty()) {
             out.push(chunk(text));
         }
+    }
+
+    /// Keep a finished reasoning item whole: only with its encrypted content
+    /// can it be handed back, since nothing is stored at the vendor.
+    fn keep_reasoning(&mut self, data: &str) {
+        let Some(mut item) = serde_json::from_str::<Value>(data)
+            .ok()
+            .and_then(|mut frame| frame.get_mut("item").map(Value::take))
+        else {
+            return;
+        };
+        if item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_none()
+        {
+            return;
+        }
+        // A status is output-only; the item goes back as the model wrote it.
+        if let Some(fields) = item.as_object_mut() {
+            fields.remove("status");
+        }
+        self.reasoning.push(item);
     }
 
     fn on_item_added(&mut self, event: &ResponseEvent, out: &mut Sink) {
@@ -505,6 +591,12 @@ impl Decoder {
             if out.is_complete() {
                 return;
             }
+        }
+        if !self.reasoning.is_empty() {
+            let items = std::mem::take(&mut self.reasoning);
+            out.push(StreamChunk::ThinkingSignature(
+                json!({ REASONING_ITEMS: items }).to_string(),
+            ));
         }
         let body = event.response.as_ref();
         if let Some(usage) = body.and_then(|body| body.usage.as_ref()) {
