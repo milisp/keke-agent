@@ -184,8 +184,18 @@ impl ModelProvider for GrokProvider {
     /// tool, and [`GrokWebSearch`] answers it in a call of its own.
     fn stream<'a>(
         &'a self,
-        request: ModelRequest,
+        mut request: ModelRequest,
     ) -> ProviderFuture<'a, Result<StreamEvent, ProviderError>> {
+        // Nothing is stored at xAI, so reasoning survives to the next step only
+        // if it comes back encrypted and is handed back. Without it the model
+        // loses its train of thought between tool calls, and starts reasoning
+        // in its visible replies instead.
+        if self.info.wire_api == WireApi::Responses {
+            request
+                .vendor_params
+                .entry("include".to_string())
+                .or_insert_with(|| serde_json::json!(["reasoning.encrypted_content"]));
+        }
         // Chat completions has no body cache key; xAI uses the conversation
         // header for affinity. Keep its session metadata aligned on both wires.
         let headers = request.session_id.map_or_else(Vec::new, |id| {

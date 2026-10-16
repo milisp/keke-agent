@@ -690,7 +690,9 @@ struct MessageAssembler {
 impl MessageAssembler {
     fn finish(&self) -> Message {
         let mut content = Vec::new();
-        if !self.thinking.is_empty() {
+        // A signature alone is still worth keeping: a vendor can return its
+        // reasoning encrypted with no readable summary at all.
+        if !self.thinking.is_empty() || self.thinking_signature.is_some() {
             content.push(ContentBlock::Thinking {
                 text: self.thinking.clone(),
                 signature: self.thinking_signature.clone(),
