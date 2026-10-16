@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.46] - 2026-10-15
+
+### Fixed
+- Responses wire: earlier reasoning is handed back as the vendor's own
+  `reasoning` items (kept with their `encrypted_content`), or not at all. It
+  was sent back as assistant `output_text`, so models such as grok-4.7 began
+  reasoning in their visible replies (ACP `agent_message_chunk`) after a few
+  turns.
+- Responses wire: text from a new message item, and reasoning from a new
+  summary part, starts a new paragraph instead of running into the previous
+  one.
+
+### Changed
+- grok on the responses wire requests `reasoning.encrypted_content`, since
+  nothing is stored at xAI.
+
 ## [0.1.45] - 2026-10-15
 
 ### Added
