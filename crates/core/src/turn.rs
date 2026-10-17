@@ -158,6 +158,7 @@ impl Session {
             &self.workspace,
             &self.cwd,
             self.config.instructions.as_deref(),
+            self.config.attribution.commit.as_deref(),
             &self.registry,
             ext_ctx,
         )

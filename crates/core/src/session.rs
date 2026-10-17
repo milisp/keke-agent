@@ -183,6 +183,8 @@ pub struct SessionConfig {
     /// Whether the working tree is snapshotted per turn, so a rewind can put
     /// the files back too.
     pub checkpoints: keke_config_types::CheckpointConfig,
+    /// What the model is asked to end its commit messages with.
+    pub attribution: keke_config_types::AttributionConfig,
 }
 
 /// A live conversation.

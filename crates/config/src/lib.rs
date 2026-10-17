@@ -27,6 +27,7 @@ pub use resolve::resolve_workspace_root;
 use std::path::Path;
 
 use keke_config_types::ApprovalPolicy;
+use keke_config_types::AttributionConfig;
 use keke_config_types::BackgroundLimits;
 use keke_config_types::CheckpointConfig;
 use keke_config_types::CompactionConfig;
@@ -104,6 +105,8 @@ pub struct Config {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub compaction: CompactionConfig,
     pub checkpoints: CheckpointConfig,
+    /// What the model signs the commits it makes with.
+    pub attribution: AttributionConfig,
     /// How the terminal interface gets a person's attention.
     pub notifications: NotificationConfig,
     /// Budgets for plugin-supplied programs.
@@ -158,6 +161,7 @@ pub struct ConfigFile {
     pub reasoning_effort: Option<String>,
     pub compaction: Option<CompactionFile>,
     pub checkpoints: Option<CheckpointFile>,
+    pub attribution: Option<AttributionFile>,
     pub notifications: Option<NotificationsFile>,
     pub plugins: Option<PluginsFile>,
     pub subagents: Option<SubagentsFile>,
@@ -200,6 +204,15 @@ pub struct CheckpointFile {
     pub keep_days: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tree_mb: Option<u32>,
+}
+
+/// The attribution section. `commit` stays a string here so `""` can say "off"
+/// in a layer above one that set it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct AttributionFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// The notification section, separated so a layer can override one field.
@@ -514,6 +527,12 @@ impl Config {
                 base.max_dimension = images.max_dimension.or(base.max_dimension);
                 base.encoded_bytes = images.encoded_bytes.or(base.encoded_bytes);
             }
+            if let Some(attribution) = &layer.file.attribution {
+                let base = merged
+                    .attribution
+                    .get_or_insert_with(AttributionFile::default);
+                base.commit = attribution.commit.clone().or(base.commit.clone());
+            }
             if let Some(memory) = &layer.file.memory {
                 let base = merged.memory.get_or_insert_with(MemoryFile::default);
                 base.dir = memory.dir.clone().or(base.dir.clone());
@@ -726,6 +745,13 @@ impl Config {
             },
         };
 
+        let attribution = match merged.attribution.and_then(|file| file.commit) {
+            Some(commit) => AttributionConfig {
+                commit: AttributionConfig::check_commit(&commit).map_err(invalid)?,
+            },
+            None => AttributionConfig::default(),
+        };
+
         let max_output_tokens = match merged.max_output_tokens {
             Some(value) => MaxOutputTokens::new(value).map_err(|message| ConfigError::Invalid {
                 path: sources
@@ -855,6 +881,7 @@ impl Config {
             reasoning_effort,
             compaction,
             checkpoints,
+            attribution,
             notifications,
             plugins,
             subagents,
@@ -1142,6 +1169,22 @@ mod tests {
 
         assert_eq!(config.compaction.trigger_percent, 60);
         assert_eq!(config.compaction.keep_recent_messages, 8);
+    }
+
+    #[test]
+    fn commits_are_signed_by_default_and_a_project_can_say_not_to() {
+        let config = Config::from_layers(home(), &[]).expect("defaults");
+        assert_eq!(config.attribution, AttributionConfig::default());
+
+        let layers = vec![
+            layer(
+                "user",
+                "[attribution]\ncommit = \"Co-Authored-By: me <me@example.test>\"\n",
+            ),
+            layer("project", "[attribution]\ncommit = \"\"\n"),
+        ];
+        let config = Config::from_layers(home(), &layers).expect("merges");
+        assert_eq!(config.attribution.commit, None);
     }
 
     #[test]

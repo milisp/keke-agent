@@ -202,6 +202,7 @@ fn recipe(
             compaction: CompactionConfig::default(),
             images: keke_config_types::ImageLimits::default(),
             checkpoints: keke_config_types::CheckpointConfig::default(),
+            attribution: keke_config_types::AttributionConfig::default(),
             instructions: None,
             approval,
             required_approvals: Vec::new(),

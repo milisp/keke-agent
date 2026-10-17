@@ -42,6 +42,7 @@ pub use effort::EffortSwitch;
 pub use meta::SessionMeta;
 pub use mode::SessionModeSwitch;
 pub use model::ModelSwitch;
+pub use prompt::ORDER_ATTRIBUTION;
 pub use prompt::ORDER_ENVIRONMENT;
 pub use prompt::ORDER_IDENTITY;
 pub use prompt::ORDER_PERSONA;

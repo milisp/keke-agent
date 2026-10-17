@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- Commits keke makes end with `Co-Authored-By: keke <noreply@milisp.dev>`.
+  `[attribution] commit` changes the text; `""` turns it off.
+
+### Fixed
+- A repository with no commit yet is recognized as one, so its branch and
+  status reach the model and its first commit is signed too.
+
 ## [0.1.46] - 2026-10-15
 
 ### Fixed
