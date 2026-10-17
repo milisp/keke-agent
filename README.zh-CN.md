@@ -2,8 +2,7 @@
 
 [English](README.md) | [架构设计](docs/architecture.md) | [配置文档](docs/config.md) | [路线图](docs/ROADMAP.md)
 
-**keke** 是本地编码 agent：约 7 MB 的原生二进制，不需要 Node 或 Python
-运行时。用你已经在付费的 ChatGPT 或 Grok 订阅登录，或任意 API Key，都在同一个工具里完成。
+**keke** 是用 Rust 写的本地编码 agent。用你已经在付费的 ChatGPT 或 Grok 订阅登录，或任意 API Key，都在同一个工具里完成。
 TUI、`keke exec` 和桌面应用（通过 ACP）共用同一个会话。
 
 子 agent、MCP、skills、兼容 Claude 目录结构的插件、hooks、规划模式、

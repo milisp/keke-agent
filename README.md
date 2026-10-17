@@ -2,10 +2,9 @@
 
 [中文文档](README.zh-CN.md) | [Architecture](docs/architecture.md) | [Config](docs/config.md) | [Roadmap](docs/ROADMAP.md)
 
-**keke** is a local coding agent in a ~7 MB native binary — no Node or Python
-runtime. Sign in with the ChatGPT or Grok subscription you already pay for, or
-bring any API key, all from one tool. The TUI, `keke exec`, and desktop apps
-(over ACP) drive the same session.
+**keke** is a local coding agent written in Rust. Sign in with the ChatGPT or
+Grok subscription you already pay for, or bring any API key, all from one tool.
+The TUI, `keke exec`, and desktop apps (over ACP) drive the same session.
 
 Subagents, MCP, skills, Claude-compatible plugins, hooks, plan mode,
 per-turn checkpoints, and OS sandboxing are built in. Memory and repository
