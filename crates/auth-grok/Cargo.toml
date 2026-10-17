@@ -12,8 +12,6 @@ keke-auth-api = { workspace = true }
 keke-credentials = { workspace = true }
 keke-oauth = { workspace = true }
 keke-paths = { workspace = true }
-base64 = { workspace = true }
-rand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,6 +22,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+keke-oauth = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 wiremock = { workspace = true }

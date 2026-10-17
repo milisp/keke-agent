@@ -14,7 +14,6 @@
 mod config;
 mod device;
 mod discovery;
-mod endpoint;
 mod jwt;
 mod loopback;
 mod tokens;
@@ -50,9 +49,9 @@ pub use config::DEFAULT_ISSUER;
 pub use config::DEFAULT_VENDOR;
 pub use config::GrokAuthConfig;
 
-use crate::device::Delay;
-use crate::device::TokioDelay;
 use crate::tokens::SOURCE_ENV;
+use keke_oauth::device::Delay;
+use keke_oauth::device::TokioDelay;
 
 pub const AUTH_ID: &str = "grok";
 
@@ -348,7 +347,7 @@ impl GrokAuth {
             form.push(("principal_id", principal_id));
         }
 
-        let response = endpoint::exchange(
+        let response = keke_oauth::token::exchange(
             &self.http,
             &discovery::token_endpoint(&self.http, &self.discovery, &self.config, Some(&issuer))
                 .await,
@@ -358,7 +357,12 @@ impl GrokAuth {
 
         mutation.save(&AuthFile::from_tokens(
             current.auth_mode,
-            response.into_tokens(Some(refresh_token), tokens.account_id, Some(issuer)),
+            tokens::into_tokens(
+                response,
+                Some(refresh_token),
+                tokens.account_id,
+                Some(issuer),
+            ),
         ))?;
         Ok(())
     }

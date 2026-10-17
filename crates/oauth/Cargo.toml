@@ -1,6 +1,6 @@
 [package]
 name = "keke-oauth"
-description = "The parts of an OAuth login that are the RFCs' rather than any vendor's: PKCE and the loopback redirect."
+description = "The parts of an OAuth login that are the RFCs' rather than any vendor's: PKCE, the loopback redirect, the token endpoint, and the device grant."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,12 +11,19 @@ repository.workspace = true
 keke-auth-api = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
 url = { workspace = true }
 
+[features]
+# The recording `LoginUi` and `Delay`, for the vendor crates' flow tests.
+test-support = []
+
 [dev-dependencies]
-reqwest = { workspace = true }
+wiremock = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
