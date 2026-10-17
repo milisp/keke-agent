@@ -1811,10 +1811,12 @@ dependencies = [
  "keke-plugin",
  "keke-plugin-api",
  "keke-protocol",
+ "keke-provider-anthropic",
  "keke-provider-api",
  "keke-provider-codex",
  "keke-provider-grok",
  "keke-provider-ollama",
+ "keke-provider-openrouter",
  "keke-sandbox",
  "keke-schedule",
  "keke-skills",
@@ -2069,6 +2071,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keke-provider-anthropic"
+version = "0.1.46"
+dependencies = [
+ "keke-auth-api",
+ "keke-config-types",
+ "keke-provider-api",
+ "keke-wire",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "keke-provider-api"
 version = "0.1.46"
 dependencies = [
@@ -2132,6 +2148,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "keke-provider-openrouter"
+version = "0.1.46"
+dependencies = [
+ "keke-auth-api",
+ "keke-config-types",
+ "keke-provider-api",
+ "keke-wire",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

@@ -329,7 +329,10 @@ impl keke_provider_api::WebSearchBackend for GrokWebSearch {
         allowed_domains: &'a [String],
     ) -> ProviderFuture<'a, Result<keke_provider_api::WebSearchResults, ProviderError>> {
         Box::pin(async move {
-            let domains = web_search::confine(&self.config, allowed_domains);
+            let domains = self
+                .config
+                .confine(allowed_domains)
+                .map_err(ProviderError::InvalidRequest)?;
             let model = self.model().await?;
             // Each wire keeps this capability somewhere else — a tool entry on
             // responses, a top-level field on chat-completions — and reports

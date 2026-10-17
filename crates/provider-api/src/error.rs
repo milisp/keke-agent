@@ -38,7 +38,11 @@ pub enum ProviderError {
     NotEntitled(String),
 
     /// The named model is unknown to this provider.
-    #[error("unknown model `{0}`")]
+    ///
+    /// Carries the vendor's own explanation, not the model's name: vendors say
+    /// why (retired, renamed, paid-only) and that sentence is what a person
+    /// acts on, so it is shown as prose rather than quoted as an identifier.
+    #[error("model not available: {0}")]
     UnknownModel(String),
 
     /// The provider's response did not match its documented shape.

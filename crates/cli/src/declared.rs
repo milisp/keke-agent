@@ -14,6 +14,7 @@ use keke_catalog::CatalogCache;
 use keke_config_types::DeclaredWireApi;
 use keke_config_types::ProviderDeclaration;
 use keke_provider_api::ArcProvider;
+use keke_provider_api::ArcWebSearch;
 use keke_provider_api::ModelInfo;
 use keke_provider_api::ModelProvider;
 use keke_provider_api::ModelRequest;
@@ -34,6 +35,9 @@ pub(crate) enum DeclarationError {
     /// the environment, so it would silently never authenticate.
     #[error("provider `{route}`: `{key}` is not a usable credential name")]
     BadCredentialName { route: String, key: String },
+    /// `web_search` asked for a search this endpoint cannot run as written.
+    #[error("provider `{route}`: web_search: {error}")]
+    BadWebSearch { route: String, error: String },
     /// `ca_cert_path` did not name a readable, parseable PEM file.
     #[error("provider `{route}`: could not load CA certificate `{path}`: {error}")]
     BadCaCert {
@@ -91,6 +95,9 @@ struct DeclaredProvider {
     /// `None` disables caching, which is what a surface with no home
     /// directory — a test — gets.
     cache: Option<CatalogCache>,
+    /// What answers the `web_search` tool, for a vendor whose conversation is
+    /// nothing but the shared wire and whose search is not — Anthropic's.
+    search: Option<ArcWebSearch>,
 }
 
 impl ModelProvider for DeclaredProvider {
@@ -148,43 +155,23 @@ impl ModelProvider for DeclaredProvider {
             }
         })
     }
+
+    fn web_search(&self) -> Option<ArcWebSearch> {
+        self.search.clone()
+    }
 }
 
 /// Wrap a `WireClient` as a provider, for a vendor whose only behavior is its
-/// endpoint and credential — including compiled-in ones like codex.
+/// endpoint and credential — and, for Anthropic, a search behind the
+/// `web_search` tool.
 pub(crate) fn wire_provider(
     info: ProviderInfo,
     auth: Arc<dyn AuthProvider>,
     ttl: Option<keke_config_types::PromptCacheTtl>,
-) -> ArcProvider {
-    wire_provider_with(info, auth, false, ttl)
-}
-
-/// [`wire_provider`] for an endpoint that fixes its own sampling — a
-/// subscription backend, which refuses a request that names a reply budget or
-/// a temperature. Only the composition root knows which addresses those are.
-pub(crate) fn wire_provider_with(
-    info: ProviderInfo,
-    auth: Arc<dyn AuthProvider>,
-    sampling_is_fixed: bool,
-    ttl: Option<keke_config_types::PromptCacheTtl>,
-) -> ArcProvider {
-    wire_provider_cached(info, auth, sampling_is_fixed, None, ttl)
-}
-
-/// [`wire_provider_with`] with a model-list cache under keke's home.
-pub(crate) fn wire_provider_cached(
-    info: ProviderInfo,
-    auth: Arc<dyn AuthProvider>,
-    sampling_is_fixed: bool,
-    cache: Option<CatalogCache>,
-    ttl: Option<keke_config_types::PromptCacheTtl>,
+    search: Option<ArcWebSearch>,
 ) -> ArcProvider {
     let api = info.wire_api;
     let mut client = WireClient::new(info.base_url.clone(), auth);
-    if sampling_is_fixed {
-        client = client.with_fixed_sampling();
-    }
     if api == WireApi::Messages {
         client = client.with_messages_cache(ttl.unwrap_or_default());
     }
@@ -192,7 +179,8 @@ pub(crate) fn wire_provider_cached(
         info,
         api,
         client,
-        cache,
+        cache: None,
+        search,
     })
 }
 
@@ -245,6 +233,42 @@ pub(crate) fn provider_for_cached(
         headers.push((name, value));
     }
     let api = info.wire_api;
+    // OpenRouter runs a search for any model behind it, so a declared
+    // OpenRouter route is the one kindless endpoint with a search to offer.
+    // It goes out through a client built exactly like the route's, so a
+    // search does not reach OpenRouter by a path the conversation could not.
+    let search = match &declaration.web_search {
+        Some(config) if is_openrouter(&info.base_url) => {
+            let wire = WireClient::with_http_client(
+                info.base_url.clone(),
+                Arc::clone(&auth),
+                http.clone(),
+            )
+            .with_extra_headers(headers.clone());
+            keke_provider_openrouter::OpenRouterWebSearch::new(
+                wire,
+                config.clone(),
+                declaration.default_model.clone(),
+            )
+            .map_err(|error| DeclarationError::BadWebSearch {
+                route: declaration.route.clone(),
+                error: error.to_string(),
+            })?
+            .map(|search| Arc::new(search) as ArcWebSearch)
+        }
+        // Refused rather than ignored: someone who turned search on would
+        // otherwise read the file as offering it, and find out from the model
+        // reaching for `curl` instead.
+        Some(config) if config.mode.is_enabled() => {
+            return Err(DeclarationError::BadWebSearch {
+                route: declaration.route.clone(),
+                error: "this endpoint has no web search keke can run; only `kind = \"grok\"`, \
+                        `\"codex\"`, `\"anthropic\"`, and OpenRouter routes offer one"
+                    .to_string(),
+            });
+        }
+        _ => None,
+    };
     let mut client =
         WireClient::with_http_client(info.base_url.clone(), auth, http).with_extra_headers(headers);
     if api == WireApi::Messages {
@@ -255,6 +279,7 @@ pub(crate) fn provider_for_cached(
         api,
         client,
         cache,
+        search,
     }))
 }
 
@@ -661,5 +686,41 @@ mod tests {
         declared.ca_cert_path = Some("/nonexistent/path/to/ca.pem".to_string());
         let error = build_http_client(&declared).expect_err("no such file");
         assert!(matches!(error, DeclarationError::BadCaCert { .. }));
+    }
+
+    /// OpenRouter searches for any model behind it, so a declared OpenRouter
+    /// route offers `web_search` once asked; any other declared endpoint has
+    /// no search to run and offers none.
+    #[test]
+    fn only_a_declared_openrouter_route_can_offer_a_search() {
+        let credentials: Arc<dyn CredentialStore> =
+            Arc::new(keke_credentials::MemoryStore::default());
+        let live =
+            keke_config_types::WebSearchConfig::enabled(keke_config_types::WebSearchMode::Live);
+
+        let mut openrouter = declaration(BTreeMap::new());
+        openrouter.base_url = Some("https://openrouter.ai/api/v1".to_string());
+        openrouter.default_model = Some("openai/gpt-5.2".to_string());
+        openrouter.web_search = Some(live.clone());
+        let provider = provider_for_cached(&openrouter, &credentials, None).expect("a route");
+        assert!(provider.web_search().is_some());
+
+        let mut gateway = declaration(BTreeMap::new());
+        gateway.web_search = Some(keke_config_types::WebSearchConfig::default());
+        let provider = provider_for_cached(&gateway, &credentials, None).expect("a route");
+        assert!(provider.web_search().is_none());
+        // Turned on where there is nothing to run it, it is refused rather
+        // than read as offered.
+        gateway.web_search = Some(live);
+        let error = provider_for_cached(&gateway, &credentials, None)
+            .err()
+            .expect("a search this endpoint cannot run is refused");
+        assert!(matches!(error, DeclarationError::BadWebSearch { .. }));
+
+        openrouter.default_model = None;
+        let error = provider_for_cached(&openrouter, &credentials, None)
+            .err()
+            .expect("a search with no model to run it is refused at launch");
+        assert!(matches!(error, DeclarationError::BadWebSearch { .. }));
     }
 }

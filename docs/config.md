@@ -163,11 +163,12 @@ providers whose vendor sells more than one speed act on it — today that is
 
 ### Web Search
 
-An instance of `kind = "codex"` or `kind = "grok"` can offer the vendor's web
-search. On a `grok` instance this becomes an ordinary `web_search` tool in the
-model's tool list, dispatched and logged like any other tool call and answered
-by a separate request to xAI; a `codex` instance still hands the search to the
-vendor to run inside the model call.
+An instance of `kind = "codex"`, `kind = "grok"`, or `kind = "anthropic"`, or a
+declared route whose `base_url` is on `openrouter.ai`, can offer the vendor's
+web search. On every one but `codex` this becomes an ordinary `web_search` tool
+in the model's tool list, dispatched and logged like any other tool call and
+answered by a separate request to the vendor; a `codex` instance still hands the
+search to the vendor to run inside the model call.
 
 ```toml
 [providers.grok.web_search]
@@ -227,6 +228,45 @@ does not get it. `model` names which model summarizes the results, since a
 search is a self-contained call and need not be answered at conversation rates;
 unset, the route's `default_model` runs it, and failing that whatever xAI lists
 first.
+
+On `anthropic`, the search runs Anthropic's server-side `web_search` tool.
+Only `live` and `disabled` are accepted, for the same reason as on `grok`.
+`context_size` sets how many searches one call may make (low 1, medium 3,
+high 5), `allowed_domains` and `user_location` are passed through, and
+`include_images` is ignored. `model` names which Claude model runs the search;
+unset, the route's `default_model` does, and failing that the newest model
+Anthropic lists.
+
+```toml
+[providers.anthropic.web_search]
+mode = "live"
+model = "claude-haiku-5-5"   # optional: a cheaper model for the search
+```
+
+On an OpenRouter route the search runs OpenRouter's `openrouter:web_search`
+server tool, which works for any model: OpenRouter uses the model vendor's own
+search where there is one and Exa otherwise. Again only `live` and `disabled`
+are accepted, and the mapping is the same as on `anthropic`. OpenRouter lists
+too many models for "the first one" to mean anything, so `web_search.model` or
+the route's `default_model` must be set, and keke refuses to start without one.
+
+```toml
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+default_model = "anthropic/claude-sonnet-5.5"
+
+[providers.openrouter.web_search]
+mode = "live"
+```
+
+On `anthropic` and OpenRouter, as on `grok`, the model's own per-call domain
+list can only narrow `allowed_domains`. A call that asks only for domains the
+config excludes fails rather than searching the whole web — on `grok` too.
+
+Any other route (`ollama`, or a declared endpoint not on OpenRouter) has no
+search to run, and turning one on there is refused at startup rather than
+silently ignored.
 
 ### Header Values
 

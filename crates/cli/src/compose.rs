@@ -182,7 +182,20 @@ impl Vendors {
             Some("grok") => self.grok(declaration),
             Some("codex") => self.codex(declaration),
             Some("anthropic") => self.anthropic(declaration),
-            Some("ollama") => Ok(self.ollama(declaration)),
+            Some("ollama") => {
+                // Ollama has no search; asking for one is refused rather than
+                // read as offered.
+                if declaration
+                    .web_search
+                    .as_ref()
+                    .is_some_and(|config| config.mode.is_enabled())
+                {
+                    anyhow::bail!(
+                        "providers.{route}.web_search: ollama has no web search keke can run"
+                    );
+                }
+                Ok(self.ollama(declaration))
+            }
             // A declared endpoint that speaks a standard wire is what the
             // kindless path already builds; naming it explicitly reads better
             // in a config file than leaving `kind` out and hoping.
@@ -283,6 +296,20 @@ impl Vendors {
         let env_key = declaration.env_key.as_deref().unwrap_or(ANTHROPIC_ENV_KEY);
         let key =
             keke_auth_api::CredentialRef::new(env_key).context("the anthropic credential name")?;
+        let base_url = self.address(declaration, "ANTHROPIC_BASE_URL", ANTHROPIC_BASE_URL);
+        let auth: Arc<dyn AuthProvider> = Arc::new(crate::api_key::ApiKeyAuth::with_header(
+            key,
+            crate::api_key::KeyHeader::XApiKey,
+            Arc::clone(&self.credentials),
+        ));
+        let search = keke_provider_anthropic::AnthropicWebSearch::new(
+            base_url.clone(),
+            Arc::clone(&auth),
+            declaration.web_search.clone().unwrap_or_default(),
+            declaration.default_model.clone(),
+        )
+        .with_context(|| format!("providers.{}.web_search", declaration.route))?
+        .map(|search| Arc::new(search) as keke_provider_api::ArcWebSearch);
         Ok(crate::declared::wire_provider(
             keke_provider_api::ProviderInfo {
                 route: declaration.route.clone(),
@@ -290,19 +317,16 @@ impl Vendors {
                     .display_name
                     .clone()
                     .unwrap_or_else(|| "Anthropic".to_string()),
-                base_url: self.address(declaration, "ANTHROPIC_BASE_URL", ANTHROPIC_BASE_URL),
+                base_url,
                 wire_api: declaration
                     .wire
                     .map_or(WireApi::Messages, crate::declared::wire_api),
                 auth_id: None,
                 env_key: Some(env_key.to_string()),
             },
-            Arc::new(crate::api_key::ApiKeyAuth::with_header(
-                key,
-                crate::api_key::KeyHeader::XApiKey,
-                Arc::clone(&self.credentials),
-            )),
+            auth,
             declaration.prompt_cache_ttl,
+            search,
         ))
     }
 
@@ -1020,5 +1044,45 @@ mod tests {
             Ok(_) => panic!("a declaration with no address must not resolve"),
         };
         assert!(error.to_string().contains("base_url"), "{error}");
+    }
+
+    /// An Anthropic route offers `web_search` once asked, and refuses at
+    /// launch an access tier its search cannot honor.
+    #[test]
+    fn an_anthropic_route_offers_a_search_once_asked() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let vendors = vendors(home.path());
+
+        let plain = vendors
+            .instance(&declaration("anthropic", "anthropic"))
+            .expect("the anthropic instance");
+        assert!(plain.web_search().is_none());
+
+        let mut searching = declaration("anthropic", "anthropic");
+        searching.web_search = Some(keke_config_types::WebSearchConfig::enabled(
+            keke_config_types::WebSearchMode::Live,
+        ));
+        let provider = vendors
+            .instance(&searching)
+            .expect("the anthropic instance");
+        assert!(provider.web_search().is_some());
+
+        searching.web_search = Some(keke_config_types::WebSearchConfig::enabled(
+            keke_config_types::WebSearchMode::Cached,
+        ));
+        assert!(vendors.instance(&searching).is_err());
+    }
+
+    /// A search turned on where nothing can run it fails the launch instead
+    /// of being read as offered.
+    #[test]
+    fn ollama_refuses_a_search_it_cannot_run() {
+        let home = tempfile::tempdir().expect("a temp home");
+        let vendors = vendors(home.path());
+        let mut declared = declaration("ollama", "ollama");
+        declared.web_search = Some(keke_config_types::WebSearchConfig::enabled(
+            keke_config_types::WebSearchMode::Live,
+        ));
+        assert!(vendors.instance(&declared).is_err());
     }
 }
