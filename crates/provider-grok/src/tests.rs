@@ -1032,18 +1032,31 @@ mod web_search {
             json!(["docs.rs"])
         );
 
-        // The same rule on the other wire, in that wire's own shape.
-        let (_, body) = search_body(
-            config,
-            WireApi::ChatCompletions,
-            json!({"choices": [{"message": {"content": "x"}}], "citations": []}),
-            "lifetimes",
-            &["example.com".to_string()],
+        // A request for nothing but excluded domains is refused before
+        // anything is sent: on this wire an empty list means the whole web.
+        let server = MockServer::start().await;
+        let provider = GrokProvider::new(
+            Arc::new(StubAuth::default()),
+            Endpoint {
+                base_url: format!("{}/v1", server.uri()),
+                default_model: Some("grok-4.6".to_string()),
+                ..endpoint(config, WireApi::ChatCompletions)
+            },
+            None,
         )
-        .await;
+        .expect("this configuration is expressible at xAI");
+        let results = provider
+            .web_search()
+            .expect("a configured search")
+            .search("lifetimes", &["example.com".to_string()])
+            .await;
+        assert!(matches!(results, Err(ProviderError::InvalidRequest(_))));
         assert!(
-            body["search_parameters"].get("sources").is_none()
-                || body["search_parameters"]["sources"][0]["allowed_websites"] == json!([]),
+            server
+                .received_requests()
+                .await
+                .expect("recorded")
+                .is_empty(),
             "a domain the deployment excluded must not be searched"
         );
     }

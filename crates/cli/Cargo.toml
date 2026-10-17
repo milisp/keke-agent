@@ -40,8 +40,10 @@ keke-protocol = { workspace = true }
 keke-provider-api = { workspace = true }
 keke-catalog = { workspace = true }
 keke-provider-codex = { workspace = true }
+keke-provider-anthropic = { workspace = true }
 keke-provider-grok = { workspace = true }
 keke-provider-ollama = { workspace = true }
+keke-provider-openrouter = { workspace = true }
 keke-tools = { workspace = true }
 keke-wire = { workspace = true }
 keke-workspace = { workspace = true }

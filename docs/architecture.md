@@ -53,6 +53,8 @@ graph TD
     subgraph Tier2["Tier 2 - Plugins"]
         keke-provider-grok
         keke-provider-codex
+        keke-provider-anthropic
+        keke-provider-openrouter
         keke-plan
         keke-mcp
     end
@@ -327,7 +329,8 @@ seam `keke-tasks` also declines to open.
 ### Tier 2 — plugins
 
 Compiled-in crates that register through tier 0 traits:
-`keke-provider-grok`, `keke-provider-codex`, `keke-auth-grok`,
+`keke-provider-grok`, `keke-provider-codex`, `keke-provider-anthropic`,
+`keke-provider-openrouter`, `keke-auth-grok`,
 `keke-auth-codex`, `keke-tools`, `keke-mcp`, `keke-hooks`, `keke-skills`,
 `keke-plugin`, `keke-plan`.
 

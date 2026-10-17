@@ -718,6 +718,36 @@ impl WebSearchConfig {
         }
     }
 
+    /// The domains one search may reach, given the model's own request.
+    ///
+    /// A configured allowlist is authoritative and the model's list narrows it
+    /// rather than replacing it, so a model that wanted a domain the config
+    /// excluded cannot get it by naming it. A request that narrows to nothing
+    /// is refused rather than returned empty: to every vendor's search an
+    /// empty list means the whole web, the opposite of what both sides asked
+    /// for.
+    pub fn confine(&self, requested: &[String]) -> Result<Vec<String>, String> {
+        if self.allowed_domains.is_empty() {
+            return Ok(requested.to_vec());
+        }
+        if requested.is_empty() {
+            return Ok(self.allowed_domains.clone());
+        }
+        let domains: Vec<String> = self
+            .allowed_domains
+            .iter()
+            .filter(|domain| requested.iter().any(|wanted| wanted == *domain))
+            .cloned()
+            .collect();
+        if domains.is_empty() {
+            return Err(format!(
+                "none of the requested domains is allowed; this deployment searches only: {}",
+                self.allowed_domains.join(", ")
+            ));
+        }
+        Ok(domains)
+    }
+
     /// Reject a config whose settings cannot take effect, naming why.
     ///
     /// A restriction that is silently ignored is worse than one that is

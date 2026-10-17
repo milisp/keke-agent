@@ -261,9 +261,22 @@ impl WireClient {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<String, ProviderError> {
-        let builder = self
-            .authorize(self.http.post(self.url(path)).json(body))
-            .await?;
+        self.post_with(WireApi::ChatCompletions, path, body).await
+    }
+
+    /// [`WireClient::post`] for an endpoint whose wire format asks for headers
+    /// of its own — the same reason [`WireClient::fetch_with`] exists.
+    pub async fn post_with(
+        &self,
+        api: WireApi,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<String, ProviderError> {
+        let mut builder = self.http.post(self.url(path)).json(body);
+        if matches!(api, WireApi::Messages) {
+            builder = builder.header("anthropic-version", messages::ANTHROPIC_VERSION);
+        }
+        let builder = self.authorize(builder).await?;
         let response = builder.send().await.map_err(http::transport_error)?;
         http::check_status(response)
             .await?

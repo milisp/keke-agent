@@ -113,28 +113,6 @@ pub(crate) fn tool(config: &WebSearchConfig) -> Result<Option<Value>, String> {
     Ok(Some(Value::Object(spec)))
 }
 
-/// The domains one search may reach.
-///
-/// A configured allowlist is authoritative and the model's own list narrows it
-/// rather than replacing it. Letting the model's list win would make the
-/// deployment's setting advisory — a model that wanted a domain the config
-/// excluded need only name it — and the approval seam's rule is the same one:
-/// composing two opinions about reach may restrict and may never widen.
-pub(crate) fn confine(config: &WebSearchConfig, requested: &[String]) -> Vec<String> {
-    if config.allowed_domains.is_empty() {
-        return requested.to_vec();
-    }
-    if requested.is_empty() {
-        return config.allowed_domains.clone();
-    }
-    config
-        .allowed_domains
-        .iter()
-        .filter(|domain| requested.iter().any(|wanted| wanted == *domain))
-        .cloned()
-        .collect()
-}
-
 /// One search as a self-contained request on the responses wire.
 pub(crate) fn responses_request(
     model: &str,

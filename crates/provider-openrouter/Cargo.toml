@@ -1,0 +1,23 @@
+[package]
+name = "keke-provider-openrouter"
+description = "OpenRouter's web search, behind keke's neutral web_search tool."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+keke-config-types = { workspace = true }
+keke-provider-api = { workspace = true }
+keke-wire = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+keke-auth-api = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true
