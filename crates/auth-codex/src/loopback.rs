@@ -8,13 +8,13 @@ use keke_auth_api::LoginUi;
 use keke_oauth::Loopback;
 use keke_oauth::Pkce;
 use keke_oauth::random_token;
+use keke_oauth::token::exchange;
 use reqwest::Client;
 use url::Url;
 
 use keke_credentials::AuthTokens;
 
 use crate::CodexAuthConfig;
-use crate::endpoint::exchange;
 
 use crate::ported::codex::authorize;
 use crate::ported::codex::authorize::CALLBACK_PATH;
@@ -63,7 +63,12 @@ pub(crate) async fn run(
     )
     .await?;
 
-    Ok(tokens.into_tokens(None, None, Some(config.issuer.clone())))
+    Ok(crate::tokens::into_tokens(
+        tokens,
+        None,
+        None,
+        Some(config.issuer.clone()),
+    ))
 }
 
 /// Delegates to the ported upstream builder — see

@@ -13,7 +13,6 @@
 
 mod config;
 mod device;
-mod endpoint;
 mod jwt;
 mod loopback;
 mod ported;
@@ -49,9 +48,9 @@ pub use config::DEFAULT_ISSUER;
 pub use config::DEFAULT_ORIGINATOR;
 pub use config::DEFAULT_VENDOR;
 
-use crate::device::Delay;
-use crate::device::TokioDelay;
 use crate::tokens::SOURCE_ENV;
+use keke_oauth::device::Delay;
+use keke_oauth::device::TokioDelay;
 
 pub const AUTH_ID: &str = "codex";
 
@@ -313,7 +312,7 @@ impl CodexAuth {
 
         // A JSON body, not a form: this endpoint accepts the form encoding for
         // the authorization-code exchange and refuses it for a refresh.
-        let response = endpoint::exchange_json(
+        let response = keke_oauth::token::exchange_json(
             &self.http,
             &self.config.token_endpoint_for(issuer.as_deref()),
             &serde_json::json!({
@@ -327,7 +326,8 @@ impl CodexAuth {
 
         mutation.save(&AuthFile::from_tokens(
             AuthMode::Chatgpt,
-            response.into_tokens(
+            tokens::into_tokens(
+                response,
                 Some(refresh_token),
                 tokens.account_id,
                 issuer.or_else(|| Some(self.config.issuer.clone())),
