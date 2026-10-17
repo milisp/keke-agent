@@ -405,6 +405,7 @@ fn session_config_with(home: &HomeLayout, approval: ApprovalPolicy) -> keke_core
         compaction: CompactionConfig::default(),
         images: keke_config_types::ImageLimits::default(),
         checkpoints: CheckpointConfig::default(),
+        attribution: keke_config_types::AttributionConfig::default(),
         instructions: None,
         approval,
         required_approvals: Vec::new(),

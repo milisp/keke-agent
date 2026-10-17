@@ -1094,6 +1094,56 @@ impl Default for CheckpointConfig {
     }
 }
 
+/// What keke asks the model to sign the commits it makes with.
+///
+/// A validated field rather than a string in the engine because whether an
+/// agent's commits say so is the deployment's call, not keke's: a team may
+/// require it, a project may forbid it, and a fork names itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributionConfig {
+    /// Text the model ends each commit message with, usually a
+    /// `Co-Authored-By:` trailer. `None` asks for nothing.
+    pub commit: Option<String>,
+}
+
+impl AttributionConfig {
+    /// Long enough for a few trailers, short enough that a mistake pasted into
+    /// the field cannot become a second system prompt.
+    pub const MAX_COMMIT_BYTES: usize = 512;
+
+    /// Validate the commit text. Blank is off rather than an error, because
+    /// `commit = ""` is the natural way to say "don't sign".
+    pub fn check_commit(value: &str) -> Result<Option<String>, String> {
+        // A config file saved on Windows says the same thing with `\r\n`.
+        let value = value.trim().replace("\r\n", "\n");
+        if value.is_empty() {
+            return Ok(None);
+        }
+        if value.len() > Self::MAX_COMMIT_BYTES {
+            return Err(format!(
+                "attribution.commit must be at most {} bytes, got {}",
+                Self::MAX_COMMIT_BYTES,
+                value.len()
+            ));
+        }
+        // A control character would reach the commit message invisibly.
+        if value.chars().any(|c| c.is_control() && c != '\n') {
+            return Err("attribution.commit must not contain control characters".to_string());
+        }
+        Ok(Some(value))
+    }
+}
+
+impl Default for AttributionConfig {
+    /// On, so a commit keke wrote says so — and so `git log` can tell the two
+    /// apart when a person later wonders who made a change.
+    fn default() -> Self {
+        Self {
+            commit: Some("Co-Authored-By: keke <noreply@milisp.dev>".to_string()),
+        }
+    }
+}
+
 /// How the terminal interface gets a person's attention when keke needs them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1608,6 +1658,22 @@ impl Default for MemoryConfig {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_blank_commit_attribution_is_off_not_an_error() {
+        assert_eq!(AttributionConfig::check_commit("  \n "), Ok(None));
+    }
+
+    #[test]
+    fn commit_attribution_rejects_what_would_hide_in_a_commit_message() {
+        assert!(AttributionConfig::check_commit("Co-Authored-By: a\u{1b}[2J").is_err());
+        let long = "x".repeat(AttributionConfig::MAX_COMMIT_BYTES + 1);
+        assert!(AttributionConfig::check_commit(&long).is_err());
+        assert_eq!(
+            AttributionConfig::check_commit("Signed-off-by: a\r\nCo-Authored-By: b\r\n"),
+            Ok(Some("Signed-off-by: a\nCo-Authored-By: b".to_string()))
+        );
+    }
 
     #[test]
     fn proxy_ports_default_and_validate_transport_grants() {

@@ -410,6 +410,12 @@ max_tree_mb = 2048
 method = "auto"
 condition = "unfocused"
 
+# What the model ends its commit messages with, in a git repository. Set it to
+# "" to turn signing off — a project's .keke/config.toml can do that for every
+# session in it. At most 512 bytes; several trailers go on separate lines.
+[attribution]
+commit = "Co-Authored-By: keke <noreply@milisp.dev>"
+
 # Model catalog TTL in seconds (0 = ask every time, max 604800 = 7 days)
 model_catalog_ttl_seconds = 21600  # 6 hours default
 

@@ -26,6 +26,9 @@ pub const ORDER_IDENTITY: i32 = -100;
 pub const ORDER_PERSONA: i32 = -50;
 pub const ORDER_PROJECT: i32 = 0;
 pub const ORDER_ENVIRONMENT: i32 = 50;
+/// After the environment, so it reads as a rule about the repository the
+/// environment just described.
+pub const ORDER_ATTRIBUTION: i32 = 60;
 
 const IDENTITY: &str = "\
 You are keke, a coding agent working in a terminal. You have tools for reading, \
@@ -42,6 +45,7 @@ pub async fn assemble_system_prompt(
     workspace: &Workspace,
     cwd: &std::path::Path,
     instructions: Option<&str>,
+    commit_attribution: Option<&str>,
     registry: &ExtensionRegistry,
     ext_ctx: &ExtensionContext,
 ) -> String {
@@ -68,11 +72,25 @@ pub async fn assemble_system_prompt(
         }
     }
 
+    let vcs = keke_workspace::vcs_status(workspace.root());
     fragments.push(ContextFragment::new(
         "environment",
         ORDER_ENVIRONMENT,
-        environment_fragment(workspace, cwd),
+        environment_fragment(workspace, cwd, vcs.as_ref()),
     ));
+
+    // Only where there is a repository to commit to: outside one the rule is
+    // a line of prompt the model pays for and can never act on.
+    if let (Some(_), Some(trailer)) = (&vcs, commit_attribution) {
+        fragments.push(ContextFragment::new(
+            "attribution",
+            ORDER_ATTRIBUTION,
+            format!(
+                "When you create a git commit, end the commit message with the \
+                 following, after a blank line:\n\n{trailer}"
+            ),
+        ));
+    }
 
     for contributor in registry.context_contributors() {
         fragments.extend(contributor.contribute_turn_context(ext_ctx).await);
@@ -97,7 +115,11 @@ pub async fn assemble_system_prompt(
 }
 
 /// What the model needs to know about where it is running.
-fn environment_fragment(workspace: &Workspace, cwd: &std::path::Path) -> String {
+fn environment_fragment(
+    workspace: &Workspace,
+    cwd: &std::path::Path,
+    vcs: Option<&keke_workspace::VcsStatus>,
+) -> String {
     let mut lines = vec![
         "Environment:".to_string(),
         format!("  workspace root: {}", workspace.root()),
@@ -105,8 +127,8 @@ fn environment_fragment(workspace: &Workspace, cwd: &std::path::Path) -> String 
         format!("  platform: {}", std::env::consts::OS),
     ];
 
-    if let Some(status) = keke_workspace::vcs_status(workspace.root()) {
-        if let Some(branch) = status.branch {
+    if let Some(status) = vcs {
+        if let Some(branch) = &status.branch {
             lines.push(format!("  git branch: {branch}"));
         }
         if status.changes.is_empty() {
@@ -164,7 +186,15 @@ mod tests {
         std::fs::write(dir.path().join("AGENTS.md"), "the project speaks").expect("write");
         let root = keke_paths::AbsPath::new(dir.path()).expect("absolute");
         let workspace = Workspace::new(root);
-        assemble_system_prompt(&workspace, dir.path(), instructions, registry, ext_ctx).await
+        assemble_system_prompt(
+            &workspace,
+            dir.path(),
+            instructions,
+            None,
+            registry,
+            ext_ctx,
+        )
+        .await
     }
 
     /// A caller running several named agents from one installation gives each
@@ -211,10 +241,77 @@ mod tests {
         let workspace = Workspace::new(root);
 
         assert_eq!(
-            assemble_system_prompt(&workspace, dir.path(), Some("   \n  "), &registry, &blank)
-                .await,
-            assemble_system_prompt(&workspace, dir.path(), None, &registry, &absent).await
+            assemble_system_prompt(
+                &workspace,
+                dir.path(),
+                Some("   \n  "),
+                None,
+                &registry,
+                &blank
+            )
+            .await,
+            assemble_system_prompt(&workspace, dir.path(), None, None, &registry, &absent).await
         );
+    }
+
+    /// A repository with no commit yet: the one an agent most often makes the
+    /// first commit in.
+    fn repository() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git init");
+        dir
+    }
+
+    async fn assemble_in(
+        dir: &std::path::Path,
+        attribution: Option<&str>,
+    ) -> (String, Vec<String>) {
+        let registry = ExtensionRegistryBuilder::new().build();
+        let ext_ctx = ExtensionContext::new(SessionId::new(), ThreadId::new());
+        let workspace = Workspace::new(keke_paths::AbsPath::new(dir).expect("absolute"));
+        let prompt =
+            assemble_system_prompt(&workspace, dir, None, attribution, &registry, &ext_ctx).await;
+        let names = ext_ctx
+            .drain_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                keke_protocol::SessionEvent::ContextFragment { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect();
+        (prompt, names)
+    }
+
+    const TRAILER: &str = "Co-Authored-By: keke <noreply@example.test>";
+
+    /// The model is told how to sign a commit, and since that is model-visible
+    /// the log says so too (invariant 6).
+    #[tokio::test]
+    async fn a_repository_session_is_asked_to_sign_its_commits() {
+        let repo = repository();
+
+        let (prompt, names) = assemble_in(repo.path(), Some(TRAILER)).await;
+
+        assert!(prompt.contains(TRAILER));
+        assert!(names.iter().any(|name| name == "attribution"));
+    }
+
+    /// Outside a repository there is nothing to commit, and with attribution
+    /// turned off there is nothing to sign with; neither costs a line of prompt.
+    #[tokio::test]
+    async fn no_signing_rule_without_a_repository_or_a_trailer() {
+        let plain = tempfile::tempdir().expect("tempdir");
+        let (prompt, _) = assemble_in(plain.path(), Some(TRAILER)).await;
+        assert!(!prompt.contains(TRAILER));
+
+        let repo = repository();
+        let (_, names) = assemble_in(repo.path(), None).await;
+        assert!(!names.iter().any(|name| name == "attribution"));
     }
 
     /// Invariant 6: what an extension puts in front of the model reaches the

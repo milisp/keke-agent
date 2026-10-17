@@ -189,6 +189,7 @@ fn session_config(home: &HomeLayout) -> keke_core::SessionConfig {
         compaction: CompactionConfig::default(),
         images: keke_config_types::ImageLimits::default(),
         checkpoints: keke_config_types::CheckpointConfig::default(),
+        attribution: keke_config_types::AttributionConfig::default(),
         instructions: None,
         approval: ApprovalPolicy::Never,
         required_approvals: Vec::new(),

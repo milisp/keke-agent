@@ -446,6 +446,7 @@ async fn session_builder(
             compaction: config.compaction,
             images: config.images,
             checkpoints: config.checkpoints,
+            attribution: config.attribution.clone(),
             instructions: config.instructions.clone(),
             approval,
             required_approvals: config.require_approval.clone(),
