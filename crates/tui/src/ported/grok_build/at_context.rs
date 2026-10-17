@@ -1,9 +1,12 @@
 //! Ported from
 //! `../grok-build/crates/codegen/xai-grok-pager/src/views/file_search/context.rs`.
-//! See `THIRD_PARTY_NOTICES.md`. Unchanged apart from `pub` -> `pub(crate)`:
-//! keke-tui runs `@`-detection per input line rather than over a whole
-//! document, but the API here is already line-agnostic (plain `&str` + a byte
-//! cursor), so no other adaptation was needed.
+//! See `THIRD_PARTY_NOTICES.md`. Changes from upstream: `pub` -> `pub(crate)`,
+//! and `detect_with_drill` is folded into `detect` without its drill-prefix
+//! parameter — keke has no drill-into-directory state to supply one, so the
+//! only caller ever passed `None`. keke-tui runs `@`-detection per input line
+//! rather than over a whole document, but the API here is already
+//! line-agnostic (plain `&str` + a byte cursor), so no other adaptation was
+//! needed.
 //!
 //! @-context detection: parses `@query` tokens from prompt text + cursor position.
 //!
@@ -69,17 +72,6 @@ impl AtContext {
 /// Returns `None` if the cursor is not inside an @-token, or if the `@` is
 /// preceded by an alphanumeric/underscore character (e.g., `email@`).
 pub(crate) fn detect(text: &str, cursor: usize) -> Option<AtContext> {
-    detect_with_drill(text, cursor, None)
-}
-
-/// Like [`detect`], but treats whitespace *inside* `drill_prefix` (the path of
-/// the directory being drilled into) as part of the @-token, so `@my dir/` stays
-/// one token. Self-validating: inert once the path content stops matching it.
-pub(crate) fn detect_with_drill(
-    text: &str,
-    cursor: usize,
-    drill_prefix: Option<&str>,
-) -> Option<AtContext> {
     // Cursor must be within text bounds and on a char boundary.
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -95,28 +87,12 @@ pub(crate) fn detect_with_drill(
         return None;
     }
 
-    // Path content starts after `@` (+ optional `!` hidden-mode marker).
-    let content_start = at_idx + 1;
-    let after_bang = if text[content_start..].starts_with('!') {
-        content_start + 1
-    } else {
-        content_start
-    };
-    // Whitespace inside the drilled prefix is path content, not a terminator.
-    let internal_until = drill_prefix.and_then(|prefix| {
-        text.get(after_bang..)
-            .filter(|rest| rest.starts_with(prefix))
-            .map(|_| after_bang + prefix.len())
-    });
-
     // Find the end of the @-token: first whitespace, comma, or semicolon after `@`.
     let token_end = text[at_idx + 1..]
         .char_indices()
         .find_map(|(offset, ch)| {
             let abs = at_idx + 1 + offset;
-            if (ch.is_whitespace() || matches!(ch, ',' | ';'))
-                && internal_until.is_none_or(|until| abs >= until)
-            {
+            if ch.is_whitespace() || matches!(ch, ',' | ';') {
                 Some(abs)
             } else {
                 None
@@ -283,92 +259,5 @@ mod tests {
         let ctx = detect("hello @bar", 10).unwrap();
         assert_eq!(ctx.range, 6..10);
         assert_eq!(ctx.path_range(), 7..10);
-    }
-
-    // ── Drill-aware detection (whitespace inside a drilled dir name) ─────
-
-    #[test]
-    fn drill_prefix_allows_internal_space() {
-        let ctx = detect_with_drill("@my dir", 7, Some("my dir")).unwrap();
-        assert_eq!(ctx.range, 0..7);
-        assert_eq!(ctx.query, "my dir");
-        assert!(!ctx.is_dir_mode());
-    }
-
-    #[test]
-    fn drill_prefix_enters_dir_mode_with_trailing_slash() {
-        let ctx = detect_with_drill("@my dir/", 8, Some("my dir")).unwrap();
-        assert_eq!(ctx.query, "my dir/");
-        assert!(ctx.is_dir_mode());
-    }
-
-    #[test]
-    fn drill_prefix_allows_internal_tab() {
-        let ctx = detect_with_drill("@my\tdir", 7, Some("my\tdir")).unwrap();
-        assert_eq!(ctx.range, 0..7);
-        assert_eq!(ctx.query, "my\tdir");
-    }
-
-    #[test]
-    fn drill_prefix_with_hidden_mode() {
-        let ctx = detect_with_drill("@!my dir", 8, Some("my dir")).unwrap();
-        assert!(ctx.is_hidden_mode());
-        assert_eq!(ctx.matcher_query(), "my dir");
-    }
-
-    #[test]
-    fn drill_prefix_mismatch_falls_back_to_whitespace_terminator() {
-        // Prefix mismatch → space terminates as usual (sentence typing preserved).
-        assert!(detect_with_drill("@foo bar", 8, Some("my dir")).is_none());
-    }
-
-    #[test]
-    fn drill_prefix_whitespace_after_prefix_terminates() {
-        // Whitespace beyond the drilled prefix still ends the token.
-        assert!(detect_with_drill("@my dir extra", 13, Some("my dir")).is_none());
-    }
-
-    #[test]
-    fn no_drill_prefix_space_still_terminates() {
-        // Without a prefix, behavior is identical to plain `detect`.
-        assert!(detect("@my dir", 7).is_none());
-        assert!(detect_with_drill("@my dir", 7, None).is_none());
-    }
-
-    #[test]
-    fn drill_prefix_cursor_mid_token() {
-        // Cursor inside the drilled name still resolves the full token range.
-        let ctx = detect_with_drill("@my dir/sub", 5, Some("my dir")).unwrap();
-        assert_eq!(ctx.range, 0..11);
-        assert_eq!(ctx.query, "my d");
-    }
-
-    #[test]
-    fn drill_prefix_inert_when_backspaced_out_of_prefix() {
-        // Self-validation: `@my di` no longer starts with `my dir`, so the
-        // anchor goes inert and the space re-terminates.
-        assert!(detect_with_drill("@my di", 6, Some("my dir")).is_none());
-    }
-
-    #[test]
-    fn drill_prefix_allows_multibyte_dir_name() {
-        // `é` is two bytes; guards the `after_bang + prefix.len()` byte math.
-        let ctx = detect_with_drill("@café dir", 10, Some("café dir")).unwrap();
-        assert_eq!(ctx.range, 0..10);
-        assert_eq!(ctx.query, "café dir");
-    }
-
-    #[test]
-    fn drill_prefix_empty_collapses_to_no_prefix() {
-        // Empty prefix anchors nothing → terminates as if no prefix were set.
-        assert!(detect_with_drill("@my dir", 7, Some("")).is_none());
-    }
-
-    #[test]
-    fn drill_prefix_allows_second_level_space_segment() {
-        // Both spaces fall inside the drilled prefix → one token.
-        let ctx = detect_with_drill("@a b/c d", 8, Some("a b/c d")).unwrap();
-        assert_eq!(ctx.range, 0..8);
-        assert_eq!(ctx.query, "a b/c d");
     }
 }

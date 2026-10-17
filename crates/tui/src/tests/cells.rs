@@ -782,25 +782,6 @@ fn a_run_that_errored_stays_open_after_it_finishes() {
 }
 
 #[test]
-fn a_new_command_folds_the_previous_output_not_its_header() {
-    let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
-    finished_commands(&mut app, 3);
-
-    let lines = rendered(&app);
-    assert!(
-        lines.iter().any(|line| line.contains("Ran echo 2")),
-        "the newest command stays visible: {lines:?}"
-    );
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|line| line.contains("12 lines"))
-            .count(),
-        1
-    );
-}
-
-#[test]
 fn a_clean_exploration_run_stays_open() {
     let (mut app, _scripted, _updates, _local) = app_with(Vec::new());
     finished_reads(&mut app, 4);

@@ -1,18 +1,14 @@
 use serde_json::Value;
 use serde_json::json;
 
-use crate::sse::SseFrame;
-
 /// How a scripted reply ends.
 ///
 /// Named for what the model did, not for any one vendor's spelling, because the
 /// same reply is rendered into three wire formats that spell it differently.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Stop {
-    #[default]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
     EndTurn,
     ToolUse,
-    MaxTokens,
 }
 
 /// Token counts, as the vendors' terminal frames report them.
@@ -26,7 +22,6 @@ pub struct Usage {
 #[derive(Clone, Debug)]
 pub(crate) enum Part {
     Text(Vec<String>),
-    Thinking(Vec<String>),
     /// `frames` are the argument JSON split as it will arrive on the wire.
     /// Providers routinely mis-assemble arguments that span frames, so the
     /// split is part of the scripted intent rather than a rendering detail.
@@ -42,28 +37,20 @@ pub(crate) enum Part {
 pub(crate) struct Script {
     pub(crate) parts: Vec<Part>,
     pub(crate) usage: Option<Usage>,
-    pub(crate) stop: Option<Stop>,
-    /// Drop the terminal frames, leaving the stream ending mid-turn. This is
-    /// the only way to exercise a provider's "stream ended without a terminal
-    /// chunk" path, which otherwise only shows up against a flaky network.
-    pub(crate) truncated: bool,
 }
 
 impl Script {
-    /// The stop reason to render. A turn that called tools stops for tool use
-    /// unless the script says otherwise, so the common case needs no annotation.
+    /// The stop reason to render: a turn that called tools stopped for tool use.
     pub(crate) fn stop(&self) -> Stop {
-        self.stop.unwrap_or_else(|| {
-            if self
-                .parts
-                .iter()
-                .any(|p| matches!(p, Part::ToolCall { .. }))
-            {
-                Stop::ToolUse
-            } else {
-                Stop::EndTurn
-            }
-        })
+        if self
+            .parts
+            .iter()
+            .any(|p| matches!(p, Part::ToolCall { .. }))
+        {
+            Stop::ToolUse
+        } else {
+            Stop::EndTurn
+        }
     }
 
     pub(crate) fn usage(&self) -> Usage {
@@ -74,8 +61,6 @@ impl Script {
 #[derive(Clone, Debug)]
 pub(crate) enum ReplyBody {
     Script(Script),
-    /// Frames served verbatim, whatever the endpoint's format normally is.
-    RawSse(Vec<SseFrame>),
     Json(Value),
 }
 
@@ -122,12 +107,6 @@ impl Reply {
         Self::empty().with_text_deltas(deltas)
     }
 
-    /// A turn of reasoning text with no visible text.
-    #[must_use]
-    pub fn thinking(text: impl Into<String>) -> Self {
-        Self::empty().with_thinking(text)
-    }
-
     /// A turn that calls one tool, its arguments split across two frames.
     #[must_use]
     pub fn tool_call(name: impl Into<String>, arguments: Value) -> Self {
@@ -150,28 +129,6 @@ impl Reply {
         }
     }
 
-    /// A 200 with this JSON body, bypassing rendering entirely.
-    #[must_use]
-    pub fn json(body: Value) -> Self {
-        Self {
-            status: 200,
-            headers: Vec::new(),
-            body: ReplyBody::Json(body),
-        }
-    }
-
-    /// The escape hatch: frames served exactly as given, whatever the endpoint.
-    /// For wire shapes this crate has no opinion about, and for deliberately
-    /// malformed bytes.
-    #[must_use]
-    pub fn raw_sse(frames: Vec<SseFrame>) -> Self {
-        Self {
-            status: 200,
-            headers: Vec::new(),
-            body: ReplyBody::RawSse(frames),
-        }
-    }
-
     #[must_use]
     pub fn with_text(self, text: impl Into<String>) -> Self {
         self.push(Part::Text(vec![text.into()]))
@@ -180,19 +137,6 @@ impl Reply {
     #[must_use]
     pub fn with_text_deltas<S: Into<String>>(self, deltas: impl IntoIterator<Item = S>) -> Self {
         self.push(Part::Text(deltas.into_iter().map(Into::into).collect()))
-    }
-
-    #[must_use]
-    pub fn with_thinking(self, text: impl Into<String>) -> Self {
-        self.push(Part::Thinking(vec![text.into()]))
-    }
-
-    #[must_use]
-    pub fn with_thinking_deltas<S: Into<String>>(
-        self,
-        deltas: impl IntoIterator<Item = S>,
-    ) -> Self {
-        self.push(Part::Thinking(deltas.into_iter().map(Into::into).collect()))
     }
 
     /// Add a tool call whose serialized arguments are split across two frames.
@@ -230,23 +174,6 @@ impl Reply {
                 input_tokens,
                 output_tokens,
             });
-        }
-        self
-    }
-
-    #[must_use]
-    pub fn with_stop(mut self, stop: Stop) -> Self {
-        if let ReplyBody::Script(script) = &mut self.body {
-            script.stop = Some(stop);
-        }
-        self
-    }
-
-    /// End the stream before its terminal frames, as a dropped connection does.
-    #[must_use]
-    pub fn truncated(mut self) -> Self {
-        if let ReplyBody::Script(script) = &mut self.body {
-            script.truncated = true;
         }
         self
     }

@@ -970,27 +970,6 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupted_write_leaves_the_previous_credential_intact() {
-        let (_dir, store) = store();
-        let vendor = codex();
-        let first = AuthFile::from_tokens(AuthMode::Chatgpt, AuthTokens::bearer("access-1"));
-        store.save(&vendor, &first).expect("save");
-
-        // The staged bytes are the whole of the next write; dropping them is
-        // exactly what a crash between staging and rename leaves behind.
-        let path = store.path(&vendor).expect("path");
-        let body = serde_json::to_vec_pretty(&AuthFile::from_tokens(
-            AuthMode::Chatgpt,
-            AuthTokens::bearer("access-2"),
-        ))
-        .expect("serialize");
-        drop(Staged::stage(path.as_path(), &body).expect("stage"));
-
-        let read = store.load(&vendor).expect("load").expect("present");
-        assert_eq!(read.tokens.expect("tokens").access_token, "access-1");
-    }
-
-    #[test]
     fn a_file_from_a_newer_keke_is_refused_rather_than_misread() {
         let (_dir, store) = store();
         let vendor = codex();

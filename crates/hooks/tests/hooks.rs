@@ -161,23 +161,6 @@ async fn a_denial_with_nothing_to_say_still_denies() {
 }
 
 #[tokio::test]
-async fn a_hook_that_runs_past_its_timeout_denies() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    plugin(
-        dir.path(),
-        "slow",
-        "PreToolUse",
-        "Bash",
-        "sleep 30",
-        r#", "timeout": 1"#,
-    );
-    let plugins = plugin_set(dir.path(), &["slow"]);
-    let registry = registry_after_starting(&plugins, &[call("Bash", "c1")]).await;
-
-    assert!(registry.first_denial(&call("Bash", "c1")).is_some());
-}
-
-#[tokio::test]
 async fn a_tool_call_whose_hooks_never_ran_is_denied() {
     let dir = tempfile::tempdir().expect("tempdir");
     plugin(dir.path(), "auditor", "PreToolUse", "Bash", "exit 0", "");

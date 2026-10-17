@@ -28,9 +28,7 @@ mod sse;
 mod wire;
 
 pub use reply::Reply;
-pub use reply::Stop;
 pub use reply::Usage;
 pub use server::Endpoint;
 pub use server::MockInferenceServer;
 pub use server::RecordedRequest;
-pub use sse::SseFrame;

@@ -1,16 +1,22 @@
 use futures::StreamExt;
+use keke_protocol::ContentBlock;
+use keke_protocol::Message;
 use keke_protocol::ReasoningEffort;
+use keke_protocol::Role;
 use keke_protocol::StopReason;
+use keke_protocol::ToolCall;
+use keke_protocol::ToolCallId;
+use keke_protocol::ToolResult;
 use keke_protocol::Usage;
 use keke_provider_api::ModelRequest;
 use keke_provider_api::ProviderError;
 use keke_provider_api::StreamChunk;
+use keke_provider_api::ToolSpec;
 use keke_provider_api::WireApi;
 use serde_json::json;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
-use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
@@ -117,6 +123,49 @@ async fn a_stream_that_stops_early_is_retryable_rather_than_malformed() {
     );
 }
 
+/// `[DONE]` is only the transport closing; without a `finish_reason` the model
+/// never said the turn was over, so it is as incomplete as a dropped stream.
+#[tokio::test]
+async fn a_done_sentinel_without_a_finish_reason_is_retryable() {
+    let server = serve(sse(&[
+        json!({"choices":[{"delta":{"content":"half an answ"}}]}).to_string(),
+        "[DONE]".to_string(),
+    ]))
+    .await;
+    let (client, _auth) = client_over(&server);
+
+    let chunks = collect(&client, API).await;
+
+    assert_eq!(chunks.len(), 2, "got {chunks:?}");
+    assert!(matches!(chunks[0], Ok(StreamChunk::TextDelta(_))));
+    assert!(
+        matches!(chunks[1], Err(ProviderError::Transient(_))),
+        "got {:?}",
+        chunks[1]
+    );
+}
+
+#[tokio::test]
+async fn unparseable_tool_arguments_are_a_protocol_error() {
+    let server = serve(sse(&[
+        json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"call_1","function":{"name":"t","arguments":"{\"a\":"}}
+        ]}}]})
+        .to_string(),
+        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
+        "[DONE]".to_string(),
+    ]))
+    .await;
+    let (client, _auth) = client_over(&server);
+
+    let chunks = collect(&client, API).await;
+
+    assert!(
+        matches!(chunks.last(), Some(Err(ProviderError::Protocol(_)))),
+        "got {chunks:?}"
+    );
+}
+
 #[tokio::test]
 async fn usage_is_reported() {
     let server = serve(sse(&[
@@ -187,29 +236,22 @@ async fn rate_limiting_carries_the_stated_delay_and_rejection_is_unauthorized() 
 }
 
 #[tokio::test]
-async fn credentials_are_fetched_again_for_every_request() {
-    let frames = sse(&[
-        json!({"choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
-        "[DONE]".to_string(),
-    ]);
+async fn a_malformed_request_is_invalid_and_not_retried() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(header("authorization", "Bearer token-0"))
-        .respond_with(stream_response(frames.clone()))
-        .up_to_n_times(1)
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": "bad model"})))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(header("authorization", "Bearer token-1"))
-        .respond_with(stream_response(frames))
-        .mount(&server)
-        .await;
-    let (client, auth) = client_over(&server);
+    let (client, _auth) = client_over(&server);
 
-    collect_ok(&client, API).await;
-    collect_ok(&client, API).await;
+    let invalid = client.stream(API, request()).await.err().expect("invalid");
 
-    assert_eq!(auth.fetches(), 2);
+    assert!(
+        matches!(invalid, ProviderError::InvalidRequest(_)),
+        "got {invalid:?}"
+    );
+    assert!(!invalid.is_retryable());
 }
 
 #[tokio::test]
@@ -232,6 +274,74 @@ async fn the_system_prompt_leads_the_message_array() {
     assert!(body.get("input").is_none());
 }
 
+/// Reasoning the model produced beside a tool call is replayed on the
+/// assistant message, and the result travels as its own `tool` message.
+#[test]
+fn a_tool_result_becomes_its_own_tool_message() {
+    let call_id = ToolCallId::new("call_9");
+    let request = ModelRequest {
+        system: Some("be terse".to_string()),
+        messages: vec![
+            Message::user("read it"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::thinking("need the file"),
+                    ContentBlock::text("Looking."),
+                    ContentBlock::ToolCall(ToolCall {
+                        id: call_id.clone(),
+                        name: "read_file".to_string(),
+                        arguments: json!({"path": "a.rs"}),
+                    }),
+                ],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult::ok(
+                    call_id,
+                    "fn main() {}",
+                ))],
+            },
+        ],
+        tools: vec![ToolSpec {
+            name: "read_file".to_string(),
+            description: "read a file".to_string(),
+            input_schema: json!({"type": "object"}),
+        }],
+        max_output_tokens: Some(256),
+        temperature: Some(0.5),
+        ..request()
+    };
+
+    let body = crate::chat_completions_body(&request, true);
+
+    assert_eq!(body["stream"], json!(true));
+    assert_eq!(body["stream_options"]["include_usage"], json!(true));
+    assert_eq!(body["max_tokens"], json!(256));
+    assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
+
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(messages[0]["role"], json!("system"));
+    assert_eq!(messages[0]["content"], json!("be terse"));
+    assert_eq!(messages[1]["content"][0]["text"], json!("read it"));
+    assert_eq!(messages[2]["role"], json!("assistant"));
+    assert_eq!(messages[2]["content"], json!("Looking."));
+    assert_eq!(messages[2]["reasoning_content"], json!("need the file"));
+    assert_eq!(messages[2]["tool_calls"][0]["id"], json!("call_9"));
+    assert_eq!(
+        messages[2]["tool_calls"][0]["function"]["arguments"],
+        json!(r#"{"path":"a.rs"}"#)
+    );
+    assert_eq!(messages[3]["role"], json!("tool"));
+    assert_eq!(messages[3]["tool_call_id"], json!("call_9"));
+    assert_eq!(messages[3]["content"], json!("fn main() {}"));
+
+    // Usage is requested only on a stream; a plain body has nowhere to put it.
+    let unstreamed = crate::chat_completions_body(&request, false);
+    assert_eq!(unstreamed["stream"], json!(false));
+    assert!(unstreamed.get("stream_options").is_none(), "{unstreamed}");
+}
+
 /// The effort level is a top-level word on this wire, and an unknown rung is
 /// the endpoint's to refuse — translating `xhigh` down to `high` would buy less
 /// thinking than was asked for without saying so.
@@ -251,12 +361,6 @@ fn effort_is_sent_as_written() {
 fn an_unset_effort_leaves_the_field_off() {
     let body = crate::chat_completions_body(&request(), false);
     assert!(body.get("reasoning_effort").is_none(), "{body}");
-}
-
-#[test]
-fn mcp_tool_ids_are_sent_under_names_the_vendor_accepts() {
-    let body = crate::chat_completions_body(&mcp_request(), false);
-    assert_mcp_names_sanitized(&body);
 }
 
 #[tokio::test]

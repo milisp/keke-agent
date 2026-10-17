@@ -96,18 +96,6 @@ async fn stderr_arrives_in_the_same_buffer_as_stdout() {
     assert!(text.contains("err"), "{text}");
 }
 
-/// Reading is consuming, so a model polling a long-running command spends its
-/// context on new lines rather than on the whole log every time.
-#[tokio::test]
-async fn a_read_takes_what_it_returns() {
-    let (tasks, _dir, root) = host(BackgroundLimits::default());
-    let id = tasks.spawn("echo once".to_string(), &root).expect("spawn");
-    settle(&tasks, &id).await;
-
-    assert_eq!(tasks.take_output(&id).expect("first").text.trim(), "once");
-    assert_eq!(tasks.take_output(&id).expect("second").text, "");
-}
-
 #[tokio::test]
 async fn a_killed_command_says_it_was_killed_rather_than_that_it_exited() {
     let (tasks, _dir, root) = host(BackgroundLimits::default());

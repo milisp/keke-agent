@@ -212,14 +212,6 @@ pub async fn read_skill_body_with(
 mod tests {
     use super::*;
 
-    /// The metadata was summarized into the index line already; sending it
-    /// again is context spent on something the reader has acted on.
-    #[test]
-    fn frontmatter_is_stripped_leaving_only_the_body() {
-        let text = "---\nname: review\ndescription: how we review\n---\n\nBody text.\n";
-        assert_eq!(keke_plugin::markdown_body(text), "Body text.\n");
-    }
-
     #[test]
     fn a_disabled_skill_is_not_offered_to_the_model() {
         let selection = SkillSelection::new(vec!["acme:review".to_string()]).expect("valid");

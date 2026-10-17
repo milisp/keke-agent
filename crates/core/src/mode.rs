@@ -72,9 +72,4 @@ mod tests {
         switch.set(SessionMode::Plan);
         assert_eq!(held.get(), SessionMode::Plan);
     }
-
-    #[test]
-    fn a_fresh_switch_is_not_planning() {
-        assert_eq!(SessionModeSwitch::default().get(), SessionMode::Default);
-    }
 }

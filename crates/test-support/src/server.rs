@@ -214,20 +214,6 @@ impl MockInferenceServer {
             .cloned()
             .collect()
     }
-
-    #[must_use]
-    pub fn request_count(&self) -> usize {
-        lock(&self.state.log).len()
-    }
-
-    /// Replies queued but never served, so a test can assert it scripted
-    /// exactly what it meant to.
-    #[must_use]
-    pub fn pending_scripts(&self, endpoint: Endpoint) -> usize {
-        lock(&self.state.scripts)
-            .get(&endpoint)
-            .map_or(0, VecDeque::len)
-    }
 }
 
 impl Drop for MockInferenceServer {
@@ -371,18 +357,19 @@ fn serve(reply: Reply, endpoint: Endpoint, model: &str, streaming: bool) -> Resp
     let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     match reply.body {
         ReplyBody::Json(value) => json_response(status, &reply.headers, &value),
-        ReplyBody::RawSse(frames) => sse_response(status, &reply.headers, frames),
-        ReplyBody::Script(script) => {
-            if streaming {
-                sse_response(status, &reply.headers, render(endpoint, &script, model))
-            } else {
-                json_response(
-                    status,
-                    &reply.headers,
-                    &render_json(endpoint, &script, model),
-                )
-            }
+        ReplyBody::Script(script) if streaming => {
+            sse_response(status, &reply.headers, render(endpoint, &script, model))
         }
+        // Every keke wire client streams, so a scripted turn is only rendered as
+        // a stream; a non-streaming request is the provider's mistake to see.
+        ReplyBody::Script(_) => json_response(
+            StatusCode::BAD_REQUEST,
+            &[],
+            &json!({ "error": {
+                "message": "the mock renders scripted turns only for streaming requests",
+                "type": "mock_error",
+            } }),
+        ),
     }
 }
 
@@ -393,14 +380,6 @@ fn render(endpoint: Endpoint, script: &Script, model: &str) -> Vec<SseFrame> {
         Endpoint::ChatCompletions | Endpoint::Models => {
             wire::chat_completions_stream(script, model)
         }
-    }
-}
-
-fn render_json(endpoint: Endpoint, script: &Script, model: &str) -> Value {
-    match endpoint {
-        Endpoint::Responses => wire::responses_json(script, model),
-        Endpoint::Messages => wire::messages_json(script, model),
-        Endpoint::ChatCompletions | Endpoint::Models => wire::chat_completions_json(script, model),
     }
 }
 

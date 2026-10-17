@@ -227,11 +227,7 @@ pub(crate) fn provider_for_cached(
     };
 
     let http = build_http_client(declaration)?;
-    let mut headers = openrouter_attribution_headers(&info.base_url);
-    for (name, value) in extra_headers(declaration)? {
-        headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
-        headers.push((name, value));
-    }
+    let headers = request_headers(&info.base_url, declaration)?;
     let api = info.wire_api;
     // OpenRouter runs a search for any model behind it, so a declared
     // OpenRouter route is the one kindless endpoint with a search to offer.
@@ -388,6 +384,22 @@ fn openrouter_attribution_headers(base_url: &str) -> Vec<(String, String)> {
         ),
         ("X-Title".to_string(), "keke".to_string()),
     ]
+}
+
+/// The headers every request on a declared route carries: the OpenRouter
+/// attribution defaults, with any header the declaration names replacing the
+/// default of the same name (compared case-insensitively, as HTTP does) so a
+/// person's own `X-Title` is sent instead of keke's rather than beside it.
+fn request_headers(
+    base_url: &str,
+    declaration: &ProviderDeclaration,
+) -> Result<Vec<(String, String)>, DeclarationError> {
+    let mut headers = openrouter_attribution_headers(base_url);
+    for (name, value) in extra_headers(declaration)? {
+        headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
+        headers.push((name, value));
+    }
+    Ok(headers)
 }
 
 /// Resolve a declaration's custom headers, expanding an `env:VAR_NAME` value
@@ -651,11 +663,7 @@ mod tests {
             "X-Title".to_string(),
             "my-app".to_string(),
         )]));
-        let mut headers = openrouter_attribution_headers("https://openrouter.ai/api/v1");
-        for (name, value) in extra_headers(&declared).expect("resolves") {
-            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
-            headers.push((name, value));
-        }
+        let headers = request_headers("https://openrouter.ai/api/v1", &declared).expect("resolves");
         assert_eq!(
             headers,
             vec![

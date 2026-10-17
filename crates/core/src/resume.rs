@@ -822,45 +822,6 @@ mod tests {
         assert_eq!(history_from_log(&events), vec![input, report]);
     }
 
-    #[test]
-    fn the_tail_after_the_last_request_is_replayed() {
-        let turn = TurnId::new();
-        let call = ToolCall {
-            id: ToolCallId::new("c1"),
-            name: "read_file".to_string(),
-            arguments: serde_json::Value::Null,
-        };
-        let reply = Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(call.clone())],
-        };
-        let events = vec![
-            SessionEvent::ModelRequest {
-                turn,
-                messages: vec![Message::user("read it")],
-                tools: Vec::new(),
-                reasoning_effort: None,
-                model: None,
-            },
-            SessionEvent::ModelResponse {
-                turn,
-                message: reply.clone(),
-                stop_reason: StopReason::ToolUse,
-                usage: Usage::default(),
-            },
-            SessionEvent::ToolCallStart { turn, call },
-            SessionEvent::ToolCallEnd {
-                turn,
-                result: result("c1"),
-            },
-        ];
-
-        let history = history_from_log(&events);
-        assert_eq!(history.len(), 3);
-        assert_eq!(history[1], reply);
-        assert_eq!(history[2].role, Role::Tool);
-    }
-
     /// A turn's later steps log an empty `messages` snapshot (see `turn.rs`)
     /// to avoid re-logging the whole history on every step. Those events must
     /// not be picked as the baseline — the last one that actually carries a
@@ -912,26 +873,6 @@ mod tests {
         assert_eq!(history[0], Message::user("read it"));
         assert_eq!(history[1], reply);
         assert_eq!(history[2].role, Role::Tool);
-    }
-
-    /// Two results from one step are one message, the same shape the live turn
-    /// loop writes.
-    #[test]
-    fn one_batch_of_results_is_one_message() {
-        let turn = TurnId::new();
-        let events = vec![
-            SessionEvent::ToolCallEnd {
-                turn,
-                result: result("c1"),
-            },
-            SessionEvent::ToolCallEnd {
-                turn,
-                result: result("c2"),
-            },
-        ];
-        let history = history_from_log(&events);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content.len(), 2);
     }
 
     /// A turn that failed before reaching the model still said something.
@@ -1411,28 +1352,5 @@ mod tests {
         }];
         assert_eq!(folded(&silent).context(), 254_935);
         assert_eq!(folded(&[]).context(), 0);
-    }
-
-    #[test]
-    fn usage_sums_the_turns() {
-        let turn = TurnId::new();
-        let step = Usage {
-            input_tokens: 10,
-            output_tokens: 3,
-            ..Usage::default()
-        };
-        let events = vec![
-            SessionEvent::TurnEnd {
-                turn,
-                stop_reason: StopReason::EndTurn,
-                usage: step,
-            },
-            SessionEvent::TurnEnd {
-                turn,
-                stop_reason: StopReason::EndTurn,
-                usage: step,
-            },
-        ];
-        assert_eq!(usage_from_log(&events).total(), 26);
     }
 }

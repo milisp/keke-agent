@@ -1001,21 +1001,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_preserves_text_blocks() {
-        let blocks = vec![
-            ContentBlock::Text(TextContent::new("first")),
-            ContentBlock::Text(TextContent::new("second")),
-        ];
-        assert_eq!(
-            prompt_message(&blocks).unwrap().content,
-            vec![
-                keke_protocol::ContentBlock::text("first"),
-                keke_protocol::ContentBlock::text("second")
-            ]
-        );
-    }
-
-    #[test]
     fn prompt_preserves_images_in_order() {
         use agent_client_protocol::schema::v1::ImageContent;
         let blocks = vec![

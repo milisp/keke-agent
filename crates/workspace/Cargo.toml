@@ -12,8 +12,6 @@ keke-config-types = { workspace = true }
 keke-paths = { workspace = true }
 ignore = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

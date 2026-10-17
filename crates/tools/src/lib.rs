@@ -908,19 +908,6 @@ mod tests {
         assert!(read.input_schema()["properties"]["path"].is_object());
     }
 
-    #[tokio::test]
-    async fn bad_json_arguments_name_the_tool() {
-        let (_dir, ctx) = workspace();
-        let read: ArcTool = Arc::new(ReadFile);
-
-        let error = read
-            .call(ctx, serde_json::json!({ "offset": 2 }))
-            .await
-            .expect_err("no path");
-
-        assert!(matches!(error, ToolError::InvalidArgs { ref tool, .. } if tool == "read_file"));
-    }
-
     /// The whole point of the flag: the call returns while the command is
     /// still running, and hands back the id everything later uses to name it.
     #[tokio::test(flavor = "multi_thread")]

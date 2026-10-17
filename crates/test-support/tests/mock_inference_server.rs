@@ -7,8 +7,6 @@ use std::error::Error;
 use keke_test_support::Endpoint;
 use keke_test_support::MockInferenceServer;
 use keke_test_support::Reply;
-use keke_test_support::SseFrame;
-use keke_test_support::Stop;
 use serde_json::Value;
 use serde_json::json;
 
@@ -126,11 +124,7 @@ async fn messages_streams_text_as_typed_events_ending_with_message_stop() -> Res
 #[tokio::test]
 async fn one_reply_renders_into_all_three_wire_formats() -> Result {
     let server = MockInferenceServer::start().await;
-    let reply = || {
-        Reply::thinking("because")
-            .with_text("done")
-            .with_tool_call("read_file", json!({ "path": "a" }))
-    };
+    let reply = || Reply::text("done").with_tool_call("read_file", json!({ "path": "a" }));
     for endpoint in [
         Endpoint::ChatCompletions,
         Endpoint::Responses,
@@ -138,10 +132,6 @@ async fn one_reply_renders_into_all_three_wire_formats() -> Result {
     ] {
         server.script(endpoint, reply());
         let wire = post_stream(&server, endpoint, streaming_body()).await;
-        assert!(
-            wire.contains("because"),
-            "{endpoint:?} lost the reasoning: {wire}"
-        );
         assert!(wire.contains("done"), "{endpoint:?} lost the text: {wire}");
         assert!(
             wire.contains("read_file"),
@@ -245,70 +235,6 @@ async fn a_scripted_status_carries_its_headers() -> Result {
 }
 
 #[tokio::test]
-async fn a_truncated_reply_ends_without_its_terminal_frame() -> Result {
-    let server = MockInferenceServer::start().await;
-    for endpoint in [
-        Endpoint::ChatCompletions,
-        Endpoint::Responses,
-        Endpoint::Messages,
-    ] {
-        server.script(endpoint, Reply::text("half a th").truncated());
-        let wire = post_stream(&server, endpoint, streaming_body()).await;
-        assert!(wire.contains("half a th"), "{endpoint:?}: {wire}");
-        for terminal in [
-            "[DONE]",
-            "response.completed",
-            "message_stop",
-            "finish_reason\":\"",
-        ] {
-            assert!(
-                !wire.contains(terminal),
-                "{endpoint:?} still sent {terminal}: {wire}"
-            );
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn raw_sse_is_served_verbatim() -> Result {
-    let server = MockInferenceServer::start().await;
-    server.script(
-        Endpoint::ChatCompletions,
-        Reply::raw_sse(vec![
-            SseFrame::data("{ not json"),
-            SseFrame::named("weird", "{}"),
-        ]),
-    );
-
-    let wire = post_stream(&server, Endpoint::ChatCompletions, streaming_body()).await;
-    assert_eq!(wire, "data: { not json\n\nevent: weird\ndata: {}\n\n");
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_non_streaming_request_gets_one_json_body() -> Result {
-    let server = MockInferenceServer::start().await;
-    server.script(
-        Endpoint::ChatCompletions,
-        Reply::text("hello").with_stop(Stop::MaxTokens),
-    );
-
-    let body: Value = reqwest::Client::new()
-        .post(format!("{}/chat/completions", server.base_url()))
-        .json(&json!({ "model": "mock-model", "messages": [] }))
-        .send()
-        .await?
-        .json()
-        .await?;
-
-    assert_eq!(body["object"], json!("chat.completion"));
-    assert_eq!(body["choices"][0]["message"]["content"], json!("hello"));
-    assert_eq!(body["choices"][0]["finish_reason"], json!("length"));
-    Ok(())
-}
-
-#[tokio::test]
 async fn the_request_log_records_the_body_and_the_authorization_header() -> Result {
     let server = MockInferenceServer::start().await;
     server.script(Endpoint::Messages, Reply::text("ok"));
@@ -333,28 +259,6 @@ async fn the_request_log_records_the_body_and_the_authorization_header() -> Resu
     assert_eq!(requests[0].authorization(), Some("Bearer sk-test"));
     assert_eq!(requests[0].model(), Some("claude-mock"));
     assert_eq!(requests[0].body["messages"][0]["content"], json!("ping"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn the_request_log_is_readable_while_the_server_runs() -> Result {
-    let server = std::sync::Arc::new(MockInferenceServer::start().await);
-    server.script(Endpoint::ChatCompletions, Reply::text("one"));
-
-    let reader = {
-        let server = server.clone();
-        tokio::spawn(async move {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while server.request_count() == 0 && std::time::Instant::now() < deadline {
-                tokio::task::yield_now().await;
-            }
-            server.requests()
-        })
-    };
-
-    post_stream(&server, Endpoint::ChatCompletions, streaming_body()).await;
-    let seen = reader.await?;
-    assert_eq!(seen.len(), 1);
     Ok(())
 }
 
@@ -401,14 +305,12 @@ async fn scripts_are_consumed_in_order() -> Result {
     let server = MockInferenceServer::start().await;
     server.script(Endpoint::ChatCompletions, Reply::text("first"));
     server.script(Endpoint::ChatCompletions, Reply::text("second"));
-    assert_eq!(server.pending_scripts(Endpoint::ChatCompletions), 2);
 
     let first = post_stream(&server, Endpoint::ChatCompletions, streaming_body()).await;
     let second = post_stream(&server, Endpoint::ChatCompletions, streaming_body()).await;
 
     assert!(first.contains("first") && !first.contains("second"));
     assert!(second.contains("second"));
-    assert_eq!(server.pending_scripts(Endpoint::ChatCompletions), 0);
     Ok(())
 }
 

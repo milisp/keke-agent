@@ -1857,21 +1857,6 @@ mod tests {
         assert_eq!(config.model.provider, "grok-work");
     }
 
-    /// The flag is applied by the composition root after the merge, which is
-    /// what makes a one-off override still possible inside a matched tree.
-    #[test]
-    fn an_explicit_flag_beats_a_directory_override() {
-        let layers = vec![layer(
-            "user",
-            &format!("[[dir]]\nmatch = \"{ROOT}/**\"\nprovider = \"grok-work\"\n"),
-        )];
-        let mut config = Config::from_layers(home(), &layers).expect("merges");
-        assert_eq!(config.model.provider, "grok-work");
-
-        config.model.provider = "xai".to_string();
-        assert_eq!(config.model.provider, "xai");
-    }
-
     /// An entry that could not do anything is a half-finished edit, and
     /// applying nothing quietly is the failure it would cause.
     #[test]

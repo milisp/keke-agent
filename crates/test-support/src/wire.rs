@@ -1,7 +1,7 @@
 //! Renders one [`Script`] into each of the three inference wire formats.
 //!
 //! The three vendors disagree about almost everything except the underlying
-//! turn: where reasoning lives, whether tool arguments are a string or an
+//! turn: whether tool arguments are a string or an
 //! object, which frame carries usage, and what "the stream is over" looks like.
 //! Keeping all three renderings side by side here is what makes it possible to
 //! script an intent once and assert that every provider decodes it the same.
@@ -42,7 +42,6 @@ fn chat_finish_reason(stop: Stop) -> &'static str {
     match stop {
         Stop::EndTurn => "stop",
         Stop::ToolUse => "tool_calls",
-        Stop::MaxTokens => "length",
     }
 }
 
@@ -60,11 +59,6 @@ pub(crate) fn chat_completions_stream(script: &Script, model: &str) -> Vec<SseFr
                 deltas
                     .iter()
                     .map(|d| chat_chunk(model, json!({ "content": d }), Value::Null)),
-            ),
-            Part::Thinking(deltas) => frames.extend(
-                deltas
-                    .iter()
-                    .map(|d| chat_chunk(model, json!({ "reasoning_content": d }), Value::Null)),
             ),
             Part::ToolCall {
                 id,
@@ -96,10 +90,6 @@ pub(crate) fn chat_completions_stream(script: &Script, model: &str) -> Vec<SseFr
         }
     }
 
-    if script.truncated {
-        return frames;
-    }
-
     if script.usage.is_some() {
         let usage = script.usage();
         frames.push(SseFrame::data(
@@ -127,49 +117,6 @@ pub(crate) fn chat_completions_stream(script: &Script, model: &str) -> Vec<SseFr
     frames
 }
 
-pub(crate) fn chat_completions_json(script: &Script, model: &str) -> Value {
-    let mut content = String::new();
-    let mut reasoning = String::new();
-    let mut tool_calls = Vec::new();
-
-    for part in &script.parts {
-        match part {
-            Part::Text(deltas) => content.push_str(&joined(deltas)),
-            Part::Thinking(deltas) => reasoning.push_str(&joined(deltas)),
-            Part::ToolCall { id, name, frames } => tool_calls.push(json!({
-                "id": id,
-                "type": "function",
-                "function": { "name": name, "arguments": joined(frames) },
-            })),
-        }
-    }
-
-    let mut message = json!({ "role": "assistant", "content": content });
-    if !reasoning.is_empty() {
-        message["reasoning_content"] = json!(reasoning);
-    }
-    if !tool_calls.is_empty() {
-        message["tool_calls"] = json!(tool_calls);
-    }
-    let usage = script.usage();
-    json!({
-        "id": CHAT_ID,
-        "object": "chat.completion",
-        "created": 0,
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": message,
-            "finish_reason": chat_finish_reason(script.stop()),
-        }],
-        "usage": {
-            "prompt_tokens": usage.input_tokens,
-            "completion_tokens": usage.output_tokens,
-            "total_tokens": usage.input_tokens + usage.output_tokens,
-        },
-    })
-}
-
 // --- responses --------------------------------------------------------------
 
 /// The completed `output` items, which the Responses API repeats verbatim in
@@ -187,11 +134,6 @@ fn response_items(script: &Script) -> Vec<Value> {
                 "role": "assistant",
                 "content": [{ "type": "output_text", "text": joined(deltas), "annotations": [] }],
             }),
-            Part::Thinking(deltas) => json!({
-                "id": format!("item_{index}"),
-                "type": "reasoning",
-                "summary": [{ "type": "summary_text", "text": joined(deltas) }],
-            }),
             Part::ToolCall { id, name, frames } => json!({
                 "id": format!("item_{index}"),
                 "type": "function_call",
@@ -204,13 +146,13 @@ fn response_items(script: &Script) -> Vec<Value> {
         .collect()
 }
 
-fn response_object(script: &Script, model: &str, status: &str) -> Value {
+fn response_object(script: &Script, model: &str) -> Value {
     let usage = script.usage();
-    let mut object = json!({
+    json!({
         "id": RESPONSE_ID,
         "object": "response",
         "created_at": 0,
-        "status": status,
+        "status": "completed",
         "model": model,
         "output": response_items(script),
         "usage": {
@@ -218,11 +160,7 @@ fn response_object(script: &Script, model: &str, status: &str) -> Value {
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.input_tokens + usage.output_tokens,
         },
-    });
-    if status == "incomplete" {
-        object["incomplete_details"] = json!({ "reason": "max_output_tokens" });
-    }
-    object
+    })
 }
 
 pub(crate) fn responses_stream(script: &Script, model: &str) -> Vec<SseFrame> {
@@ -278,36 +216,6 @@ pub(crate) fn responses_stream(script: &Script, model: &str) -> Vec<SseFrame> {
                         "part": { "type": "output_text", "text": joined(deltas), "annotations": [] } }),
                 ));
             }
-            Part::Thinking(deltas) => {
-                frames.push(emit(
-                    "response.output_item.added",
-                    json!({ "output_index": index, "item": {
-                        "id": item_id, "type": "reasoning", "summary": [],
-                    } }),
-                ));
-                frames.push(emit(
-                    "response.reasoning_summary_part.added",
-                    json!({ "item_id": item_id, "output_index": index, "summary_index": 0,
-                        "part": { "type": "summary_text", "text": "" } }),
-                ));
-                for delta in deltas {
-                    frames.push(emit(
-                        "response.reasoning_summary_text.delta",
-                        json!({ "item_id": item_id, "output_index": index,
-                            "summary_index": 0, "delta": delta }),
-                    ));
-                }
-                frames.push(emit(
-                    "response.reasoning_summary_text.done",
-                    json!({ "item_id": item_id, "output_index": index,
-                        "summary_index": 0, "text": joined(deltas) }),
-                ));
-                frames.push(emit(
-                    "response.reasoning_summary_part.done",
-                    json!({ "item_id": item_id, "output_index": index, "summary_index": 0,
-                        "part": { "type": "summary_text", "text": joined(deltas) } }),
-                ));
-            }
             Part::ToolCall {
                 id,
                 name,
@@ -339,27 +247,11 @@ pub(crate) fn responses_stream(script: &Script, model: &str) -> Vec<SseFrame> {
         ));
     }
 
-    if script.truncated {
-        return frames;
-    }
-
-    let (name, status) = match script.stop() {
-        Stop::MaxTokens => ("response.incomplete", "incomplete"),
-        _ => ("response.completed", "completed"),
-    };
     frames.push(emit(
-        name,
-        json!({ "response": response_object(script, model, status) }),
+        "response.completed",
+        json!({ "response": response_object(script, model) }),
     ));
     frames
-}
-
-pub(crate) fn responses_json(script: &Script, model: &str) -> Value {
-    let status = match script.stop() {
-        Stop::MaxTokens => "incomplete",
-        _ => "completed",
-    };
-    response_object(script, model, status)
 }
 
 // --- messages ---------------------------------------------------------------
@@ -368,25 +260,7 @@ fn messages_stop_reason(stop: Stop) -> &'static str {
     match stop {
         Stop::EndTurn => "end_turn",
         Stop::ToolUse => "tool_use",
-        Stop::MaxTokens => "max_tokens",
     }
-}
-
-fn message_blocks(script: &Script) -> Vec<Value> {
-    script
-        .parts
-        .iter()
-        .map(|part| match part {
-            Part::Text(deltas) => json!({ "type": "text", "text": joined(deltas) }),
-            Part::Thinking(deltas) => json!({ "type": "thinking", "thinking": joined(deltas) }),
-            Part::ToolCall { id, name, frames } => json!({
-                "type": "tool_use",
-                "id": id,
-                "name": name,
-                "input": serde_json::from_str::<Value>(&joined(frames)).unwrap_or(json!({})),
-            }),
-        })
-        .collect()
 }
 
 pub(crate) fn messages_stream(script: &Script, model: &str) -> Vec<SseFrame> {
@@ -414,13 +288,6 @@ pub(crate) fn messages_stream(script: &Script, model: &str) -> Vec<SseFrame> {
                     .map(|d| json!({ "type": "text_delta", "text": d }))
                     .collect(),
             ),
-            Part::Thinking(deltas) => (
-                json!({ "type": "thinking", "thinking": "" }),
-                deltas
-                    .iter()
-                    .map(|d| json!({ "type": "thinking_delta", "thinking": d }))
-                    .collect(),
-            ),
             Part::ToolCall {
                 id,
                 name,
@@ -445,10 +312,6 @@ pub(crate) fn messages_stream(script: &Script, model: &str) -> Vec<SseFrame> {
         frames.push(event("content_block_stop", json!({ "index": index })));
     }
 
-    if script.truncated {
-        return frames;
-    }
-
     frames.push(event(
         "message_delta",
         json!({
@@ -458,18 +321,4 @@ pub(crate) fn messages_stream(script: &Script, model: &str) -> Vec<SseFrame> {
     ));
     frames.push(event("message_stop", json!({})));
     frames
-}
-
-pub(crate) fn messages_json(script: &Script, model: &str) -> Value {
-    let usage = script.usage();
-    json!({
-        "id": MESSAGE_ID,
-        "type": "message",
-        "role": "assistant",
-        "model": model,
-        "content": message_blocks(script),
-        "stop_reason": messages_stop_reason(script.stop()),
-        "stop_sequence": Value::Null,
-        "usage": { "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens },
-    })
 }
