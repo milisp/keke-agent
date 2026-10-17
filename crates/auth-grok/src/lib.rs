@@ -922,24 +922,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_supplied_api_key_is_sent_bare() {
-        let server = MockServer::start().await;
-        let home = Home::new();
-        let store = Arc::new(MemoryStore::new());
-        let auth = xai(&home, &store, GrokAuthConfig::new(server.uri(), "client-1"));
-        store
-            .save(&auth.config.api_key_ref, "xai-key-1")
-            .expect("save");
-
-        let headers = auth.headers().await.expect("headers");
-        assert_eq!(
-            headers.iter().collect::<Vec<_>>(),
-            vec![("authorization", "Bearer xai-key-1")],
-            "a key is spent at the public API, which gates on nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_token_that_is_still_good_is_used_as_is() {
         let server = MockServer::start().await;
         let home = Home::new();

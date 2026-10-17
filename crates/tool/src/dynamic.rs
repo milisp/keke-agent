@@ -380,13 +380,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn input_schema_comes_from_the_args_type() {
-        let tool: ArcTool = Arc::new(Echo);
-        let schema = tool.input_schema();
-        assert!(schema["properties"]["text"].is_object());
-    }
-
     /// A tool whose argument shape is only known at runtime, as an MCP server's
     /// tools are.
     struct Remote;

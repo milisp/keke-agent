@@ -10,13 +10,10 @@
 //! traversal attempt into a successful read of the wrong file.
 
 mod context;
-mod exec;
 mod vcs;
 
 pub use context::InstructionFile;
 pub use context::discover_instructions;
-pub use exec::CommandOutcome;
-pub use exec::run_command;
 pub use vcs::VcsStatus;
 pub use vcs::vcs_status;
 
@@ -37,8 +34,6 @@ pub enum WorkspaceError {
     },
     #[error(transparent)]
     Path(#[from] keke_paths::PathError),
-    #[error("command timed out after {millis}ms")]
-    Timeout { millis: u64 },
 }
 
 /// The project being worked in.
@@ -129,8 +124,6 @@ fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
     fn workspace() -> (tempfile::TempDir, Workspace) {
@@ -201,38 +194,5 @@ mod tests {
         let found = workspace.instructions(dir.path()).expect("discovers");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].text, "agents");
-    }
-
-    #[tokio::test]
-    async fn run_command_captures_output_and_exit_code() {
-        let (_dir, workspace) = workspace();
-        let outcome = run_command(
-            "sh",
-            &["-c", "echo out; echo err 1>&2; exit 3"],
-            workspace.root(),
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("runs");
-
-        assert_eq!(outcome.exit_code, Some(3));
-        assert!(!outcome.succeeded());
-        assert_eq!(outcome.stdout.trim(), "out");
-        assert_eq!(outcome.stderr.trim(), "err");
-    }
-
-    #[tokio::test]
-    async fn a_slow_command_times_out_rather_than_failing() {
-        let (_dir, workspace) = workspace();
-        let error = run_command(
-            "sh",
-            &["-c", "sleep 30"],
-            workspace.root(),
-            Duration::from_millis(150),
-        )
-        .await
-        .expect_err("times out");
-
-        assert!(matches!(error, WorkspaceError::Timeout { .. }), "{error}");
     }
 }

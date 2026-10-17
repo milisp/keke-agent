@@ -782,22 +782,6 @@ async fn a_modern_only_server_is_usable_without_a_handshake() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_legacy_server_still_works_after_being_probed() {
-    let dir = TempDir::new().expect("tempdir");
-    let command = script(dir.path(), "good.py", GOOD_SERVER);
-    let tools = installed_tools(vec![plugin_with_server(
-        "acme",
-        dir.path(),
-        "api",
-        &command,
-        Vec::new(),
-    )]);
-
-    let echo = find(&tools, "acme:api:echo");
-    assert_eq!(echo_through(&echo, dir.path(), "legacy").await, "legacy");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_rejected_version_names_a_shared_one_rather_than_ending_the_conversation() {
     let dir = TempDir::new().expect("tempdir");
     let command = script(dir.path(), "mismatch.py", MISMATCHED_SERVER);

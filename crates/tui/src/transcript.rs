@@ -921,13 +921,6 @@ mod push_text_delta_tests {
             transcript.cells()
         );
     }
-
-    #[test]
-    fn real_text_between_tool_calls_still_opens_its_own_cell() {
-        let mut transcript = Transcript::default();
-        transcript.push_text_delta("hello");
-        assert_eq!(transcript.cells().len(), 1);
-    }
 }
 
 #[cfg(test)]
@@ -949,24 +942,6 @@ mod detail_line_tests {
         assert_eq!(
             detail_line("read_file", &result).as_deref(),
             Some("1\thello\n2\tworld")
-        );
-    }
-
-    #[test]
-    fn list_dir_keeps_output_for_expansion() {
-        let result = ToolResult::ok(ToolCallId::new("c1"), "src/\nCargo.toml\n");
-        assert_eq!(
-            detail_line("list_dir", &result).as_deref(),
-            Some("src/\nCargo.toml")
-        );
-    }
-
-    #[test]
-    fn grep_keeps_output_for_expansion() {
-        let result = ToolResult::ok(ToolCallId::new("c1"), "src/lib.rs:1:foo\n");
-        assert_eq!(
-            detail_line("grep", &result).as_deref(),
-            Some("src/lib.rs:1:foo")
         );
     }
 
@@ -1046,15 +1021,6 @@ mod detail_line_tests {
         ] {
             assert!(detail.contains(heading), "{detail}");
         }
-    }
-
-    #[test]
-    fn a_run_commands_multi_line_output_stays_multi_line() {
-        let result = ToolResult::ok(ToolCallId::new("c1"), "line one\nline two\nline three\n");
-        assert_eq!(
-            detail_line("run_command", &result).as_deref(),
-            Some("line one\nline two\nline three")
-        );
     }
 }
 

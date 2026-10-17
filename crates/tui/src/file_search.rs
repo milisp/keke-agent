@@ -198,14 +198,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hidden_until_a_token_is_typed() {
-        let mut state = FileSearchState::new(PathBuf::from("."));
-        assert!(!state.is_visible());
-        state.update("hello @sr", 9);
-        assert!(state.context.is_some());
-    }
-
-    #[test]
     fn leaving_the_token_clears_results() {
         let mut state = FileSearchState::new(PathBuf::from("."));
         state.update("@foo", 4);

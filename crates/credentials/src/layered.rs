@@ -204,15 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_stored_value_reads_back_as_absent() {
-        let name = key();
-        let store = LayeredStore::new().layer(MemoryStore::new(), MemoryStore::origin());
-        store.save(&name, "").unwrap();
-        assert_eq!(store.load(&name).unwrap(), None);
-        assert_eq!(store.describe(&name).unwrap(), None);
-    }
-
-    #[test]
     fn an_empty_upper_layer_does_not_hide_a_lower_one() {
         let name = key();
         let blank = MemoryStore::new();

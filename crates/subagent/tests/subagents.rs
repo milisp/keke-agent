@@ -327,7 +327,7 @@ async fn a_subagents_work_is_recorded_in_the_parents_log() {
 async fn the_pool_bounds_how_many_subagents_run_at_once() {
     let harness = harness();
     // Each model call dwells, so two subagents allowed to overlap would.
-    let (provider, _seen) = ScriptedProvider::new(40);
+    let (provider, seen) = ScriptedProvider::new(40);
     let gauge = Arc::clone(&provider);
     let mut session = parent(
         &harness,
@@ -346,7 +346,29 @@ async fn the_pool_bounds_how_many_subagents_run_at_once() {
         .expect("turn completes");
     // The turn returns once the parent stops calling tools; the subagents it
     // never collected are still outstanding, so drain them before measuring.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // A request is recorded only after its dwell, so three subagent requests
+    // seen means all three have finished calling the model.
+    let finished = || {
+        seen.lock()
+            .expect("lock")
+            .iter()
+            .filter(|request| {
+                request
+                    .messages
+                    .last()
+                    .is_some_and(|message| message.text().starts_with("SUB"))
+            })
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while finished() < 3 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {} of 3 subagents ran",
+            finished()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 
     // One is the parent's own call. Two at once would mean the permit did
     // nothing, which is exactly the failure a queued spawn is bounded against.

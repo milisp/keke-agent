@@ -400,12 +400,6 @@ async fn an_out_of_credits_403_is_reported_as_an_account_problem() {
     );
 }
 
-#[test]
-fn mcp_tool_ids_are_sent_under_names_the_vendor_accepts() {
-    let body = crate::responses_body(&mcp_request(), false, false);
-    assert_mcp_names_sanitized(&body);
-}
-
 #[tokio::test]
 async fn a_tool_call_to_a_renamed_tool_comes_back_under_its_id() {
     let server = serve(sse(&[

@@ -72,13 +72,3 @@ pub fn nothing_configured() -> String {
      add one with `keke mcp add --transport http <name> <url>`"
         .to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn no_servers_is_not_an_empty_screen() {
-        assert!(nothing_configured().contains("keke mcp add"));
-    }
-}

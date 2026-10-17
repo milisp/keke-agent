@@ -622,7 +622,9 @@ async fn a_retried_provider_call_reaches_the_editor_as_a_notice() {
     let server = MockInferenceServer::start().await;
     server.script(
         Endpoint::ChatCompletions,
-        Reply::status(429).with_header("retry-after", "1"),
+        // Zero still retries and still notices; anything more is wall-clock
+        // time this test would spend asleep.
+        Reply::status(429).with_header("retry-after", "0"),
     );
     server.script(Endpoint::ChatCompletions, Reply::text("worth the wait"));
 

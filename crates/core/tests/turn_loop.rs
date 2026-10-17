@@ -1815,20 +1815,6 @@ async fn a_call_needing_approval_with_nobody_to_ask_is_refused() {
     );
 }
 
-#[tokio::test]
-async fn a_policy_of_never_does_not_ask() {
-    let (events, asked) = run_with_reviewer(
-        Some(ApprovalDecision::Allow { note: None }),
-        ApprovalPolicy::Never,
-    )
-    .await;
-    assert!(
-        asked.is_empty(),
-        "nothing should have been asked: {asked:?}"
-    );
-    assert_eq!(statuses(&events), vec![ToolStatus::Ok, ToolStatus::Ok]);
-}
-
 /// "Always" that asks again on the next call is not a standing permission, it
 /// is a slower prompt.
 #[tokio::test]

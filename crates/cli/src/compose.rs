@@ -960,7 +960,21 @@ mod tests {
     #[test]
     fn a_stated_address_is_not_overridden_by_the_stored_credential() {
         let home = tempfile::tempdir().expect("a temp home");
+        keke_credentials::VendorAuthStore::new(
+            keke_paths::AbsPath::new(home.path()).expect("an absolute test home"),
+        )
+        .save(
+            &keke_auth_grok::GrokAuthConfig::default().vendor,
+            &keke_credentials::AuthFile::from_tokens(
+                keke_credentials::AuthMode::DeviceCode,
+                keke_credentials::AuthTokens::bearer("a-subscription-login"),
+            ),
+        )
+        .expect("storing the login");
         let vendors = vendors(home.path());
+        // The login is what would have chosen the proxy and its wire, so the
+        // test only means something while it still reads as a subscription.
+        assert!(is_subscription(vendors.auths["grok"].as_ref()));
 
         let mut declared = declaration("xai", "grok");
         declared.base_url = Some("https://api.x.ai/v1".to_string());

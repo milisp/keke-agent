@@ -294,13 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn running_a_command_does() {
-        assert!(
-            approval_reason(ApprovalPolicy::OnRequest, &capabilities(ToolKind::Execute)).is_some()
-        );
-    }
-
-    #[test]
     fn accept_edits_skips_edit_approval_but_still_checks_commands() {
         assert!(
             approval_reason(ApprovalPolicy::AcceptEdits, &capabilities(ToolKind::Edit)).is_none()

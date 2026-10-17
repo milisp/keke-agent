@@ -2357,8 +2357,6 @@ dependencies = [
  "keke-paths",
  "tempfile",
  "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]

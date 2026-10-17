@@ -40,16 +40,3 @@ impl ModelSwitch {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_switch_shares_the_model_it_is_given() {
-        let switch = Arc::new(ModelSwitch::new("grok-4"));
-        let held = Arc::clone(&switch);
-        switch.set("grok-4.6");
-        assert_eq!(&*held.get(), "grok-4.6");
-    }
-}

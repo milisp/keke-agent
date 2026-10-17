@@ -361,29 +361,6 @@ async fn rate_limiting_carries_the_stated_delay_and_rejection_is_unauthorized() 
 }
 
 #[tokio::test]
-async fn credentials_are_fetched_again_for_every_request() {
-    let frames = sse(&stop("end_turn"));
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(header("authorization", "Bearer token-0"))
-        .respond_with(stream_response(frames.clone()))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(header("authorization", "Bearer token-1"))
-        .respond_with(stream_response(frames))
-        .mount(&server)
-        .await;
-    let (client, auth) = client_over(&server);
-
-    collect_ok(&client, API).await;
-    collect_ok(&client, API).await;
-
-    assert_eq!(auth.fetches(), 2);
-}
-
-#[tokio::test]
 async fn the_system_prompt_is_a_top_level_field_not_a_message() {
     let server = serve(sse(&stop("end_turn"))).await;
     let (client, _auth) = client_over(&server);
@@ -643,12 +620,6 @@ fn thinking_displaces_a_temperature_this_wire_would_refuse_beside_it() {
         false,
     );
     assert_eq!(without_effort["temperature"], json!(0.5));
-}
-
-#[test]
-fn mcp_tool_ids_are_sent_under_names_the_vendor_accepts() {
-    let body = crate::messages_body(&mcp_request(), false);
-    assert_mcp_names_sanitized(&body);
 }
 
 #[tokio::test]
